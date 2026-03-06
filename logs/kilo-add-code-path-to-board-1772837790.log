@@ -1,0 +1,8 @@
+VERDICT: FAIL
+FEEDBACK:
+- **Config file location ambiguity**: Original description says `~/.mad/config.json` but plan uses `<project_root>/.mad.config.json`. These are different files - clarify which is used or if both exist.
+- **Board config undefined**: Plan mentions "per-board config" but never defines where per-board configs are stored or their format.
+- **Default location unspecified**: Plan says "fall back to default location" if code_path not set but doesn't specify what that default is.
+- **Truncation edge case**: Truncating at exactly 100KB bytes can corrupt UTF-8 multi-byte characters. Should truncate at character boundary or use proper encoding-aware truncation.
+- **Symlink chain handling**: os.path.realpath() handles chains correctly but plan doesn't explicitly acknowledge this.
+- **Context file path in instructions**: Plan uses `<project_root>/.mad/CONTEXT.md` but what if context file doesn't exist? Still include the path in instructions?

@@ -1,0 +1,21 @@
+Looking at this plan, I need to review it for completeness, clarity, feasibility, edge cases, and dependencies.
+
+**VERDICT: FAIL**
+
+**FEEDBACK:**
+
+- **Inconsistent CONTEXT.md location**: The original feature description states "a `~/.mad/CONTEXT.md` file for free-form project context" but the plan uses `<project_root>/.mad/CONTEXT.md`. These are different locations and the plan doesn't acknowledge this discrepancy.
+
+- **Incorrect derivation example**: The plan states `~/.mad/boards/mad` → project root is `~`, but going up two levels from `~/.mad/boards/mad/` would give `~/.mad/`, not `~`. The algorithm needs clarification on whether it's from the board directory or the ideas/work item subdirectory.
+
+- **CLI commands marked optional but required**: The original feature requires setting `code_path` and viewing/editing context, but CLI commands are marked "optional enhancement" with no implementation timeline. Without CLI support, users cannot configure `code_path`.
+
+- **Path validation incomplete**: The plan mentions blocking `/etc` and `~/.ssh` but doesn't specify: what about `/var`, `/usr`, `/root`, or other system directories? The validation logic needs concrete definition.
+
+- **No handling for code_path as non-existent path**: If `code_path` points to a path that doesn't exist yet (e.g., user wants to create the project), the `os.path.realpath()` call and validation will fail. Should derivation work with non-existent paths?
+
+- **Missing per-board configuration**: Original description says "Add a code path to each board's configuration" but plan uses only global config. If per-board is needed later, the schema change would require migration.
+
+- **Unclear symlink handling timing**: When should symlinks be resolved - at config write time or read time? The plan mentions both "before storing" and "before using" which is ambiguous.
+
+- **No migration strategy**: If adding `code_path` to existing config schema, there's no mention of config version handling or migration for existing users.

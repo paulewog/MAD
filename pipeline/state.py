@@ -11,14 +11,19 @@ from config import Config
 
 
 STAGES = [
-    "ideas", "plan-inbox", "approved", "reviewing-plan", "spec-writing",
+    "ideas", "plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing",
     "implementing", "testing", "review", "final-human-approval", "done", "rejected",
 ]
 
 PIPELINE_STAGES = [
-    "plan-inbox", "approved", "reviewing-plan", "spec-writing",
+    "plan-inbox", "reviewing-plan", "requested-input", "approved", "reviewing-plan", "spec-writing",
     "implementing", "testing", "review", "final-human-approval",
 ]
+
+STAGE_ACTIONS = {
+    "plan": ["plan-inbox", "reviewing-plan", "requested-input", "approved"],
+    "implement": ["approved", "spec-writing"],
+}
 
 
 def _slugify(title: str) -> str:
@@ -134,6 +139,43 @@ class FeatureFile:
     def set_impl_notes(self, value: str) -> None:
         self._data["impl_notes"] = value
         self._save()
+
+    @property
+    def questions(self) -> list:
+        """Returns list of questions needing human input."""
+        return self._data.get("questions", [])
+
+    def set_questions(self, value: list) -> None:
+        """Set questions, preserving any that have already been answered."""
+        existing = {q.get("question"): q.get("answer") for q in self._data.get("questions", [])}
+        merged = []
+        for q in value:
+            q_text = q.get("question", "")
+            prev_answer = existing.get(q_text, "")
+            merged.append({
+                "question": q_text,
+                "answer": prev_answer
+            })
+        self._data["questions"] = merged
+        self._save()
+
+    def add_question(self, question: str) -> None:
+        """Add a question needing human input."""
+        if "questions" not in self._data:
+            self._data["questions"] = []
+        self._data["questions"].append({
+            "question": question,
+            "answer": ""
+        })
+        self._save()
+
+    def answer_question(self, index: int, answer: str) -> None:
+        """Answer a question by index."""
+        questions = self._data.get("questions", [])
+        if 0 <= index < len(questions):
+            questions[index]["answer"] = answer
+            self._data["questions"] = questions
+            self._save()
 
     @property
     def history(self) -> str:

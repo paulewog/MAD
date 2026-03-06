@@ -11,7 +11,10 @@
     "kilo": {
       "command": "kilo",
       "headless_flag": "",
-      "headless_extra_flags": ["run", "--auto"]
+      "headless_extra_flags": [
+        "run",
+        "--auto"
+      ]
     }
   },
   "agent_for_phase": {

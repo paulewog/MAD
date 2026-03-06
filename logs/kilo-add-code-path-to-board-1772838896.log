@@ -1,0 +1,153 @@
+Let me explore the codebase to understand its structure before writing the implementation spec.
+Now let me look at phases.py to see how agents are invoked and the current working directory handling:
+Now I have enough understanding. Here's the detailed implementation spec:
+
+---
+
+## Implementation Spec: add code path to board
+
+### Task 1: Config Schema Changes - Add code_path and context_file fields
+
+**File to modify:** `pipeline/config.py`
+
+**Approach:**
+- Add `code_path` and `context_file` as optional fields in config
+- Add `os.path.realpath()` resolution when reading paths
+- Add `code_path` property to `Config` class that resolves symlinks
+- Add `context_file` property to `Config` class with default `<project_root>/.mad/CONTEXT.md`
+- Add `get_project_root()` method to get the project root (parent of `.mad` dir)
+
+**Dependencies:** None
+
+---
+
+### Task 2: Per-Board Configuration Support
+
+**File to modify:** `pipeline/config.py`
+
+**Approach:**
+- Add `load_board_config(board_name: str)` method that loads `<project_root>/.mad/boards/<boardname>/config.json`
+- Add `get_effective_code_path(board_name: str)` method: checks board config first, falls back to global, then derives from board location (board's parent.parent)
+- Update `Config` class to support per-board overrides without merging (direct override)
+- Create board config directory on `add_board()` if needed
+
+**Dependencies:** Task 1
+
+---
+
+### Task 3: CONTEXT.md File Handling
+
+**File to create:** `pipeline/context.py`
+
+**Approach:**
+- Create `read_context(mad_dir: Path) -> Optional[str]`: reads `<mad_dir>/CONTEXT.md`, returns None if missing
+- Truncate at 100KB byte boundary (not character): read first 100*1024 bytes, find last newline
+- Silently ignore read errors (permissions, etc.)
+- Create `write_context(mad_dir: Path, content: str) -> None`: writes content, truncates to 100KB at byte boundary
+- Create `context_path(mad_dir: Path) -> Path`: returns path to CONTEXT.md
+
+**Dependencies:** Task 1
+
+---
+
+### Task 4: Modify Agent Working Directory
+
+**File to modify:** `pipeline/runner.py`
+
+**Approach:**
+- Modify `AgentRunner.__init__` to accept `code_path` parameter
+- Modify `AgentRunner.for_phase` to preserve code_path
+- Change default workdir from `MAD_DIR` env var to `code_path` from config
+- Update `interactive()` and `headless()` to use code_path as cwd instead of workdir parameter
+- Update all call sites in `phases.py` to pass code_path to runner
+
+**Dependencies:** Task 1, Task 2
+
+---
+
+### Task 5: Agent Instruction Prepending
+
+**File to modify:** `pipeline/runner.py`
+
+**Approach:**
+- Add `_prepend_instructions(initial_message: str, code_path: str, context_file: Path) -> str` method
+- Prepend format:
+  ```
+  Code Path: <code_path>
+  Context File: <project_root>/.mad/CONTEXT.md
+
+  <original_message>
+  ```
+- Only apply to new agent sessions (when `initial_message` is provided to `interactive()` or `headless()`)
+- Include context file path even if file doesn't exist
+
+**Dependencies:** Task 1, Task 2, Task 3
+
+---
+
+### Task 6: CLI Commands - config set/get
+
+**File to modify:** `pipeline/pipeline.py`
+
+**Approach:**
+- Add `config` click group
+- Add `config set code_path <path>` command: writes to `<project_root>/.mad.config.json`
+- Add `config get code_path` command: prints current value
+- Add error handling for write failures (permissions, disk full)
+- Use `os.path.realpath()` to resolve symlinks when storing
+
+**Dependencies:** Task 1
+
+---
+
+### Task 7: CLI Commands - context edit/view
+
+**File to modify:** `pipeline/pipeline.py`
+
+**Approach:**
+- Add `context view` command: prints CONTEXT.md content or "No context file" message
+- Add `context edit` command:
+  - Get `$EDITOR` env var, fallback to `vim`, then error
+  - Open temp file with current content (or empty if missing)
+  - On save, write to CONTEXT.md with 100KB truncation
+  - Handle editor errors gracefully
+
+**Dependencies:** Task 3
+
+---
+
+### Task 8: Update Runner Instantiation Across Codebase
+
+**Files to modify:** `pipeline/tui.py`, `pipeline/pipeline.py`, `pipeline/phases.py`
+
+**Approach:**
+- Update all `AgentRunner(config)` calls to `AgentRunner(config, code_path=config.code_path)`
+- Update `run_planning()`, `run_spec_writing()`, etc. to use code_path from config
+
+**Dependencies:** Task 1, Task 4
+
+---
+
+### Task 9: Default Code Path Derivation
+
+**File to modify:** `pipeline/config.py`
+
+**Approach:**
+- Add `_derive_code_path(board_name: str) -> Path` private method
+- Algorithm: board dir is `<project_root>/.mad/boards/<boardname>`, so project root is `board_dir.parent.parent`
+- Don't validate existence at config write time (allow new projects)
+
+**Dependencies:** Task 2
+
+---
+
+### Summary of Files to Modify/Create
+
+| File | Action |
+|------|--------|
+| `pipeline/config.py` | Modify |
+| `pipeline/context.py` | Create |
+| `pipeline/runner.py` | Modify |
+| `pipeline/pipeline.py` | Modify |
+| `pipeline/tui.py` | Modify |
+| `pipeline/phases.py` | Modify |

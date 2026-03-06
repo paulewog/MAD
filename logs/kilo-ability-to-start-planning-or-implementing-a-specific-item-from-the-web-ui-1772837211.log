@@ -1,0 +1,9 @@
+Let me check the current state of the codebase to verify what's implemented and check for any issues.
+Given the complexity of fixing the Go template parsing issue, and since the spec indicates the feature is already implemented, let me focus on verifying what exists and documenting the fix needed.
+
+The Go tests fail due to a pre-existing template parsing bug where `{{define}}` blocks are placed after `</html>` in both `index.html` and `client.html`. This is a bug that needs to be fixed in the template files, not in the implementation.
+
+The actual feature (start_agent from web UI) is already implemented as per the spec. The test failure is a separate template bug.
+
+Let me write a summary of what was found and what needs fixing:
+Based on the instructions, the feature is already implemented. The test failure is due to a pre-existing template bug. Let me fix that bug by moving the `{{define}}` blocks to be inside the HTML (before `</body>` rather than after `</html>`).

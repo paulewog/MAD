@@ -1,0 +1,99 @@
+You are a QA engineer writing a test specification from a feature plan.
+
+## Feature: add code path to board
+
+### Plan:
+Based on the feature description and previous Q&A, here is the implementation plan:
+
+## 1. Config Schema Changes
+
+### Add to <project_root>/.mad.config.json:
+- `code_path`: string (absolute path to project root)
+- `context_file`: string (path to CONTEXT.md, defaults to <project_root>/.mad/CONTEXT.md)
+- Resolve symlinks at read time using os.path.realpath()
+
+### Per-Board Configuration:
+- Store per-board config in <project_root>/.mad/boards/<boardname>/config.json
+- Per-board config takes precedence over global config (no merge, direct override)
+- Allow code_path to be set per-board; fall back to a default derivation if not set
+
+## 2. CONTEXT.md File Handling
+
+- Location: <project_root>/.mad/CONTEXT.md
+- Optional: missing file is OK, just ignore
+- Max size: 100KB - truncate at byte boundary (not character boundary) to avoid UTF-8 corruption
+- If file cannot be read (permission denied, etc.), ignore silently
+
+## 3. Agent Working Directory
+
+- When invoking an agent, set the working directory (cwd) to the project root (code_path), not the work item directory
+- This is a behavioral change from current implementation where cwd is set to the board's item location
+
+## 4. Agent Instructions Prepending
+
+- For each new agent session, prepend the following to the initial instruction prompt:
+  - "Code Path: <code_path>"
+  - "Context File: <project_root>/.mad/CONTEXT.md"
+- This applies to new agent sessions, not every message turn
+- If CONTEXT.md doesn't exist, still include the path in instructions
+
+## 5. CLI Commands (Required)
+
+Implement the following CLI commands:
+- `mad config set code_path <path>` - Set code_path in <project_root>/.mad.config.json
+- `mad config get code_path` - Get current code_path value
+- `mad context edit` - Edit CONTEXT.md using $EDITOR or fall back to a default editor
+- `mad context view` - Display current CONTEXT.md content (or indicate if missing)
+
+## 6. Default Code Path Derivation
+
+- Default: Allow derivation from board location as fallback
+- Algorithm: Use board directory's parent.parent (board's parent is <boardname>, parent's parent is project root)
+- If code_path doesn't exist (new project), allow it - don't validate existence at config write time
+
+## 7. Implementation Steps
+
+1. Modify config loading to read from <project_root>/.mad.config.json
+2. Add code_path and context_file fields to config schema
+3. Implement per-board config loading with precedence
+4. Create CONTEXT.md file handling functions (read, write with truncation, ignore errors)
+5. Modify agent invocation to set cwd to code_path
+6. Add instruction prepending for new agent sessions
+7. Implement CLI commands: config set/get, context edit/view
+8. Add error handling for config write failures (permissions, disk full)
+9. Handle editor fallback ($EDITOR, then vim, then error)
+
+## 8. Security Considerations (Future Item)
+
+- Document that setting cwd to project root has security implications if agent runs malicious code
+- Path validation to prevent escaping to parent directories or accessing sensitive paths is noted for future consideration but not implemented now
+
+---
+
+## Test Spec Requirements
+
+Write a comprehensive test spec with these sections:
+
+### 1. Behaviors That MUST Be Verified
+- Each behavior from the plan
+- Success criteria for each
+- Expected outputs
+
+### 2. Edge Cases
+- Empty/null inputs
+- Boundary conditions
+- Invalid states
+- Concurrent operations
+- Error conditions
+
+### 3. What Constitutes Failure
+- Criteria for test failure
+- Error messages expected
+- Rollback behavior
+
+### 4. Out of Scope
+- Explicitly list what NOT to test (UI timing, visual assertions, performance benchmarks, etc.)
+
+---
+
+Write in plain language, NOT actual test code. Focus on "what should happen" not "how to test it".

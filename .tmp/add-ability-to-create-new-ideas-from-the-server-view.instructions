@@ -1,0 +1,69 @@
+You are an implementer breaking down a feature plan into concrete coding tasks.
+
+Feature: Add ability to create new ideas from the server view
+
+Plan:
+## Plan: Add ability to create new ideas from the server web app
+
+### Overview
+Add a "New Idea" form to the web app that sends a WebSocket message to a connected pipeline client, which then creates the idea locally using `FeatureFile.create()`.
+
+### Architecture Flow
+1. **Web UI** (index.html / client.html) → User fills in title, board, description
+2. **Server** (api.go) → New REST endpoint `POST /api/clients/{id}/ideas` receives the request
+3. **Server** (hub.go) → Forwards a `create_idea` WebSocket message to the connected pipeline client
+4. **Pipeline client** (server_client.py) → Receives `create_idea` message, calls `FeatureFile.create()`
+5. **Pipeline client** → Next state push reflects the new idea in the ideas stage
+
+### Implementation Steps
+
+#### 1. Server: Add `create_idea` WebSocket message type (hub.go)
+- No changes needed in hub.go message handling — the server just forwards the message to the client via `SendToClient()`. The server doesn't need to understand the message content.
+
+#### 2. Server: Add REST endpoint `POST /api/clients/{id}/ideas` (api.go)
+- Add a new handler `serveCreateIdea` similar to `serveSubmitAnswers`
+- Accept JSON body: `{"title": "...", "board": "...", "description": "..."}`
+- Validate: client exists and is connected, title is non-empty, board is non-empty
+- Send `create_idea` WebSocket message to the pipeline client: `{"type": "create_idea", "title": "...", "board": "...", "description": "..."}`
+- Return 200 OK on success
+- Wire up routing in the existing `apiClientsHandler` by matching the `ideas` sub-path under a client ID
+
+#### 3. Pipeline client: Handle `create_idea` message (server_client.py)
+- In `_handle_incoming`, add a case for `msg_type == "create_idea"`
+- Add a new callback `on_idea_created` to the constructor (similar to `on_answers_received`)
+- Extract `title`, `board`, `description` from the message
+- Call the callback which will invoke `FeatureFile.create(board, title, description)`
+
+#### 4. Pipeline runner: Wire up the callback (runner.py)
+- When constructing `ServerClient`, pass an `on_idea_created` callback
+- The callback creates the idea via `FeatureFile.create()` and triggers a state push so the web UI updates immediately
+
+#### 5. Web UI: Add "New Idea" button and form (client.html)
+- Add a "+" button near the features header or in the ideas stage section
+- On click, show a simple inline form or modal with fields: Title (required), Board (dropdown from known boards, or text input), Description (textarea, optional)
+- On submit, POST to `/api/clients/{clientID}/ideas?key=...` with the JSON body
+- Show success/error feedback
+- The next poll cycle (5s) will show the new idea in the ideas stage
+
+#### 6. Web UI: Add to index.html aggregate view (optional)
+- Add a "New Idea" button to the dashboard's aggregate view
+- If multiple clients are connected, require selecting which client should create the idea
+- If only one client is connected, default to that client
+
+### Files Modified
+- `server/api.go` — New endpoint and route wiring
+- `server/hub.go` — No changes needed (reuses existing SendToClient)
+- `server/templates/client.html` — New Idea UI form
+- `server/templates/index.html` — Optional: New Idea button in aggregate view
+- `pipeline/server_client.py` — Handle `create_idea` message type, new callback
+- `pipeline/runner.py` — Wire up the `on_idea_created` callback
+
+### Edge Cases
+- Client disconnects between form submission and idea creation → Server returns error (client not connected)
+- Duplicate title → `FeatureFile.create` will use the same slug, potentially overwriting. Could add a check or append a suffix — but the existing `create` method already generates a unique ID so the JSON content differs. The slug-based filename could collide though, so we should handle this gracefully.
+- Empty or invalid board name → Validate on server side before forwarding
+- Board doesn't exist on client → The `FeatureFile.create` method creates the directory if needed, so this is safe
+
+Write a detailed implementation spec — a list of specific coding tasks.
+For each task: what to create or modify, the approach, and dependencies on other tasks.
+Be concrete. No preamble.

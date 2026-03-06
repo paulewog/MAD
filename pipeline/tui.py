@@ -1,10 +1,32 @@
 #!/usr/bin/env python3
 """MAD Pipeline TUI — interactive kanban dashboard built with Textual."""
 
+import asyncio
+import atexit
+import logging
+import os
+import signal
 import sys
 import time
 from pathlib import Path
 from typing import Optional
+
+# Set up pipeline log file
+_pipeline_log_dir = Path(__file__).parent.parent / ".mad" / "logs"
+_pipeline_log_dir.mkdir(parents=True, exist_ok=True)
+_pipeline_log_file = _pipeline_log_dir / "pipeline.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[
+        logging.FileHandler(_pipeline_log_file),
+    ]
+)
+logger = logging.getLogger("pipeline")
+
+# Legacy logger for compatibility
+app_logger = logging.getLogger(__name__)
 
 # Ensure pipeline modules are importable when running tui.py directly
 sys.path.insert(0, str(Path(__file__).parent))
@@ -12,8 +34,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from agent_status import AgentStatus
 from config import Config
 from phases import run_pipeline, _load_prompt, update_design_doc, _get_latest_feedback
-from runner import AgentRunner
-from state import STAGES, FeatureFile
+from runner import AgentRunner, RateLimitError
+from state import STAGES, STAGE_ACTIONS, FeatureFile
 
 from textual import work
 from textual.app import App, ComposeResult
@@ -37,6 +59,13 @@ from textual.widgets import (
     TabPane,
 )
 
+# Optional server push
+try:
+    from server_client import ServerClient, HAS_WEBSOCKETS
+except ImportError:
+    HAS_WEBSOCKETS = False
+    ServerClient = None
+
 # Pipeline phases that can have different agents assigned
 PIPELINE_PHASES = [
     ("planning", "Planning"),
@@ -55,8 +84,9 @@ HUMAN_STAGES = {"final-human-approval"}
 STAGE_DISPLAY_ORDER = [
     "ideas",
     "plan-inbox",
-    "approved",
+    "requested-input",
     "reviewing-plan",
+    "approved",
     "spec-writing",
     "implementing",
     "testing",
@@ -95,6 +125,19 @@ def _feature_markdown(feature: FeatureFile) -> str:
 
     if feature.impl_notes:
         lines += ["## Implementation Notes", "", feature.impl_notes, ""]
+
+    # Show questions if any
+    questions = feature.questions
+    if questions:
+        lines += ["## Questions for Human", ""]
+        for i, q in enumerate(questions):
+            q_text = q.get("question", "")
+            a_text = q.get("answer", "")
+            if a_text:
+                lines += [f"- **Q{i+1}:** {q_text}", f"  - **A:** {a_text}", ""]
+            else:
+                lines += [f"- **Q{i+1}:** {q_text} *(unanswered)*", ""]
+        lines += ["", "Press 'q' to answer questions", ""]
 
     if feature.history:
         # Escape markdown in history to display as plain text
@@ -294,12 +337,174 @@ class NewBoardModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class AnswerQuestionsModal(ModalScreen[bool | None]):
+    """Modal to answer questions raised by the planning agent."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, feature: FeatureFile) -> None:
+        self.feature = feature
+        self.questions = [q for q in feature.questions if not q.get("answer")]
+        self.original_indices = [i for i, q in enumerate(feature.questions) if not q.get("answer")]
+        super().__init__()
+
+    def on_key(self, event) -> None:
+        """Handle tab to move between inputs."""
+        if event.key == "tab":
+            self._move_focus_next()
+            event.prevent_default()
+        elif event.key == "shift+tab":
+            self._move_focus_prev()
+            event.prevent_default()
+        elif event.key == "escape":
+            self.dismiss(None)
+
+    def _move_focus_next(self) -> None:
+        """Move focus to next input."""
+        from textual.widgets import Input
+        inputs = list(self.query(Input))
+        if not inputs:
+            return
+        current = self.focused
+        if current in inputs:
+            idx = inputs.index(current)  # type: ignore[arg-type]
+            if idx + 1 < len(inputs):
+                inputs[idx + 1].focus()
+                return
+        # First input or no focus
+        if inputs:
+            inputs[0].focus()
+
+    def _move_focus_prev(self) -> None:
+        """Move focus to previous input."""
+        from textual.widgets import Input
+        inputs = list(self.query(Input))
+        if not inputs:
+            return
+        current = self.focused
+        if current in inputs:
+            idx = inputs.index(current)  # type: ignore[arg-type]
+            if idx > 0:
+                inputs[idx - 1].focus()
+                return
+        # Last input
+        if inputs:
+            inputs[-1].focus()
+
+    CSS = """
+    AnswerQuestionsModal {
+        align: center middle;
+    }
+    #questions-dialog {
+        width: 70;
+        height: 80%;
+        max-height: 80%;
+        border: thick $panel;
+        background: $surface;
+        padding: 1 2;
+    }
+    #questions-dialog VerticalLayout {
+        height: 100%;
+    }
+    #questions-dialog VerticalScroll {
+        height: 100%;
+    }
+    #questions-dialog Label {
+        width: 100%;
+        text-wrap: wrap;
+    }
+    #questions-dialog Input {
+        margin: 1 0;
+    }
+    #questions-buttons {
+        height: 3;
+        dock: bottom;
+    }
+    #questions-buttons Button {
+        margin: 0 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="questions-dialog"):
+            with VerticalScroll(id="questions-content"):
+                yield Label(f"[bold]Questions for: {self.feature.title}[/bold]\n")
+                
+                for i, q in enumerate(self.questions):
+                    yield Label(f"\nQ{i+1}: {q.get('question', '')}", id=f"q-{i}")
+                    yield Input(
+                        value=q.get('answer', ''),
+                        id=f"answer-{i}",
+                        placeholder="Type your answer..."
+                    )
+                
+                yield Label("")
+            with Horizontal(id="questions-buttons"):
+                yield Button("Cancel", variant="default", id="cancel")
+                yield Button("Save & Continue", variant="primary", id="save")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)
+        elif event.button.id == "save":
+            # Save all answers using original indices
+            for i, orig_idx in enumerate(self.original_indices):
+                input_widget = self.query_one(f"#answer-{i}", Input)
+                self.feature.answer_question(orig_idx, input_widget.value)
+            
+            # Move back to plan-inbox to continue pipeline
+            self.feature.move_to_stage("plan-inbox")
+            self.feature.save()
+            self.dismiss(True)
+
+
 class NewFeatureModal(ModalScreen[tuple[str, str, str] | None]):
     """Modal to create a new feature -- collects title, description, and board."""
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
     ]
+
+    def on_key(self, event) -> None:
+        """Handle tab to move between inputs."""
+        if event.key == "tab":
+            self._move_focus_next()
+            event.prevent_default()
+        elif event.key == "shift+tab":
+            self._move_focus_prev()
+            event.prevent_default()
+
+    def _move_focus_next(self) -> None:
+        """Move focus to next input."""
+        from textual.widgets import Input, Select
+        inputs = list(self.query(Input)) + list(self.query(Select))
+        if not inputs:
+            return
+        current = self.focused
+        if current in inputs:
+            idx = inputs.index(current)
+            if idx + 1 < len(inputs):
+                inputs[idx + 1].focus()
+                return
+        if inputs:
+            inputs[0].focus()
+
+    def _move_focus_prev(self) -> None:
+        """Move focus to previous input."""
+        from textual.widgets import Input, Select
+        inputs = list(self.query(Input)) + list(self.query(Select))
+        if not inputs:
+            return
+        current = self.focused
+        if current in inputs:
+            idx = inputs.index(current)
+            if idx > 0:
+                inputs[idx - 1].focus()
+                return
+        if inputs:
+            inputs[-1].focus()
 
     CSS = """
     NewFeatureModal {
@@ -371,6 +576,80 @@ class NewFeatureModal(ModalScreen[tuple[str, str, str] | None]):
         self.dismiss(None)
 
 
+class MoveFeatureModal(ModalScreen[str | None]):
+    """Modal to move a feature to a different stage."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    CSS = """
+    MoveFeatureModal {
+        align: center middle;
+    }
+    #move-dialog {
+        width: 50;
+        height: auto;
+        border: thick $panel;
+        background: $surface;
+        padding: 1 2;
+    }
+    #move-dialog Select {
+        margin: 1 0;
+    }
+    #move-buttons {
+        margin-top: 1;
+        height: 3;
+    }
+    #move-buttons Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, current_stage: str) -> None:
+        self.current_stage = current_stage
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        from state import STAGES
+        options = [(s, s.replace("-", " ").title()) for s in STAGES]
+        with Vertical(id="move-dialog"):
+            yield Label("Move to Stage:")
+            # Don't set value in constructor - set it after mount
+            yield Select(options, id="move-stage")
+            with Horizontal(id="move-buttons"):
+                yield Button("Move", variant="primary", id="move-go")
+                yield Button("Cancel", variant="default", id="move-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "move-go":
+            self._submit()
+        else:
+            self.dismiss(None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._submit()
+
+    def _submit(self) -> None:
+        from state import STAGES
+        select = self.query_one("#move-stage", Select)
+        label = select.value
+        if label is Select.BLANK:
+            self.dismiss(self.current_stage)
+            return
+        
+        # Build reverse lookup: label -> stage
+        label_to_stage = {s.replace("-", " ").title(): s for s in STAGES}
+        stage = label_to_stage.get(str(label), str(label))
+        
+        if stage not in STAGES:
+            stage = self.current_stage
+        self.dismiss(stage)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 # ---------------------------------------------------------------------------
 # Settings panel
 # ---------------------------------------------------------------------------
@@ -378,6 +657,22 @@ class NewFeatureModal(ModalScreen[tuple[str, str, str] | None]):
 
 class SettingsPane(Static):
     """Settings panel for configuring agents and pipeline options."""
+
+    CSS = """
+    SettingsPane {
+        padding: 1;
+    }
+    .settings-row {
+        layout: horizontal;
+        height: auto;
+    }
+    .settings-row Label {
+        width: 20;
+    }
+    .settings-row Select {
+        width: 30;
+    }
+    """
 
     class SettingsChanged(Message):
         """Posted when settings are modified."""
@@ -390,45 +685,36 @@ class SettingsPane(Static):
         self._config = config
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll(id="settings-scroll"):
-            yield Label("[bold]Pipeline Settings[/bold]\n", id="settings-title")
-            
-            # Default agent selector
-            agents = list(self._config.agents.keys())
-            current_default = self._config.current_agent_name
-            agent_options = [(a, a) for a in agents]
-            
-            yield Label("Default Agent:")
-            yield Select(
-                agent_options,
-                value=current_default,
-                id="default-agent-select"
-            )
-            yield Label("")
-            
-            # Phase assignments
-            yield Label("[bold]Agent Phase Assignments[/bold]\n")
-            yield Label("Select which agent to use for each pipeline phase:")
-            yield Label("")
-            
-            # Get current phase assignments
-            agent_for_phase = self._config.agent_for_phase
-            
-            # Build phase -> agent selection
-            for phase_key, phase_label in PIPELINE_PHASES:
-                current_agent = agent_for_phase.get(phase_key, current_default)
-                agent_options = [(a, a) for a in agents]
-                yield Label(f"{phase_label}:")
+        yield Label("[bold]Pipeline Settings[/bold]\n", id="settings-title")
+        
+        # Default agent selector
+        agents = list(self._config.agents.keys())
+        current_default = self._config.current_agent_name
+        agent_options = [(a, a) for a in agents]
+        
+        yield Label("[bold]Default Agent[/bold]", id="default-label")
+        yield Select(
+            agent_options,
+            value=current_default,
+            id="default-agent-select"
+        )
+        
+        yield Label("[bold]Phase Agent Assignments[/bold]", id="phases-label")
+        
+        # Phase assignments - horizontal rows
+        agent_for_phase = self._config.agent_for_phase
+        for phase_key, phase_label in PIPELINE_PHASES:
+            current_agent = agent_for_phase.get(phase_key, current_default)
+            phase_options = [("default", "default")] + [(a, a) for a in agents]
+            with Horizontal(classes="settings-row"):
+                yield Label(f"{phase_label}:", id=f"label-{phase_key}")
                 yield Select(
-                    agent_options,
+                    phase_options,
                     value=current_agent,
                     id=f"phase-{phase_key}"
                 )
-                yield Label("")
-            
-            # Save button
-            yield Label("")
-            yield Button("Save Settings", variant="primary", id="save-settings")
+        
+        yield Button("Save Settings", variant="primary", id="save-settings")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "save-settings":
@@ -463,19 +749,79 @@ _STATUS_TAIL_LINES = 8
 
 
 class AgentStatusWidget(Static):
-    """Always-visible panel showing real-time agent progress at the bottom of the right pane."""
+    """Always-visible panel showing real-time agent progress at the bottom of the right pane.
+    
+    Can display either a single status or dual statuses (plan + implement).
+    """
 
     REFRESH_INTERVAL = 1.0  # seconds between re-renders
 
-    def __init__(self, status: AgentStatus, **kwargs) -> None:
+    def __init__(
+        self,
+        status: AgentStatus | None = None,
+        plan_status: AgentStatus | None = None,
+        implement_status: AgentStatus | None = None,
+        **kwargs
+    ) -> None:
         super().__init__(**kwargs)
         self._status = status
+        self._plan_status = plan_status
+        self._implement_status = implement_status
 
     def on_mount(self) -> None:
         self.set_interval(self.REFRESH_INTERVAL, self.refresh)
 
+    def set_dual_statuses(self, plan_status: AgentStatus, implement_status: AgentStatus) -> None:
+        """Set dual status objects for plan and implement pipelines."""
+        self._plan_status = plan_status
+        self._implement_status = implement_status
+        self._status = None
+
     def render(self) -> str:
-        status = self._status
+        # If we have plan_status only, show plan
+        if self._plan_status is not None and self._implement_status is None:
+            return self._render_single_with_label(self._plan_status, "PLAN")
+        # If we have impl_status only, show impl
+        if self._implement_status is not None and self._plan_status is None:
+            return self._render_single_with_label(self._implement_status, "IMPL")
+        # If we have dual statuses, show both
+        if self._plan_status or self._implement_status:
+            return self._render_dual()
+        # Otherwise show single status
+        if self._status:
+            return self._render_single(self._status)
+        return "[dim]● idle[/dim]"
+
+    def _render_single_with_label(self, status: AgentStatus, label: str) -> str:
+        """Render a single status with a label (PLAN or IMPL)."""
+        if not status.running:
+            # Check auto mode
+            app = self.app
+            if label == "PLAN":
+                auto_on = getattr(app, 'auto_plan_enabled', False)
+            else:
+                auto_on = getattr(app, 'auto_implement_enabled', False)
+            if auto_on:
+                return f"[dim]○ {label} auto-ready[/dim]"
+            return f"[dim]○ {label} idle[/dim]"
+
+        # Elapsed time
+        if status.started_at:
+            elapsed = time.time() - status.started_at
+            mins = int(elapsed // 60)
+            secs = int(elapsed % 60)
+            elapsed_str = f"{mins}m {secs}s" if mins else f"{secs}s"
+        else:
+            elapsed_str = "0s"
+
+        return (
+            f"[bold cyan]●[/bold cyan] {label}: [bold]{status.agent}[/bold] "
+            f"[blue]{status.feature_slug}[/blue] "
+            f"[yellow]{status.phase}[/yellow] "
+            f"[dim]{elapsed_str}[/dim]"
+        )
+
+    def _render_single(self, status: AgentStatus) -> str:
         if not status.running:
             return "[dim]● idle[/dim]"
 
@@ -489,20 +835,60 @@ class AgentStatusWidget(Static):
             elapsed_str = "0s"
 
         parts = [
-            f"[bold cyan]● running[/bold cyan]"
-            f"  [bold]{status.agent}[/bold]"
-            f"  [blue]{status.feature_slug}[/blue]"
-            f"  [yellow]{status.phase}[/yellow]"
-            f"  [dim]{elapsed_str}[/dim]",
+            f"[bold cyan]●[/bold cyan] [bold]{status.agent}[/bold] "
+            f"[blue]{status.feature_slug}[/blue] "
+            f"[yellow]{status.phase}[/yellow] "
+            f"[dim]{elapsed_str}[/dim]",
         ]
 
         tail = status.lines[-_STATUS_TAIL_LINES:] if status.lines else []
         for line in tail:
-            # Escape Rich markup in raw subprocess output
             safe_line = line.replace("[", r"\[")
             parts.append(f"[dim]{safe_line}[/dim]")
 
         return "\n".join(parts)
+
+    def _render_dual(self) -> str:
+        """Render two status displays side by side or stacked."""
+        # Get auto flags from app
+        app = self.app
+        auto_plan = getattr(app, 'auto_plan_enabled', False)
+        auto_impl = getattr(app, 'auto_implement_enabled', False)
+        
+        parts = []
+        
+        # Plan status
+        if self._plan_status and self._plan_status.running:
+            parts.append(self._render_status_line(self._plan_status, "PLAN"))
+        elif auto_plan:
+            parts.append("[dim]○ PLAN auto-ready[/dim]")
+        else:
+            parts.append("[dim]○ PLAN idle[/dim]")
+        
+        # Implement status
+        if self._implement_status and self._implement_status.running:
+            parts.append(self._render_status_line(self._implement_status, "IMPL"))
+        elif auto_impl:
+            parts.append("[dim]○ IMPL auto-ready[/dim]")
+        else:
+            parts.append("[dim]○ IMPL idle[/dim]")
+        
+        return "  |  ".join(parts)
+
+    def _render_status_line(self, status: AgentStatus, label: str) -> str:
+        if status.started_at:
+            elapsed = time.time() - status.started_at
+            mins = int(elapsed // 60)
+            secs = int(elapsed % 60)
+            elapsed_str = f"{mins}m{secs}s" if mins else f"{secs}s"
+        else:
+            elapsed_str = "0s"
+        
+        return (
+            f"[bold cyan]●[/bold cyan] {label}: [bold]{status.agent}[/bold] "
+            f"[blue]{status.feature_slug}[/blue] "
+            f"[yellow]{status.phase}[/yellow] [dim]{elapsed_str}[/dim]"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -516,40 +902,59 @@ class PipelineApp(App):
     TITLE = "MAD Pipeline"
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("i", "interactive", "Interactive"),
+        Binding("ctrl+q", "quit", "Quit"),
+        Binding("q", "answer_questions", "Answer"),
+        Binding("i", "interactive", "Interact"),
         Binding("a", "approve", "Approve"),
         Binding("r", "review", "Review"),
         Binding("ctrl+r", "restart", "Restart"),
         Binding("x", "reject", "Reject"),
         Binding("u", "restore", "Restore"),
         Binding("p", "promote", "Promote"),
-        Binding("s", "promote_skip", "Promote Skip"),
-        Binding("o", "run_pipeline", "Run"),
-        Binding("e", "toggle_auto_run", "Auto-Run"),
+        Binding("s", "start", "Start"),
+        Binding("ctrl+a", "toggle_auto_plan", "Auto-Plan"),
+        Binding("ctrl+d", "toggle_auto_implement", "Auto-Impl"),
+        Binding("ctrl+s", "stop_auto", "Stop"),
+        Binding("m", "move", "Move"),
         Binding("n", "new_feature", "New"),
         Binding("b", "new_board", "New Board"),
         Binding("f", "refresh", "Refresh"),
-        Binding("t", "toggle_log_detail", "Log/Detail"),
-        Binding("tab", "toggle_focus", "Switch Pane"),
-        Binding("f2", "go_to_settings", "Settings"),
+        Binding("tab", "toggle_focus", "Switch"),
+        Binding(";", "go_to_settings", "Settings"),
         Binding("up", "focus_previous", "Up"),
         Binding("down", "focus_next", "Down"),
     ]
 
     # Stage -> list of available actions (key, action, label)
     STAGE_ACTIONS = {
-        "ideas": [("i", "interactive", "Interactive"), ("a", "approve", "To Plan-Inbox"), ("x", "reject", "Reject")],
-        "plan-inbox": [("x", "reject", "Reject"), ("o", "run_pipeline", "Run"), ("ctrl+r", "restart", "Restart")],
-        "reviewing-plan": [("o", "run_pipeline", "Run"), ("ctrl+r", "restart", "Restart")],
-        "approved": [("x", "reject", "Reject"), ("o", "run_pipeline", "Run"), ("ctrl+r", "restart", "Restart")],
-        "spec-writing": [("x", "reject", "Reject"), ("o", "run_pipeline", "Run"), ("ctrl+r", "restart", "Restart")],
-        "implementing": [("x", "reject", "Reject"), ("ctrl+r", "restart", "Restart")],
-        "testing": [("x", "reject", "Reject"), ("ctrl+r", "restart", "Restart")],
-        "review": [("a", "approve", "Approve"), ("x", "reject", "Reject"), ("ctrl+r", "restart", "Restart")],
-        "final-human-approval": [("a", "approve", "Done"), ("x", "reject", "Reject")],
-        "done": [("u", "restore", "Restore")],
-        "rejected": [("u", "restore", "Restore")],
+        "ideas": [("m", "move", "Move"), ("i", "interactive", "Interact"), ("a", "approve", "To Plan"), ("x", "reject", "Reject")],
+        "plan-inbox": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
+        "reviewing-plan": [("m", "move", "Move"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
+        "requested-input": [("m", "move", "Move"), ("q", "answer_questions", "Answer"), ("s", "start", "Start")],
+        "approved": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
+        "spec-writing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
+        "implementing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
+        "testing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("ctrl+r", "restart", "Restart")],
+        "review": [("m", "move", "Move"), ("a", "approve", "Approve"), ("r", "review", "Review"), ("x", "reject", "Reject"), ("ctrl+r", "restart", "Restart")],
+        "final-human-approval": [("m", "move", "Move"), ("a", "approve", "Done"), ("x", "reject", "Reject")],
+        "done": [("m", "move", "Move"), ("u", "restore", "Restore")],
+        "rejected": [("m", "move", "Move"), ("u", "restore", "Restore")],
+    }
+
+    # Stage -> list of available actions (key, action, label)
+    STAGE_ACTIONS = {
+        "ideas": [("m", "move", "Move"), ("i", "interactive", "Interact"), ("a", "approve", "To Plan"), ("x", "reject", "Reject")],
+        "plan-inbox": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
+        "reviewing-plan": [("m", "move", "Move"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
+        "requested-input": [("m", "move", "Move"), ("q", "answer_questions", "Answer"), ("s", "start", "Start")],
+        "approved": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
+        "spec-writing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
+        "implementing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
+        "testing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("ctrl+r", "restart", "Restart")],
+        "review": [("m", "move", "Move"), ("a", "approve", "Approve"), ("x", "reject", "Reject"), ("ctrl+r", "restart", "Restart")],
+        "final-human-approval": [("m", "move", "Move"), ("a", "approve", "Done"), ("x", "reject", "Reject")],
+        "done": [("m", "move", "Move"), ("u", "restore", "Restore")],
+        "rejected": [("m", "move", "Move"), ("u", "restore", "Restore")],
     }
 
     # Global hotkeys that are always available
@@ -557,9 +962,8 @@ class PipelineApp(App):
         ("n", "new_feature", "New"),
         ("b", "new_board", "New Board"),
         ("f", "refresh", "Refresh"),
-        ("t", "toggle_log_detail", "Log/Detail"),
-        ("tab", "toggle_focus", "Switch"),
-        ("e", "toggle_auto_run", "Auto-Run"),
+        ("ctrl+a", "toggle_auto_plan", "Auto-Plan"),
+        ("ctrl+d", "toggle_auto_implement", "Auto-Impl"),
     ]
 
     def get_contextual_bindings(self) -> list[tuple]:
@@ -568,14 +972,14 @@ class PipelineApp(App):
         bindings = list(self.GLOBAL_BINDINGS)
         
         if not self.selected_feature:
-            return bindings + [("q", "quit", "Quit")]
+            return bindings + [("ctrl+q", "quit", "Quit")]
         
         # Add stage-specific actions
         stage = self.selected_feature.current_stage
         stage_bindings = self.STAGE_ACTIONS.get(stage, [])
         
         # Add stage actions in the middle, Quit always last
-        return bindings + stage_bindings + [("q", "quit", "Quit")]
+        return bindings + stage_bindings + [("ctrl+q", "quit", "Quit")]
 
     CSS = """
     Screen {
@@ -600,6 +1004,7 @@ class PipelineApp(App):
 
     #right-pane {
         width: 1fr;
+        height: 1fr;
         padding: 0 1;
     }
 
@@ -608,23 +1013,32 @@ class PipelineApp(App):
     }
 
     #detail-view {
+        width: 50%;
         height: 1fr;
         overflow-y: auto;
+        border-right: solid $panel;
+        padding: 0 1;
     }
 
-    #log-view {
-        height: 1fr;
-        overflow-y: auto;
-        border: solid $panel;
-        display: none;
-    }
-
-    #detail-view.split-top {
+    #right-bottom {
+        width: 50%;
         height: 1fr;
     }
 
-    #log-view.split-bottom {
+    #right-bottom > * {
         height: 1fr;
+    }
+
+    #log-section, #plan-section, #impl-section {
+        height: 1fr;
+    }
+
+    .panel-header {
+        height: 1;
+        background: $panel;
+        color: $text;
+        text-style: bold;
+        padding: 0 1;
     }
 
     .stage-header {
@@ -701,8 +1115,9 @@ class PipelineApp(App):
     active_board: reactive[str] = reactive("")
     # Whether a pipeline run is in progress
     running: reactive[bool] = reactive(False)
-    # Whether auto-run is enabled
-    auto_run_enabled: reactive[bool] = reactive(False)
+    # Auto-run modes - can run independently in parallel
+    auto_plan_enabled: reactive[bool] = reactive(False)
+    auto_implement_enabled: reactive[bool] = reactive(False)
     # Which right pane to show: "detail" or "log"
     right_pane_mode: reactive[str] = reactive("detail")
 
@@ -713,10 +1128,23 @@ class PipelineApp(App):
         # Track previous feature snapshot for change detection in auto-refresh
         self._prev_snapshot: dict[str, list[tuple[str, str]]] = {}
         self._prev_mtimes: dict[str, dict[str, float]] = {}
-        # Shared agent status instance — mutated by runner, read by widget
+        # Two separate agent status instances for plan and implement pipelines
+        self._plan_agent_status = AgentStatus()
+        self._implement_agent_status = AgentStatus()
+        # Shared agent status instance (for manual runs)
         self._agent_status = AgentStatus()
+        # Persistent log buffer - survives view toggles
+        self._log_buffer: list[str] = []
         # Track which features have been auto-queued to avoid duplicates
-        self._auto_queued: set[str] = set()
+        self._auto_plan_queued: set[str] = set()
+        self._auto_implement_queued: set[str] = set()
+        # Track if plan/implement pipelines are running
+        self._plan_running = False
+        self._implement_running = False
+        # Rate limit tracking - timestamp until which auto modes are disabled
+        self._rate_limit_until: float = 0.0
+        # Server client for pushing state to monitoring server
+        self._server_client: Optional[ServerClient] = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -740,12 +1168,29 @@ class PipelineApp(App):
         with Horizontal(id="main-layout"):
             with VerticalScroll(id="left-pane"):
                 yield Static("Loading...", id="kanban-placeholder")
-            with Vertical(id="right-pane"):
-                yield VerticalScroll(Markdown(
-                    "*Select a feature to view details*", id="detail-view"
-                ))
-                yield Log(id="log-view", auto_scroll=True)
-                yield AgentStatusWidget(self._agent_status, id="agent-status")
+            with Horizontal(id="right-pane"):
+                with VerticalScroll(id="detail-view"):
+                    yield Markdown(
+                        "*Select a feature to view details*", id="detail-markdown"
+                    )
+                with Vertical(id="right-bottom"):
+                    with Vertical(id="log-section"):
+                        yield Static("=== LOG ===", classes="panel-header")
+                        yield Log(id="log-view", auto_scroll=True)
+                    with Vertical(id="plan-section"):
+                        yield Static("=== PLAN ===", classes="panel-header")
+                        yield AgentStatusWidget(
+                            plan_status=self._plan_agent_status,
+                            implement_status=None,
+                            id="plan-status"
+                        )
+                    with Vertical(id="impl-section"):
+                        yield Static("=== IMPL ===", classes="panel-header")
+                        yield AgentStatusWidget(
+                            plan_status=None,
+                            implement_status=self._implement_agent_status,
+                            id="impl-status"
+                        )
 
         # Settings view - hidden by default
         with Vertical(id="settings-view"):
@@ -771,9 +1216,156 @@ class PipelineApp(App):
         except NoMatches:
             pass
         # Auto-refresh every 10 seconds to pick up external changes
-        self.set_interval(10.0, self._auto_refresh)
+        self.set_interval(10.0, self._check_for_changes)
         # Auto-run check every 10 seconds
         self.set_interval(10.0, self._auto_run_check)
+        # Start server connection if configured
+        server_cfg = self._config.server
+        if server_cfg and HAS_WEBSOCKETS and ServerClient is not None:
+            self._server_client = ServerClient(
+                url=server_cfg.url,
+                api_key=server_cfg.api_key,
+                client_id=server_cfg.client_id,
+                on_connect=self._on_server_connected,
+                on_answers_received=self._handle_server_answers,
+                on_set_auto_mode=self._handle_set_auto_mode,
+                on_start_agent=self._handle_start_agent,
+                on_idea_created=self._handle_create_idea,
+            )
+            self._connect_server()
+            self.set_interval(5.0, self._periodic_server_push)
+
+    def _periodic_server_push(self) -> None:
+        """Push current state to server periodically (agent status may change without feature changes)."""
+        if self._server_client and self._server_client.connected:
+            features = getattr(self, "_current_features", [])
+            self._push_to_server(features[:])
+
+    @work(thread=False)
+    async def _connect_server(self) -> None:
+        """Background task: maintain WebSocket connection to monitoring server."""
+        if self._server_client:
+            await self._server_client.reconnect_loop()
+
+    async def _handle_server_answers(self, feature_id: str, answers: list) -> None:
+        """Handle answer_questions message from the server (web UI submitted answers)."""
+        feature = FeatureFile.find(feature_id)
+        if not feature:
+            logger.warning(f"answer_questions: feature {feature_id} not found")
+            return
+        if feature.current_stage != "requested-input":
+            logger.warning(f"answer_questions: feature {feature_id} not in requested-input (is {feature.current_stage})")
+            return
+        for i, a in enumerate(answers):
+            ans_text = a.get("answer", "")
+            if ans_text:
+                feature.answer_question(i, ans_text)
+        feature.add_history("PLAN-INBOX", "Questions answered via web UI")
+        feature.move_to_stage("plan-inbox")
+        self._refresh_board(self.active_board)
+        if self._server_client and self._server_client.connected:
+            features = self._load_features(self.active_board)
+            await self._server_client.push_state(
+                features, self._plan_agent_status, self._implement_agent_status,
+                auto_plan_enabled=self.auto_plan_enabled,
+                auto_impl_enabled=self.auto_implement_enabled,
+            )
+
+    def _handle_set_auto_mode(self, mode: str, enabled: bool) -> None:
+        """Handle set_auto_mode message from the server (web UI toggled auto mode)."""
+        if mode == "plan":
+            self.auto_plan_enabled = enabled
+        elif mode == "impl":
+            self.auto_implement_enabled = enabled
+        self._update_status_bar(self.active_board, self._load_features(self.active_board))
+        # Push updated state back to server
+        if self._server_client and self._server_client.connected:
+            features = self._load_features(self.active_board)
+            self._push_to_server(features[:])
+
+    def _handle_start_agent(self, feature_id: str, action: str) -> None:
+        """Handle start_agent message from the server (web UI triggered plan/implement)."""
+        features = self._load_features(self.active_board)
+        feature = None
+        for f in features:
+            if f.id == feature_id:
+                feature = f
+                break
+        if not feature:
+            logger.warning(f"start_agent: feature {feature_id} not found")
+            return
+        if action not in STAGE_ACTIONS:
+            logger.warning(f"start_agent: unknown action {action}")
+            return
+        if feature.current_stage not in STAGE_ACTIONS[action]:
+            logger.warning(f"start_agent: feature {feature_id} stage {feature.current_stage} not valid for {action}")
+            return
+        if action == "plan" and self._plan_running:
+            logger.warning("start_agent: plan agent already running")
+            return
+        if action == "implement" and self._implement_running:
+            logger.warning("start_agent: implement agent already running")
+            return
+
+        def _do_start():
+            self.selected_feature = feature
+            self._show_log()
+            if action == "plan":
+                self._log_line(f"=== Running PLAN (via web UI) for: {feature.title} ===")
+                self._log_line(f"Stage: {feature.current_stage}")
+                self._log_line("")
+                self._plan_running = True
+                self._run_plan_async(feature)
+            else:
+                self._log_line(f"=== Running IMPLEMENT (via web UI) for: {feature.title} ===")
+                self._log_line(f"Stage: {feature.current_stage}")
+                self._log_line("")
+                self._implement_running = True
+                self._run_implement_async(feature)
+        self.call_from_thread(_do_start)
+
+    def _handle_create_idea(self, title: str, board: str, description: str) -> None:
+        """Handle create_idea message from the server (web UI created a new idea)."""
+        def _do_create():
+            try:
+                feature = FeatureFile.create(board, title, description)
+                logger.info(f"Created new idea: {feature.title} ({feature.id}) in board {board}")
+                self._refresh_board(self.active_board)
+                # Push updated state back to server
+                if self._server_client and self._server_client.connected:
+                    features = self._load_features(self.active_board)
+                    asyncio.create_task(self._server_client.push_state(
+                        features, self._plan_agent_status, self._implement_agent_status,
+                        auto_plan_enabled=self.auto_plan_enabled,
+                        auto_impl_enabled=self.auto_implement_enabled,
+                    ))
+            except Exception as e:
+                logger.warning(f"create_idea: failed to create idea: {e}")
+        self.call_from_thread(_do_create)
+
+    async def _on_server_connected(self) -> None:
+        """Push full board state immediately after connecting to server."""
+        board = self.active_board
+        if board and self._server_client and self._server_client.connected:
+            features = self._load_features(board)
+            await self._server_client.push_state(
+                features, self._plan_agent_status, self._implement_agent_status,
+                auto_plan_enabled=self.auto_plan_enabled,
+                auto_impl_enabled=self.auto_implement_enabled,
+            )
+
+    @work(thread=False)
+    async def _push_to_server(self, features: list) -> None:
+        """Background task: push current feature state to the server."""
+        if self._server_client and self._server_client.connected:
+            try:
+                await self._server_client.push_state(
+                    features, self._plan_agent_status, self._implement_agent_status,
+                    auto_plan_enabled=self.auto_plan_enabled,
+                    auto_impl_enabled=self.auto_implement_enabled,
+                )
+            except Exception:
+                pass
 
     def on_settings_pane_settings_changed(self, event: SettingsPane.SettingsChanged) -> None:
         """Handle settings changes - reload config."""
@@ -900,17 +1492,24 @@ class PipelineApp(App):
         status_text = f" {board}: {total} features"
         if human_count:
             status_text += f" | {human_count} need attention"
-        if self.auto_run_enabled:
-            status_text += " | [green]AUTO-RUN ON[/green] (press e to toggle)"
+        
+        # Show auto modes
+        modes = []
+        if self.auto_plan_enabled:
+            modes.append("[green]PLAN[/green]")
+        if self.auto_implement_enabled:
+            modes.append("[green]IMPL[/green]")
+        if modes:
+            status_text += " | " + " ".join(modes) + " (stop: \\)"
         else:
-            status_text += " | [dim]auto-run off[/dim] (press e to enable)"
+            status_text += " | [dim]auto off[/dim] (plan: ctrl+a, impl: ctrl+d)"
 
         try:
             self.query_one("#status-bar", Static).update(status_text)
         except NoMatches:
             pass
 
-    def _auto_refresh(self) -> None:
+    def _check_for_changes(self) -> None:
         """Periodically check for changes and refresh if needed.
         
         Uses file modification times to detect changes efficiently.
@@ -941,20 +1540,27 @@ class PipelineApp(App):
                 return  # Nothing changed, skip refresh
             
             # Something changed - refresh
+            self._log_line(f"[auto-refresh] Changes detected, refreshing {board}")
             self._current_features = features
             self._prev_snapshot[board] = current_snapshot
             self._prev_mtimes[board] = current_mtimes
             self._refresh_kanban_widgets()
             self._update_status_bar(board, features)
-            
+
+            # Push state to server if connected
+            if self._server_client and self._server_client.connected:
+                self._push_to_server(features[:])
+
             # Always refresh selected feature from disk to show latest content
             if self.selected_feature:
                 refreshed = FeatureFile.find(self.selected_feature.slug)
                 if refreshed:
                     self.selected_feature = refreshed
                     self._update_detail_view()
-        except Exception:
-            pass  # Silently ignore refresh errors
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._log_line(f"[auto-refresh] Error: {e}")
 
     # ------------------------------------------------------------------
     # Right pane detail view
@@ -963,7 +1569,7 @@ class PipelineApp(App):
     def _update_detail_view(self) -> None:
         """Update the right pane Markdown to show the selected feature."""
         try:
-            detail = self.query_one("#detail-view", Markdown)
+            detail = self.query_one("#detail-markdown", Markdown)
         except NoMatches:
             return
 
@@ -996,61 +1602,39 @@ class PipelineApp(App):
         footer_content.update(footer_text)
 
     def _show_detail(self) -> None:
-        """Switch right pane to detail (Markdown) view."""
-        try:
-            detail = self.query_one("#detail-view", Markdown)
-            log = self.query_one("#log-view", Log)
-            
-            # Remove split classes
-            detail.remove_class("split-top")
-            log.remove_class("split-bottom")
-            
-            detail.display = True
-            log.display = False
-        except NoMatches:
-            pass
+        """Detail is always visible now."""
+        pass
 
     def _show_log(self) -> None:
-        """Switch right pane to log view."""
-        try:
-            detail = self.query_one("#detail-view", Markdown)
-            log = self.query_one("#log-view", Log)
-            
-            # Remove split classes
-            detail.remove_class("split-top")
-            log.remove_class("split-bottom")
-            
-            detail.display = False
-            log.display = True
-            log.clear()
-        except NoMatches:
-            pass
+        """Log is always visible now - just flush buffer."""
+        self._flush_log_buffer()
 
     def _show_split(self) -> None:
-        """Show split view with detail on top and log at bottom."""
-        try:
-            detail = self.query_one("#detail-view", Markdown)
-            log = self.query_one("#log-view", Log)
-            
-            # Remove old split classes first
-            detail.remove_class("split-top")
-            log.remove_class("split-bottom")
-            
-            # Add split classes and show both
-            detail.add_class("split-top")
-            detail.display = True
-            
-            log.add_class("split-bottom")
-            log.display = True
-        except NoMatches:
-            pass
+        """No longer needed - both are always visible."""
+        pass
 
     def _log_line(self, text: str) -> None:
-        """Write a line to the log view."""
+        """Write a line to the log view and persist to buffer."""
+        # Always add to buffer
+        self._log_buffer.append(text)
+        # Keep buffer manageable
+        if len(self._log_buffer) > 1000:
+            self._log_buffer = self._log_buffer[-500:]
+        
         try:
             log = self.query_one("#log-view", Log)
             log.write_line(text)
             log.scroll_end()  # Auto-scroll to bottom
+        except NoMatches:
+            pass
+
+    def _flush_log_buffer(self) -> None:
+        """Flush log buffer to view when log is shown."""
+        try:
+            log = self.query_one("#log-view", Log)
+            for line in self._log_buffer[-100:]:  # Show last 100 lines
+                log.write_line(line)
+            log.scroll_end()
         except NoMatches:
             pass
 
@@ -1072,25 +1656,18 @@ class PipelineApp(App):
         self.notify("Board refreshed", severity="information")
 
     def action_toggle_log_detail(self) -> None:
-        """Cycle through: detail -> log -> split -> detail."""
-        modes = ["detail", "log", "split"]
-        current_idx = modes.index(self.right_pane_mode) if self.right_pane_mode in modes else 0
-        next_idx = (current_idx + 1) % len(modes)
-        self.right_pane_mode = modes[next_idx]
-        
-        if self.right_pane_mode == "split":
-            self._show_split()
-        elif self.right_pane_mode == "log":
-            self._show_log()
-        else:
-            self._show_detail()
-            self._update_detail_view()
+        """Now a no-op - both detail and log are always visible. Focus the log view."""
+        try:
+            log = self.query_one("#log-view", Log)
+            log.focus()
+        except NoMatches:
+            pass
 
     def action_toggle_focus(self) -> None:
         """Toggle focus between left and right panes."""
         try:
             left = self.query_one("#left-pane")
-            right_detail = self.query_one("#detail-view")
+            right_detail = self.query_one("#detail-markdown")
         except NoMatches:
             return
 
@@ -1163,6 +1740,56 @@ class PipelineApp(App):
             if item_list:
                 item_list[0].focus()
 
+    def action_answer_questions(self) -> None:
+        """Answer questions raised by the planning agent."""
+        f = self.selected_feature
+        if not f:
+            self.notify("No feature selected", severity="warning")
+            return
+        
+        if f.current_stage != "requested-input":
+            self.notify("No questions to answer for this feature", severity="warning")
+            return
+        
+        questions = f.questions
+        if not questions:
+            self.notify("No questions pending", severity="warning")
+            return
+        
+        self.push_screen(AnswerQuestionsModal(f), callback=self._on_questions_answered)
+
+    def _on_questions_answered(self, result: bool | None) -> None:
+        """Called after questions are answered."""
+        if result:
+            self.notify("Questions answered, ready to continue", severity="information")
+            self._refresh_board(self.active_board)
+            self._update_detail_view()
+
+    def action_move(self) -> None:
+        """Open modal to move feature to any stage."""
+        f = self.selected_feature
+        if not f:
+            self.notify("No feature selected", severity="warning")
+            return
+
+        def handle_move(stage: str | None) -> None:
+            if stage is None:
+                return
+            old_stage = f.current_stage
+            if stage == old_stage:
+                self.notify(f"Already in {stage}", severity="information")
+                return
+            f.add_history("MOVED", f"Manual move: {old_stage} -> {stage}")
+            f.save()
+            f.move_to_stage(stage)
+            self.notify(f"Moved: {f.title} -> {stage}", severity="information")
+            refreshed = FeatureFile.find(f.slug)
+            self.selected_feature = refreshed
+            self._refresh_board(self.active_board)
+            self._update_detail_view()
+
+        self.push_screen(MoveFeatureModal(f.current_stage), callback=handle_move)
+
     def action_approve(self) -> None:
         """Approve the selected feature (move to plan-inbox or complete it)."""
         f = self.selected_feature
@@ -1220,10 +1847,10 @@ class PipelineApp(App):
         runner = AgentRunner(config)
 
         context = (
-            f"# Feature Iteration: {f.title}\n\n"
+            f"**Feature Iteration: {f.title}**\n\n"
             f"The feature file is at: `{f.path.name}`\n\n"
-            f"## Current Description:\n{f.get_section('Description') or '(no description)'}\n\n"
-            f"## Current Plan:\n{f.plan or '(no plan yet)'}\n\n"
+            f"**Current Description:**\n{f.get_section('Description') or '(no description)'}\n\n"
+            f"**Current Plan:**\n{f.plan or '(no plan yet)'}\n\n"
             f"Please discuss and iterate on this feature with the user. "
             f"You can update the Description and Plan sections of the feature file based on your discussion. "
             f"When finished, let the user know they're done."
@@ -1314,8 +1941,14 @@ class PipelineApp(App):
                 f.save()
                 f.move_to_stage("rejected")
                 self.notify(f"Rejected: {f.title}", severity="information")
+            # approved goes back to plan-inbox
+            elif f.current_stage == "approved":
+                f.add_history("REJECTED", f"Rejected: {reason}")
+                f.save()
+                f.move_to_stage("plan-inbox")
+                self.notify(f"Sent back to plan-inbox: {f.title}", severity="information")
             else:
-                # Most stages go back to implementing for fixes
+                # Most other stages go back to implementing for fixes
                 f.add_history("REJECTED", f"Rejected: {reason}")
                 f.save()
                 f.move_to_stage("implementing")
@@ -1352,6 +1985,21 @@ class PipelineApp(App):
         self._refresh_board(self.active_board)
         self._update_detail_view()
 
+    def action_start(self) -> None:
+        """Start pipeline: plan from plan-inbox/requested-input, impl from approved/spec-writing/implementing."""
+        f = self.selected_feature
+        if not f:
+            self.notify("No feature selected", severity="warning")
+            return
+        
+        stage = f.current_stage
+        if stage in ("plan-inbox", "reviewing-plan", "requested-input"):
+            self.action_plan_only()
+        elif stage in ("approved", "spec-writing", "implementing"):
+            self.action_implement_only()
+        else:
+            self.notify(f"Cannot start from {stage}", severity="warning")
+
     def action_promote(self, skip_awaiting: bool = False) -> None:
         """Promote a feature to the next stage."""
         f = self.selected_feature
@@ -1375,7 +2023,7 @@ class PipelineApp(App):
             # Update design doc if design_ref is set
             if f.design_ref:
                 try:
-                    from runner import AgentRunner
+                    from runner import AgentRunner, RateLimitError
                     runner = AgentRunner(self._config)
                     update_design_doc(f, runner)
                 except Exception as e:
@@ -1410,8 +2058,7 @@ class PipelineApp(App):
         
         self.notify(f"Starting pipeline from {stage}...", severity="information")
         
-        # Auto-switch to log view to see pipeline output
-        self.right_pane_mode = "log"
+        # Log is always visible now, just ensure log is focused
         self._show_log()
         self._log_line(f"Starting pipeline from {stage}...")
         
@@ -1429,8 +2076,13 @@ class PipelineApp(App):
         
         runner = AgentRunner(self._config)
         
+        # Choose status based on stage
+        if stage in ("plan-inbox", "reviewing-plan", "spec-writing", "approved", "ideas", "inbox"):
+            status = self._plan_agent_status
+        else:
+            status = self._implement_agent_status
+        
         # Set up status for display
-        status = self._agent_status
         status.lines = []
         status.phase = ""
         status.started_at = 0.0
@@ -1467,60 +2119,175 @@ class PipelineApp(App):
         except Exception as e:
             self.call_from_thread(self.notify, f"Pipeline failed: {e}", severity="error")
 
-    def action_toggle_auto_run(self) -> None:
-        """Toggle automatic pipeline execution for approved features."""
-        self.auto_run_enabled = not self.auto_run_enabled
-        if self.auto_run_enabled:
-            self.notify("Auto-run enabled - will process approved features automatically", severity="information")
+    def action_toggle_auto_plan(self) -> None:
+        """Toggle automatic planning for plan-inbox features."""
+        self.auto_plan_enabled = not self.auto_plan_enabled
+        if self.auto_plan_enabled:
+            self.notify("Auto-Plan enabled - will process plan-inbox features", severity="information")
         else:
-            self.notify("Auto-run disabled", severity="information")
+            self.auto_plan_enabled = False
+            self.notify("Auto-Plan disabled", severity="information")
+        self._update_status_bar(self.active_board, self._load_features(self.active_board))
+
+    def _handle_rate_limit(self, mode: str) -> None:
+        """Handle rate limiting by pausing auto mode for a cooldown period."""
+        import datetime
+        backoff_minutes = 5
+        self._rate_limit_until = time.time() + (backoff_minutes * 60)
+        
+        if mode == "plan":
+            self.notify(f"Rate limited! Auto-Plan pausing for {backoff_minutes} min", severity="warning")
+        else:
+            self.notify(f"Rate limited! Auto-Impl pausing for {backoff_minutes} min", severity="warning")
+        
+        self._update_status_bar(self.active_board, self._load_features(self.active_board))
+
+    def action_toggle_auto_implement(self) -> None:
+        """Toggle automatic implementation for approved features."""
+        self.auto_implement_enabled = not self.auto_implement_enabled
+        if self.auto_implement_enabled:
+            self.notify("Auto-Implement enabled - will process approved features", severity="information")
+        else:
+            self.auto_implement_enabled = False
+            self.notify("Auto-Implement disabled", severity="information")
+        self._update_status_bar(self.active_board, self._load_features(self.active_board))
+
+    def action_stop_auto(self) -> None:
+        """Stop both auto-plan and auto-implement modes."""
+        was_plan = self.auto_plan_enabled
+        was_impl = self.auto_implement_enabled
+        self.auto_plan_enabled = False
+        self.auto_implement_enabled = False
+        if was_plan or was_impl:
+            self.notify("All auto-modes stopped", severity="information")
+        else:
+            self.notify("No auto-modes running", severity="information")
         self._update_status_bar(self.active_board, self._load_features(self.active_board))
 
     # Auto-run settings
-    AUTO_RUN_INTERVAL = 1800  # 30 minutes between runs
-    _last_auto_run_time: Optional[float] = None
+    AUTO_RUN_INTERVAL = 60  # 60 seconds between runs
+    _last_auto_plan_time: Optional[float] = None
+    _last_auto_implement_time: Optional[float] = None
 
     def _auto_run_check(self) -> None:
-        """Check for plan-inbox features and auto-run pipeline if enabled.
+        """Check for features and auto-run if enabled.
         
-        After a run completes, waits 30 minutes before picking another.
+        Auto-Plan runs on plan-inbox/reviewing-plan/requested-input.
+        Auto-Implement runs on approved/spec-writing.
+        Each mode runs independently and in parallel.
         """
-        if not self.auto_run_enabled:
-            return
-        if self.running:
+        # Check if we're rate limited
+        if time.time() < self._rate_limit_until:
+            remaining = int(self._rate_limit_until - time.time())
+            if remaining % 60 == 0:  # Log every minute
+                self._log_line(f"[rate-limit] Paused for {remaining}s more")
             return
         
-        # Check if we should wait since last run
+        # Auto-Plan loop
+        if self.auto_plan_enabled:
+            self._auto_plan_check()
+        
+        # Auto-Implement loop  
+        if self.auto_implement_enabled:
+            self._auto_implement_check()
+
+    def _auto_plan_check(self) -> None:
+        """Check for plan-inbox features and auto-run planning if enabled."""
+        # Don't run if a plan pipeline is already running
+        if self._plan_running:
+            logger.info("[auto-plan] Skipping - planning already in progress")
+            return
+        
         now = time.time()
-        if self._last_auto_run_time is not None:
-            elapsed = now - self._last_auto_run_time
+        if self._last_auto_plan_time is not None:
+            elapsed = now - self._last_auto_plan_time
             if elapsed < self.AUTO_RUN_INTERVAL:
-                return  # Still waiting
+                return  # Silent - no need to spam logs
+        
+        logger.info(f"[auto-plan] Checking boards: {self._config.boards}")
         
         for board in self._config.boards:
-            # Check plan-inbox and reviewing-plan (features ready to process)
-            inbox = FeatureFile.list_all(board=board, stage="plan-inbox")
-            reviewing = FeatureFile.list_all(board=board, stage="reviewing-plan")
-            candidates = inbox + reviewing
+            candidates = []
+            stage_counts = {}
+            # Don't include "requested-input" - that's for waiting on human answers
+            plan_stages = [s for s in STAGE_ACTIONS["plan"] if s != "requested-input"]
+            for s in plan_stages:
+                found = FeatureFile.list_all(board=board, stage=s)
+                candidates.extend(found)
+                stage_counts[s] = len(found)
+
+            logger.info(f"[auto-plan] {board}: {', '.join(f'{s}={n}' for s, n in stage_counts.items())}")
+            
+            if not candidates:
+                continue
+                
             for f in candidates:
-                if f.slug in self._auto_queued:
+                if f.slug in self._auto_plan_queued:
                     continue
-                self._last_auto_run_time = now
-                self._auto_queued.add(f.slug)
-                self._log_line(f"[auto] Found feature to process: {f.title} ({f.current_stage})")
-                self._auto_run_feature(f)
+                self._last_auto_plan_time = now
+                self._auto_plan_queued.add(f.slug)
+                logger.info(f"[auto-plan] Starting: {f.title} ({f.current_stage})")
+                self._auto_plan_feature(f)
                 break
             else:
                 continue
             break
 
-    def _auto_run_feature(self, feature: FeatureFile) -> None:
-        """Auto-run pipeline on a feature (internal)."""
+    def _auto_implement_check(self) -> None:
+        """Check for approved features and auto-run implementation if enabled.
+        
+        Checks phases in reverse order so we can pick up where we left off
+        after rate limiting or interruption:
+        - review (has fix feedback to apply)
+        - testing 
+        - implementing
+        - spec-writing
+        - approved (start fresh)
+        """
+        # Don't run if an implement pipeline is already running
+        if hasattr(self, '_implement_running') and self._implement_running:
+            logger.info("[auto-impl] Skipping - implementation already in progress")
+            return
+        
+        now = time.time()
+        if self._last_auto_implement_time is not None:
+            elapsed = now - self._last_auto_implement_time
+            if elapsed < self.AUTO_RUN_INTERVAL:
+                return
+
+        logger.info(f"[auto-impl] Checking boards: {self._config.boards}")
+        
+        for board in self._config.boards:
+            # Check in reverse order to pick up from where we left off
+            for stage in ["review", "testing", "implementing", "spec-writing", "approved"]:
+                candidates = FeatureFile.list_all(board=board, stage=stage)
+                logger.info(f"[auto-impl] Board '{board}', stage '{stage}': {len(candidates)} features")
+                for f in candidates:
+                    if f.slug in self._auto_implement_queued:
+                        continue
+                    self._last_auto_implement_time = now
+                    self._auto_implement_queued.add(f.slug)
+                    logger.info(f"[auto-impl] Starting: {f.title} ({f.current_stage})")
+                    self._auto_implement_feature(f)
+                    return  # Only process one feature at a time
+
+    def _auto_plan_feature(self, feature: FeatureFile) -> None:
+        """Auto-run planning on a feature."""
         self._show_log()
-        self._log_line(f"=== Auto-running pipeline for: {feature.title} ===")
+        self._log_line(f"=== Auto-Planning: {feature.title} ===")
         self._log_line(f"Stage: {feature.current_stage}")
         self._log_line("")
-        self._run_pipeline_async(feature)
+        self._plan_running = True
+        self._run_plan_async(feature)
+
+    def _auto_implement_feature(self, feature: FeatureFile) -> None:
+        """Auto-run implementation on a feature."""
+        self._show_log()
+        self._log_line(f"=== Auto-Implementing: {feature.title} ===")
+        self._log_line(f"Stage: {feature.current_stage}")
+        self._log_line("")
+        self._implement_running = True
+        self._run_implement_async(feature)
 
     def action_run_pipeline(self) -> None:
         """Run the full automated pipeline on the selected feature."""
@@ -1550,14 +2317,76 @@ class PipelineApp(App):
         # blocks in a thread and we show completion status.
         self._run_pipeline_async(f)
 
+    def action_plan_only(self) -> None:
+        """Run planning phase only on selected feature."""
+        self.action_run_plan_only()
+
+    def action_implement_only(self) -> None:
+        """Run implementation phase only on selected feature."""
+        self.action_run_implement_only()
+
+    def action_run_plan_only(self) -> None:
+        """Run planning phase only on selected feature."""
+        f = self.selected_feature
+        if not f:
+            self.notify("No feature selected", severity="warning")
+            return
+        if f.current_stage not in STAGE_ACTIONS["plan"]:
+            self.notify(
+                f"Cannot run plan from {f.current_stage} "
+                f"(allowed: {', '.join(STAGE_ACTIONS['plan'])})",
+                severity="warning",
+            )
+            return
+        if self._plan_running:
+            self.notify("Plan pipeline already running", severity="warning")
+            return
+
+        self._show_log()
+        self._log_line(f"=== Running PLAN only for: {f.title} ===")
+        self._log_line(f"Stage: {f.current_stage}")
+        self._log_line("")
+        self._run_plan_async(f)
+
+    def action_run_implement_only(self) -> None:
+        """Run implementation phase only on selected feature."""
+        f = self.selected_feature
+        if not f:
+            self.notify("No feature selected", severity="warning")
+            return
+        if f.current_stage not in STAGE_ACTIONS["implement"]:
+            self.notify(
+                f"Cannot run implementation from {f.current_stage} "
+                f"(allowed: {', '.join(STAGE_ACTIONS['implement'])})",
+                severity="warning",
+            )
+            return
+        if self._implement_running:
+            self.notify("Implement pipeline already running", severity="warning")
+            return
+
+        self._show_log()
+        self._log_line(f"=== Running IMPLEMENT only for: {f.title} ===")
+        self._log_line(f"Stage: {f.current_stage}")
+        self._log_line("")
+        self._run_implement_async(f)
+
     @work(thread=True, exclusive=True, group="pipeline")
     def _run_pipeline_async(self, feature: FeatureFile) -> None:
         """Run the pipeline in a background thread."""
-        self.running = True
+        # Choose status and running flag based on feature stage
+        if feature.current_stage in ("plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing"):
+            status = self._plan_agent_status
+            self._plan_running = True
+            self.running = True
+        else:
+            status = self._implement_agent_status
+            self._implement_running = True
+            self.running = True
+        
         runner = AgentRunner(self._config)
-
+        
         # Reset and populate agent status for this run
-        status = self._agent_status
         status.lines = []
         status.phase = ""
         status.started_at = 0.0
@@ -1576,19 +2405,135 @@ class PipelineApp(App):
             )
         finally:
             self.running = False
+            self._plan_running = False
+            self._implement_running = False
             status.running = False
-            self.app.call_from_thread(self._on_pipeline_done, feature.slug)
+            # Determine which callback based on stage
+            if feature.current_stage in ("plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing"):
+                self.app.call_from_thread(self._on_plan_done, feature.slug)
+            else:
+                self.app.call_from_thread(self._on_implement_done, feature.slug)
 
-    def _on_pipeline_done(self, slug: str) -> None:
-        """Called on main thread after pipeline completes."""
-        self._auto_queued.discard(slug)
+    @work(thread=True, exclusive=True, group="plan")
+    def _run_plan_async(self, feature: FeatureFile) -> None:
+        """Run planning phase in background thread."""
+        import traceback
+        self.running = True
+        self._plan_running = True
+        runner = AgentRunner(self._config)
+        
+        status = self._plan_agent_status
+        status.lines = []
+        status.phase = ""
+        status.started_at = 0.0
+        status.agent = runner.agent.name
+        status.feature_slug = feature.slug
+        status.running = True
+        
+        try:
+            from phases import run_planning, run_plan_review
+            # Run planning loop
+            while feature.current_stage in ("plan-inbox", "requested-input"):
+                plan_complete = run_planning(feature, runner, status=status)
+                if not plan_complete:
+                    break
+                if feature.current_stage != "reviewing-plan":
+                    break
+            # Run plan review if in reviewing-plan
+            if feature.current_stage == "reviewing-plan":
+                verdict, feedback = run_plan_review(feature, runner, status=status)
+                if verdict == "PASS":
+                    feature.move_to_stage("approved")
+                    feature.add_history("PROMOTED", "Plan auto-approved")
+                    feature.save()
+                    self.app.call_from_thread(self._log_line, "=== Plan approved ===")
+                else:
+                    # Plan review failed - move back to plan-inbox with feedback
+                    feature.add_history("PLAN_REVIEW_FAILED", f"Feedback: {feedback}")
+                    feature.save()
+                    feature.move_to_stage("plan-inbox")
+                    self.app.call_from_thread(self._log_line, f"=== Plan rejected: {feedback[:100]}... ===")
+            self.app.call_from_thread(self._log_line, "=== Planning completed ===")
+        except RateLimitError as e:
+            self.app.call_from_thread(self._log_line, f"=== Rate limited: {e} ===")
+            self.app.call_from_thread(self._handle_rate_limit, "plan")
+        except Exception as e:
+            tb = traceback.format_exc()
+            self.app.call_from_thread(self._log_line, f"=== Planning failed: {e} ===")
+            self.app.call_from_thread(self._log_line, f"=== Traceback:\n{tb} ===")
+        finally:
+            self.running = False
+            self._plan_running = False
+            status.running = False
+            self.app.call_from_thread(self._on_plan_done, feature.slug)
+
+    @work(thread=True, exclusive=True, group="implement")
+    def _run_implement_async(self, feature: FeatureFile) -> None:
+        """Run implementation phase in background thread."""
+        self.running = True
+        self._implement_running = True
+        runner = AgentRunner(self._config)
+        
+        status = self._implement_agent_status
+        status.lines = []
+        status.phase = ""
+        status.started_at = 0.0
+        status.agent = runner.agent.name
+        status.feature_slug = feature.slug
+        status.running = True
+        
+        try:
+            from phases import run_spec_writing, run_implementing, run_writing_tests, run_review_impl
+            self.app.call_from_thread(self._log_line, f"[impl] Starting spec_writing for {feature.title}")
+            run_spec_writing(feature, runner, status=status)
+            self.app.call_from_thread(self._log_line, f"[impl] Starting implementing (current stage: {feature.current_stage})")
+            run_implementing(feature, runner, status=status)
+            self.app.call_from_thread(self._log_line, f"[impl] After implementing, stage: {feature.current_stage}")
+            self.app.call_from_thread(self._log_line, f"[impl] Starting writing_tests")
+            run_writing_tests(feature, runner, status=status)
+            self.app.call_from_thread(self._log_line, f"[impl] Starting review_impl")
+            verdict, _ = run_review_impl(feature, runner, status=status)
+            self.app.call_from_thread(self._log_line, f"[impl] Review verdict: {verdict}")
+            if verdict == "PASS":
+                feature.move_to_stage("final-human-approval")
+                feature.add_history("PROMOTED", "Implementation approved")
+                feature.save()
+                self.app.call_from_thread(self._log_line, f"[impl] Moved to final-human-approval")
+            self.app.call_from_thread(self._log_line, "=== Implementation completed ===")
+        except RateLimitError as e:
+            self.app.call_from_thread(self._log_line, f"=== Rate limited: {e} ===")
+            self.app.call_from_thread(self._handle_rate_limit, "implement")
+        except Exception as e:
+            self.app.call_from_thread(self._log_line, f"=== Implementation failed: {e} ===")
+        finally:
+            self.running = False
+            self._implement_running = False
+            status.running = False
+            self.app.call_from_thread(self._on_implement_done, feature.slug)
+
+    def _on_plan_done(self, slug: str) -> None:
+        """Called on main thread after planning completes."""
+        self._plan_running = False
+        self._auto_plan_queued.discard(slug)
         refreshed = FeatureFile.find(slug)
         if refreshed:
             self.selected_feature = refreshed
         self._refresh_board(self.active_board)
         self._update_detail_view()
         self._show_detail()
-        self.notify("Pipeline run finished", severity="information")
+        self.notify("Planning finished", severity="information")
+
+    def _on_implement_done(self, slug: str) -> None:
+        """Called on main thread after implementation completes."""
+        self._implement_running = False
+        self._auto_implement_queued.discard(slug)
+        refreshed = FeatureFile.find(slug)
+        if refreshed:
+            self.selected_feature = refreshed
+        self._refresh_board(self.active_board)
+        self._update_detail_view()
+        self._show_detail()
+        self.notify("Implementation finished", severity="information")
 
     def action_new_board(self) -> None:
         """Open modal to create a new board."""
@@ -1638,7 +2583,7 @@ class PipelineApp(App):
             )
 
     def _on_feature_created(self, slug: str, board: str) -> None:
-        """Called on main thread after feature file is created — launches interactive planning."""
+        """Called on main thread after feature file is created."""
         # Switch to the board tab if not already there
         if self.active_board != board:
             try:
@@ -1653,37 +2598,7 @@ class PipelineApp(App):
             self.selected_feature = feature
         self._refresh_board(board)
         self._update_detail_view()
-
-        if not feature:
-            self.notify(f"Feature created: {slug}", severity="information")
-            return
-
-        # Suspend the TUI and run an interactive design planning session
-        template = _load_prompt("plan.md")
-        prompt = template.format(
-            title=feature.title,
-            description=feature.get_section("Description") or "(no description)",
-            filepath=feature.path,
-        )
-
-        with self.suspend():
-            AgentRunner(self._config).interactive(
-                workdir=feature.path.parent,
-                initial_message=prompt,
-            )
-
-        # After the user exits the planning session, reload and finalize
-        refreshed = FeatureFile.find(slug)
-        if refreshed:
-            refreshed.add_history("PLANNING", "Design discussed interactively with user")
-            refreshed.save()
-            if refreshed.plan:
-                refreshed.move_to_stage("approved")
-            self.selected_feature = refreshed
-
-        self._refresh_board(board)
-        self._update_detail_view()
-        self.notify(f"Planning complete: {slug}", severity="information")
+        self.notify(f"Feature created: {slug}", severity="information")
 
 
 # ---------------------------------------------------------------------------
@@ -1691,9 +2606,47 @@ class PipelineApp(App):
 # ---------------------------------------------------------------------------
 
 
+def _acquire_lock() -> Path:
+    """Acquire a PID lockfile in .mad/. Exits if another instance is running."""
+    config = Config()
+    lockfile = config.mad_dir / "pipeline.lock"
+    if lockfile.exists():
+        try:
+            old_pid = int(lockfile.read_text().strip())
+            # Check if the process is still alive
+            os.kill(old_pid, 0)
+            # Process exists — bail out
+            print(f"Another pipeline instance is already running (PID {old_pid}).")
+            print(f"If this is stale, remove {lockfile}")
+            sys.exit(1)
+        except (ValueError, ProcessLookupError):
+            # PID is invalid or process is dead — stale lock
+            pass
+        except PermissionError:
+            # Process exists but we can't signal it — it's running
+            print(f"Another pipeline instance is already running.")
+            sys.exit(1)
+    lockfile.write_text(str(os.getpid()))
+    return lockfile
+
+
+def _release_lock(lockfile: Path):
+    """Remove the lockfile if it's ours."""
+    try:
+        if lockfile.exists():
+            pid = int(lockfile.read_text().strip())
+            if pid == os.getpid():
+                lockfile.unlink()
+    except Exception:
+        pass
+
+
 def run_tui():
+    lockfile = _acquire_lock()
+    atexit.register(_release_lock, lockfile)
     app = PipelineApp()
     app.run()
+    _release_lock(lockfile)
 
 
 if __name__ == "__main__":

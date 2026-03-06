@@ -1,0 +1,19 @@
+Looking at this feature plan, I need to verify the current codebase to properly assess feasibility and completeness.
+
+Let me check the relevant files to understand the current implementation:
+Let me look at the current feature detail structure in client.html:
+Based on my analysis of the feature plan and the current codebase, I have identified a critical gap:
+
+**VERDICT: FAIL**
+
+**FEEDBACK:**
+
+- **Missing data fields in Web UI**: The `FeatureSummary` struct in `server/hub.go:31-42` does NOT include `plan`, `impl_spec`, `test_spec`, or `impl_notes` fields. The current web UI only receives: Title, Stage, Board, Created, ID, Description, History, Questions, AvailableActions. The plan fails to address that these additional fields must be added to `FeatureSummary` and passed from the pipeline client to enable collapsible rendering in the web UI.
+
+- **Incomplete Web UI section list**: The plan lists only Title, Stage/Board/Created/ID, Description, History, Questions (conditional), and Available Actions for the web UI. However, the original description explicitly states "All other sections (plan, impl_spec, test_spec, impl_notes, etc.) default to collapsed" - this applies to both TUI and web UI. The plan omits these sections for the web UI entirely.
+
+- **Naming inconsistency**: The plan uses "Questions for Human" in TUI but just "Questions" in web UI. Should be consistent (preferably "Questions" to match the field name).
+
+- **Pipeline Log clarification needed**: The plan excludes Pipeline Log saying "confirmed by human", but the current TUI does show this section. Verify if exclusion is correct or if it should be included as collapsed by default.
+
+- **Questions condition mismatch**: The plan says "Show as collapsible when stage !== 'requested-input', render inline (as-is) when stage === 'requested-input'" but the current web UI only renders the questions form when `stage === 'requested-input'`. The conditional rendering logic needs clarification.

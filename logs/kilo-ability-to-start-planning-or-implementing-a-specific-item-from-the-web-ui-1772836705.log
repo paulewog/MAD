@@ -1,0 +1,151 @@
+# Test Specification: Ability to Start Planning or Implementing from Web UI
+
+## 1. Behaviors That MUST Be Verified
+
+### 1.1 STAGE_ACTIONS Configuration
+- The `STAGE_ACTIONS` dictionary in `pipeline/state.py` correctly defines the allowed stages for each action
+- **Plan action** is allowed for stages: "plan-inbox", "reviewing-plan", "requested-input", "approved"
+- **Implement action** is allowed for stages: "approved", "spec-writing"
+- The dictionary structure matches the expected format with action keys mapping to stage arrays
+
+### 1.2 TUI Uses Shared Configuration
+- The TUI `action_plan_only()` method returns True only for stages in STAGE_ACTIONS["plan"]
+- The TUI `action_implement_only()` method returns True only for stages in STAGE_ACTIONS["implement"]
+- The TUI `_auto_plan_check()` references STAGE_ACTIONS["plan"] instead of hardcoded values
+- The TUI `_auto_implement_check()` references STAGE_ACTIONS["implement"] instead of hardcoded values
+- The refactored TUI produces identical enable/disable behavior for action buttons as the previous hardcoded implementation
+
+### 1.3 State Push Includes Actions Data
+- When Python pushes state to Go server, the payload includes a `stage_actions` field containing the full STAGE_ACTIONS dictionary
+- For each feature in the features list, the state includes an `available_actions` array
+- `available_actions` contains "plan" when: the feature's stage is in STAGE_ACTIONS["plan"] AND the plan agent is not currently running
+- `available_actions` contains "implement" when: the feature's stage is in STAGE_ACTIONS["implement"] AND the implement agent is not currently running
+- When neither action is available, `available_actions` is an empty array
+
+### 1.4 Start Agent Endpoint Functionality
+- POST to `/api/clients/{id}/features/{fid}/start-agent` with body `{"action": "plan"}` succeeds when all conditions are met
+- POST to `/api/clients/{id}/features/{fid}/start-agent` with body `{"action": "implement"}` succeeds when all conditions are met
+- The endpoint returns HTTP 200 OK with a success response when validation passes
+- A WebSocket message of type "start_agent" is sent to the connected pipeline client containing `feature_id` and `action`
+- The Go server correctly looks up the client by ID from the URL path
+- The Go server correctly finds the feature by fid within the client's feature list
+
+### 1.5 Server-Side Validation
+- Returns HTTP 400 Bad Request when the requested action is not valid (not "plan" or "implement")
+- Returns HTTP 400 Bad Request when the feature's current stage is not in the allowed stages for the requested action
+- Returns HTTP 409 Conflict when the plan agent is already running and "plan" action is requested
+- Returns HTTP 409 Conflict when the implement agent is already running and "implement" action is requested
+- Returns HTTP 404 Not Found when no client exists with the specified ID
+- Returns HTTP 404 Not Found when the client exists but no feature exists with the specified fid
+
+### 1.6 Python Client Receives and Handles start_agent Message
+- The Python server_client correctly registers an `on_start_agent` callback handler
+- When a WebSocket message with type "start_agent" is received, the handler extracts `feature_id` and `action` from the data
+- The callback is invoked with the correct feature_id and action values
+- The handler correctly distinguishes between "plan" and "implement" actions
+
+### 1.7 TUI Executes Requested Action
+- When the `on_start_agent` callback receives "plan" action, it triggers the planning workflow for the specified feature
+- When the `on_start_agent` callback receives "implement" action, it triggers the implementation workflow for the specified feature
+- The TUI validates the stage is still allowed before executing (defensive check)
+- The TUI validates the respective agent is not already busy before executing (defensive check)
+- The TUI uses `call_from_thread()` to safely interact with the UI from the WebSocket handler thread
+- The feature is correctly identified by the feature_id from the callback
+
+### 1.8 Web UI Action Buttons
+- Feature cards in the web UI display "Start Planning" button when "plan" is in the feature's `available_actions`
+- Feature cards display "Start Implementing" button when "implement" is in the feature's `available_actions`
+- Buttons are rendered as disabled (not clickable) when `available_actions` is empty
+- Buttons are rendered as disabled when the respective action is not in `available_actions`
+- Clicking a button sends a POST request to the correct endpoint with the appropriate action
+- After clicking a button, the button shows a loading or disabled state
+- The button returns to normal state when the next state update confirms the agent is now running
+
+### 1.9 Go Hub Stores and Exposes Stage Actions
+- The Go `ClientState` struct includes a `StageActions` field to store the stage_actions from Python
+- The Go `ClientState` includes per-feature `AvailableActions` in the feature data
+- The API response for client state (`GET /api/clients/{id}`) includes `stage_actions` at the client level
+- The API response includes `available_actions` for each feature in the features array
+
+---
+
+## 2. Edge Cases
+
+### 2.1 Empty/Null Inputs
+- POST with empty body returns appropriate 400 error
+- POST with missing "action" field returns appropriate 400 error
+- POST with null action field returns appropriate 400 error
+- Client ID in URL is empty string
+- Feature ID in URL is empty string
+
+### 2.2 Boundary Conditions
+- Client has zero features in the features list
+- Feature has an unrecognized stage (not in any STAGE_ACTIONS list)
+- Action requested is a valid string but not "plan" or "implement"
+- Client has no WebSocket connection (not connected)
+- Client was previously connected but disconnected after state push
+
+### 2.3 Invalid States
+- Feature's stage changes between state push and start_agent request (race condition)
+- Agent becomes busy between state push and start_agent request (race condition)
+- Feature is deleted from client's state between state push and start_agent request
+- Client disconnects while processing start_agent request
+
+### 2.4 Concurrent Operations
+- Multiple start_agent requests for the same feature arrive simultaneously
+- Start_agent request arrives while the same action is currently executing
+- Start_agent request arrives for a different feature while an agent is running
+- State update arrives while start_agent request is being processed
+
+### 2.5 Error Conditions
+- WebSocket message fails to send to client
+- Client fails to process start_agent command
+- TUI fails to find the feature by ID in its internal state
+- TUI action fails to start (e.g., feature no longer exists in local state)
+
+---
+
+## 3. What Constitutes Failure
+
+### 3.1 Criteria for Test Failure
+- The start_agent endpoint does not return expected HTTP status codes
+- The wrong HTTP status code is returned for a given validation failure
+- WebSocket message is not sent to the client after successful validation
+- WebSocket message contains incorrect feature_id or action
+- The TUI does not execute the correct action (plan vs implement)
+- The TUI executes an action when it should have been blocked
+- The TUI fails to execute an action when it should have been allowed
+- The web UI displays incorrect buttons or button states
+- The API response missing required fields (stage_actions, available_actions)
+
+### 3.2 Error Messages Expected
+- 400 response should include a message indicating invalid action or stage
+- 404 response should indicate client or feature not found
+- 409 response should indicate the agent is busy
+- Web UI displays appropriate error messages from the server response
+
+### 3.3 Rollback Behavior
+- If start_agent validation fails, no WebSocket message is sent and no state change occurs
+- If WebSocket send fails, the HTTP response should indicate failure (500 error)
+- If TUI action fails to start, no error is returned to the caller (fire-and-forget from server perspective)
+
+---
+
+## 4. Out of Scope
+
+### 4.1 Explicitly Not Tested
+- **Visual/UI assertions**: Colors, fonts, layout, button styling, hover effects, animations
+- **UI timing**: Exact timing of button appearance, animation durations, transition delays
+- **Performance benchmarks**: Response time under load, concurrent request limits, memory usage
+- **Network reliability**: Connection retries, timeouts, reconnection logic (covered by existing integration tests)
+- **TUI internal rendering**: How the TUI displays features, progress bars, status updates
+- **Browser-specific behavior**: Cross-browser compatibility, mobile responsiveness
+- **Authentication/Authorization**: Token validation, user permissions, session management (assumed handled elsewhere)
+- **Database persistence**: How state is stored, migration of features between stages in database
+- **Logging and monitoring**: Log message formats, metrics collection, tracing
+- **Error recovery in TUI**: What happens when TUI crashes during action execution
+- **Partial implementation states**: What happens if an action is started but TUI is closed
+- **Historical state**: Viewing past actions, action history, audit trails
+- **Concurrent client connections**: Multiple web UI clients viewing the same client state
+- **Real-time sync**: How quickly state updates propagate to all connected clients
+- **Feature name/special characters**: How features with unusual names are handled in UI

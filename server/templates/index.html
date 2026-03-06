@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MAD Pipeline Dashboard</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#0d1117">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="/static/icon-192.png">
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+            background: #0d1117;
+            color: #c9d1d9;
+            padding: 2rem;
+        }
+        h1, h2 {
+            color: #58a6ff;
+            font-weight: 600;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 1.5rem; }
+        h2 { font-size: 1.1rem; margin: 2rem 0 1rem 0; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #161b22;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        th, td {
+            text-align: left;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid #21262d;
+        }
+        th {
+            background: #1c2128;
+            color: #8b949e;
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        tr:hover td { background: #1c2128; }
+        a { color: #58a6ff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 0.5rem;
+        }
+        .status-active { background: #3fb950; }
+        .status-stale { background: #484f58; }
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: #484f58;
+        }
+        /* Stage sections (vertical collapsible) */
+        .stage-section {
+            background: #161b22;
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
+            overflow: hidden;
+        }
+        .stage-toggle {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.6rem 0.75rem;
+            background: #1c2128;
+            border: none;
+            color: #8b949e;
+            font-family: inherit;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            cursor: pointer;
+            text-align: left;
+        }
+        .stage-toggle:hover { background: #21262d; }
+        .stage-toggle .arrow {
+            transition: transform 0.15s;
+            font-size: 0.7rem;
+        }
+        .stage-toggle.collapsed .arrow { transform: rotate(-90deg); }
+        .stage-count {
+            background: #30363d;
+            color: #8b949e;
+            padding: 0.1rem 0.45rem;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            min-width: 1.3rem;
+            text-align: center;
+            margin-left: 0.5rem;
+        }
+        .stage-count.has-items {
+            background: #1f6feb;
+            color: #fff;
+        }
+        .stage-body {
+            padding: 0.5rem 0.75rem;
+        }
+        .stage-body.hidden { display: none; }
+        .empty-stage {
+            color: #484f58;
+            font-size: 0.75rem;
+            font-style: italic;
+            padding: 0.25rem 0;
+        }
+        .feature-card {
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 4px;
+            padding: 0.5rem 0.6rem;
+            font-size: 0.8rem;
+            cursor: pointer;
+            margin-bottom: 0.4rem;
+            transition: border-color 0.15s;
+        }
+        .feature-card:last-child { margin-bottom: 0; }
+        .feature-card:hover {
+            border-color: #58a6ff;
+        }
+        .feature-card .title {
+            color: #c9d1d9;
+            font-weight: 500;
+            margin-bottom: 0.25rem;
+            word-break: break-word;
+        }
+        .feature-card .meta {
+            color: #484f58;
+            font-size: 0.7rem;
+        }
+        .feature-card .meta span { margin-right: 0.5rem; }
+        /* Feature detail modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6);
+            z-index: 100;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 1.5rem;
+            max-width: 500px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        .modal h3 {
+            color: #58a6ff;
+            font-size: 1rem;
+            margin-bottom: 1rem;
+        }
+        .modal .detail-row {
+            display: flex;
+            padding: 0.4rem 0;
+            border-bottom: 1px solid #21262d;
+            font-size: 0.85rem;
+        }
+        .modal .detail-row:last-child { border-bottom: none; }
+        .modal .detail-label {
+            color: #8b949e;
+            width: 80px;
+            flex-shrink: 0;
+            font-weight: 600;
+        }
+        .modal .detail-value {
+            color: #c9d1d9;
+            word-break: break-word;
+        }
+        .modal-close {
+            float: right;
+            background: none;
+            border: none;
+            color: #8b949e;
+            font-size: 1.2rem;
+            cursor: pointer;
+            padding: 0 0.3rem;
+        }
+        .modal-close:hover { color: #c9d1d9; }
+        .section-label {
+            color: #8b949e;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.5rem;
+        }
+        }
+        #dashboard-content { display: none; }
+        #dashboard-content.authenticated { display: block; }
+    </style>
+    {{if .Authenticated}}
+</head>
+<body>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+        <h1 style="margin-bottom:0">MAD Pipeline Dashboard</h1>
+        <button onclick="showNewIdeaModal()" style="padding:0.4rem 0.8rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-weight:600">+ New Idea</button>
+    </div>
+    <div class="section-label">Connected Clients</div>
+    <table>
+        <thead>
+            <tr>
+                <th>Client ID</th>
+                <th>Board(s)</th>
+                <th>Features</th>
+                <th>Plan Agent</th>
+                <th>Impl Agent</th>
+                <th>Last Seen</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody hx-get="/api/clients?key={{.Key}}" hx-trigger="every 5s" hx-swap="innerHTML">
+            {{template "client_rows" .}}
+        </tbody>
+    </table>
+    <h2>Aggregate View</h2>
+    <div id="board-container">
+        {{template "board_fragment" .}}
+    </div>
+    <!-- Feature detail modal -->
+    <div class="modal-overlay" id="feature-modal" onclick="closeModal(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+            <button class="modal-close" onclick="closeModal()">&times;</button>
+            <h3 id="modal-title"></h3>
+            <div id="modal-body"></div>
+        </div>
+    </div>
+    <div class="modal-overlay" id="key-modal">
+        <div class="modal" style="max-width:400px">
+            <h3>Authentication Required</h3>
+            <p style="color:#8b949e;margin:0.5rem 0 1rem">Enter your dashboard key to access client details.</p>
+            <input type="password" id="key-input" placeholder="Enter key" style="width:100%;padding:0.75rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:1rem;margin-bottom:1rem">
+            <button onclick="saveKey()" style="width:100%;padding:0.75rem;background:#238636;border:none;border-radius:6px;color:#fff;font-size:1rem;cursor:pointer">Save Key</button>
+        </div>
+    </div>
+    <!-- New Idea Modal -->
+    <div class="modal-overlay" id="new-idea-modal" onclick="closeNewIdeaModal(event)">
+        <div class="modal" onclick="event.stopPropagation()" style="max-width:450px">
+            <h3 style="color:#58a6ff;font-size:1rem;margin-bottom:1rem">Create New Idea</h3>
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Client *</label>
+                <select id="new-idea-client" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
+                    <option value="">Select a client...</option>
+                </select>
+            </div>
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Title *</label>
+                <input type="text" id="new-idea-title" placeholder="Enter idea title" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
+            </div>
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Board *</label>
+                <input type="text" id="new-idea-board" placeholder="e.g., default" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
+            </div>
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Description</label>
+                <textarea id="new-idea-description" placeholder="Optional description" rows="3" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit;resize:vertical"></textarea>
+            </div>
+            <div style="display:flex;gap:0.5rem;justify-content:flex-end">
+                <button onclick="closeNewIdeaModal()" style="padding:0.5rem 1rem;background:#30363d;color:#c9d1d9;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-family:inherit">Cancel</button>
+                <button onclick="submitNewIdea()" id="submit-idea-btn" style="padding:0.5rem 1rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-family:inherit">Create Idea</button>
+            </div>
+            <div id="new-idea-feedback" style="margin-top:0.75rem;font-size:0.85rem"></div>
+        </div>
+    </div>
+    <script>
+        // Smart polling for board: only update cards that actually changed
+        var _boardURL = '/api/board?key=' + encodeURIComponent(key || '');
+        var _lastBoardHTML = '';
+        function smartPollBoard() {
+            fetch(_boardURL).then(function(r) { return r.text(); }).then(function(html) {
+                if (html === _lastBoardHTML) return;
+                _lastBoardHTML = html;
+                var container = document.getElementById('board-container');
+                var tmp = document.createElement('div');
+                tmp.innerHTML = html;
+                var newSections = tmp.querySelectorAll('.stage-section');
+                var curSections = container.querySelectorAll('.stage-section');
+                if (newSections.length !== curSections.length) {
+                    container.innerHTML = html;
+                    return;
+                }
+                for (var si = 0; si < newSections.length; si++) {
+                    var curSec = curSections[si];
+                    var newSec = newSections[si];
+                    var curCount = curSec.querySelector('.stage-count');
+                    var newCount = newSec.querySelector('.stage-count');
+                    if (curCount && newCount) {
+                        curCount.textContent = newCount.textContent;
+                        curCount.className = newCount.className;
+                    }
+                    var curBody = curSec.querySelector('.stage-body');
+                    var newBody = newSec.querySelector('.stage-body');
+                    function cardHash(c) {
+                        return [c.getAttribute('data-id'), c.getAttribute('data-stage'),
+                                c.getAttribute('data-title'), c.getAttribute('data-description'),
+                                c.getAttribute('data-history')].join('|');
+                    }
+                    var newCards = newBody.querySelectorAll('.feature-card');
+                    var curCards = curBody.querySelectorAll('.feature-card');
+                    var same = curCards.length === newCards.length;
+                    if (same) {
+                        for (var ci = 0; ci < newCards.length; ci++) {
+                            if (cardHash(curCards[ci]) !== cardHash(newCards[ci])) { same = false; break; }
+                        }
+                    }
+                    if (!same) {
+                        var wasHidden = curBody.classList.contains('hidden');
+                        curBody.innerHTML = newBody.innerHTML;
+                        if (wasHidden) curBody.classList.add('hidden');
+                    }
+                }
+            }).catch(function() {});
+        }
+        setInterval(smartPollBoard, 5000);
+        var _clientsCache = [];
+        function showNewIdeaModal() {
+            document.getElementById('new-idea-modal').classList.add('active');
+            document.getElementById('new-idea-title').value = '';
+            document.getElementById('new-idea-board').value = '';
+            document.getElementById('new-idea-description').value = '';
+            document.getElementById('new-idea-feedback').textContent = '';
+            
+            // Fetch clients to populate the dropdown
+            fetch('/api/clients?key=' + encodeURIComponent(key)).then(function(r) { return r.json(); }).then(function(clients) {
+                _clientsCache = clients;
+                var select = document.getElementById('new-idea-client');
+                select.innerHTML = '<option value="">Select a client...</option>';
+                clients.forEach(function(c) {
+                    var opt = document.createElement('option');
+                    opt.value = c.client_id;
+                    opt.textContent = c.client_id + (c.connected ? '' : ' (disconnected)');
+                    select.appendChild(opt);
+                });
+                // Auto-select if only one connected client
+                var connected = clients.filter(function(c) { return c.connected; });
+                if (connected.length === 1) {
+                    select.value = connected[0].client_id;
+                }
+            }).catch(function() {});
+            
+            document.getElementById('new-idea-title').focus();
+        }
+        function closeNewIdeaModal(event) {
+            if (!event || event.target === document.getElementById('new-idea-modal')) {
+                document.getElementById('new-idea-modal').classList.remove('active');
+            }
+        }
+        function submitNewIdea() {
+            var clientID = document.getElementById('new-idea-client').value;
+            var title = document.getElementById('new-idea-title').value.trim();
+            var board = document.getElementById('new-idea-board').value.trim();
+            var description = document.getElementById('new-idea-description').value.trim();
+            var feedback = document.getElementById('new-idea-feedback');
+            var btn = document.getElementById('submit-idea-btn');
+            if (!clientID) {
+                feedback.style.color = '#f85149';
+                feedback.textContent = 'Please select a client';
+                return;
+            }
+            if (!title) {
+                feedback.style.color = '#f85149';
+                feedback.textContent = 'Title is required';
+                return;
+            }
+            if (!board) {
+                feedback.style.color = '#f85149';
+                feedback.textContent = 'Board is required';
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = 'Creating...';
+            fetch('/api/clients/' + encodeURIComponent(clientID) + '/ideas?key=' + encodeURIComponent(key), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({title: title, board: board, description: description})
+            }).then(function(resp) {
+                return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+            }).then(function(result) {
+                if (result.ok) {
+                    feedback.style.color = '#3fb950';
+                    feedback.textContent = 'Idea created successfully!';
+                    setTimeout(function() {
+                        closeNewIdeaModal();
+                        smartPollBoard();
+                    }, 1000);
+                } else {
+                    feedback.style.color = '#f85149';
+                    feedback.textContent = result.data.error || 'Failed to create idea';
+                    btn.disabled = false;
+                    btn.textContent = 'Create Idea';
+                }
+            }).catch(function(err) {
+                feedback.style.color = '#f85149';
+                feedback.textContent = 'Network error';
+                btn.disabled = false;
+                btn.textContent = 'Create Idea';
+            });
+        }
+        function getKey() {
+            var urlKey = new URLSearchParams(window.location.search).get('key');
+            if (urlKey) {
+                localStorage.setItem('mad_key', urlKey);
+                return urlKey;
+            }
+            return localStorage.getItem('mad_key') || '';
+        }
+        function saveKey() {
+            var input = document.getElementById('key-input');
+            var k = input.value.trim();
+            if (k) {
+                localStorage.setItem('mad_key', k);
+                document.getElementById('key-modal').classList.remove('active');
+                location.reload();
+            }
+        }
+        var key = getKey();
+        if (key) {
+            document.addEventListener('htmx:afterSwap', function() {
+                document.querySelectorAll('a[href^="/clients/"]').forEach(a => {
+                    if (!a.href.includes('key=')) a.href += '?key=' + key;
+                });
+            });
+            document.querySelectorAll('a[href^="/clients/"]').forEach(a => {
+                if (!a.href.includes('key=')) a.href += '?key=' + key;
+            });
+        }
+        document.body.addEventListener('htmx:responseError', function(evt) {
+            if (evt.detail.xhr.status === 401) {
+                document.getElementById('key-modal').classList.add('active');
+            }
+        });
+        document.getElementById('key-input').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') saveKey();
+        });
+        if (!key && document.getElementById('key-modal')) {
+            document.getElementById('key-modal').classList.add('active');
+        }
+        document.querySelectorAll('a[href^="/clients/"]').forEach(a => {
+            if (!a.href.includes('key=') && key) a.href += '?key=' + key;
+        });
+        function toggleStage(btn) {
+            var body = btn.nextElementSibling;
+            btn.classList.toggle('collapsed');
+            body.classList.toggle('hidden');
+        }
+        function showFeature(card) {
+            var title = card.getAttribute('data-title');
+            var stage = card.getAttribute('data-stage');
+            var board = card.getAttribute('data-board');
+            var created = card.getAttribute('data-created');
+            var featureId = card.getAttribute('data-id');
+            var description = card.getAttribute('data-description') || '';
+            var historyJSON = card.getAttribute('data-history') || '[]';
+            var html =
+                '<div class="detail-row"><span class="detail-label">Stage</span><span class="detail-value">' + escapeHtml(stage) + '</span></div>' +
+                '<div class="detail-row"><span class="detail-label">Board</span><span class="detail-value">' + escapeHtml(board) + '</span></div>' +
+                '<div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">' + escapeHtml(created) + '</span></div>' +
+                '<div class="detail-row"><span class="detail-label">ID</span><span class="detail-value">' + escapeHtml(featureId) + '</span></div>';
+            if (description) {
+                html += '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid #21262d">' +
+                    '<div style="color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase;margin-bottom:0.3rem">Description</div>' +
+                    '<div style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap">' + escapeHtml(description) + '</div></div>';
+            }
+            try {
+                var history = JSON.parse(historyJSON);
+                if (history && history.length > 0) {
+                    html += '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid #21262d">' +
+                        '<div style="color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase;margin-bottom:0.3rem">History (' + history.length + ')</div>';
+                    for (var i = 0; i < history.length; i++) {
+                        var h = history[i];
+                        html += '<div style="font-size:0.75rem;padding:0.2rem 0;border-bottom:1px solid #161b22">' +
+                            '<span style="color:#484f58">' + escapeHtml(h.ts || '') + '</span> ' +
+                            '<span style="color:#d2a8ff;font-weight:600">' + escapeHtml(h.stage || '') + '</span> ' +
+                            '<span style="color:#c9d1d9">' + escapeHtml(h.note || '') + '</span></div>';
+                    }
+                    html += '</div>';
+                }
+            } catch(e) {}
+            document.getElementById('modal-title').textContent = title;
+            document.getElementById('modal-body').innerHTML = html;
+            document.getElementById('feature-modal').classList.add('active');
+        }
+        function closeModal(event) {
+            if (!event || event.target === document.getElementById('feature-modal')) {
+                document.getElementById('feature-modal').classList.remove('active');
+            }
+        }
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                document.getElementById('feature-modal').classList.remove('active');
+            }
+        });
+        function escapeHtml(text) {
+            var div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+    <script>if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js'); }</script>
+</body>
+</html>
+{{end}}
+{{define "client_rows"}}{{if .Clients}}{{range .Clients}}<tr>
+    <td><a href="/clients/{{.ClientID}}?key={{$.Key}}">{{.ClientID}}</a></td>
+    <td>{{uniqueBoards .Features}}</td>
+    <td>{{len .Features}}</td>
+    <td>{{if .PlanAgent.Running}}<span class="status-dot status-active"></span>{{.PlanAgent.Phase}}{{if .PlanAgent.Feature}} ({{.PlanAgent.Feature}}){{end}}{{else}}<span style="color:#484f58">idle</span>{{end}}</td>
+    <td>{{if .ImplAgent.Running}}<span class="status-dot status-active"></span>{{.ImplAgent.Phase}}{{if .ImplAgent.Feature}} ({{.ImplAgent.Feature}}){{end}}{{else}}<span style="color:#484f58">idle</span>{{end}}</td>
+    <td>{{.LastSeen.Format "15:04:05"}}</td>
+    <td>{{if .Connected}}<span class="status-dot status-active"></span>Connected{{else}}<span class="status-dot status-stale"></span>Disconnected{{end}}</td>
+</tr>{{end}}{{else}}<tr><td colspan="7" class="empty-state">No clients connected</td></tr>{{end}}{{end}}
+{{define "board_fragment"}}{{range .StageGroups}}<div class="stage-section">
+    <button class="stage-toggle{{if not .Features}} collapsed{{end}}" onclick="toggleStage(this)">
+        <span>{{stageLabel .Stage}} <span class="stage-count{{if .Features}} has-items{{end}}">{{len .Features}}</span></span>
+        <span class="arrow">&#9660;</span>
+    </button>
+    <div class="stage-body{{if not .Features}} hidden{{end}}">
+        {{if .Features}}{{range .Features}}<div class="feature-card" onclick="showFeature(this)"
+            data-title="{{.Title}}"
+            data-stage="{{.Stage}}"
+            data-board="{{.Board}}"
+            data-created="{{.Created}}"
+            data-id="{{.ID}}"
+            data-description="{{.Description}}"
+            data-history="{{toJSON .History}}"
+            data-client="{{.ClientID}}">
+            <div class="title">{{.Title}}</div>
+            <div class="meta">{{if .ClientID}}<span style="color:#d2a8ff">{{.ClientID}}</span>{{end}}<span>{{.Board}}</span><span>{{.Created}}</span></div>
+        </div>{{end}}{{else}}<div class="empty-stage">No features in this stage</div>{{end}}
+    </div>
+</div>
+{{end}}{{end}}

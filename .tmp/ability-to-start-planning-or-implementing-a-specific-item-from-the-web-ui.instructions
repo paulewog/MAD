@@ -1,0 +1,126 @@
+You are an implementer breaking down a feature plan into concrete coding tasks.
+
+Feature: Ability to start planning or implementing a specific item from the web ui
+
+Plan:
+## Plan: Start Planning/Implementing from Web UI
+
+### Overview
+Add the ability to trigger plan or impl agents on a specific feature from the web UI. The server sends a command to the connected pipeline client, which executes the action. Actions are only available where they make sense (same rules as TUI), and are disabled when the respective agent is already busy.
+
+### Step 1: Create a shared stage-actions config file
+
+**File: `.mad/stage-actions.json`** (new)
+
+Define which actions are allowed per stage in a single source of truth:
+```json
+{
+  "actions": {
+    "plan": {
+      "label": "Start Planning",
+      "allowed_stages": ["plan-inbox", "reviewing-plan", "requested-input", "approved"]
+    },
+    "implement": {
+      "label": "Start Implementing",
+      "allowed_stages": ["approved", "spec-writing"]
+    }
+  }
+}
+```
+
+However, since both Go and Python need to read this, and both already have the stages hardcoded, a simpler approach: **define the config in Python (`pipeline/state.py`) and have the server receive it as part of the state push**. This avoids file I/O in Go and keeps the single source of truth in Python.
+
+**File: `pipeline/state.py`** — Add:
+```python
+STAGE_ACTIONS = {
+    "plan": ["plan-inbox", "reviewing-plan", "requested-input", "approved"],
+    "implement": ["approved", "spec-writing"],
+}
+```
+
+### Step 2: Refactor TUI to use shared stage-actions config
+
+**File: `pipeline/tui.py`** — Replace the hardcoded stage checks in `action_plan_only()`, `action_implement_only()`, `_auto_plan_check()`, `_auto_implement_check()` to reference `STAGE_ACTIONS` from `state.py`.
+
+This consolidates the logic so TUI and server share the same rules.
+
+### Step 3: Include stage actions and available actions in state push
+
+**File: `pipeline/server_client.py`** — Extend `push_state()` to include:
+- `stage_actions`: the `STAGE_ACTIONS` dict (so the web UI knows the rules)
+- For each feature in the features list, add an `available_actions` array computed from the feature's current stage and the agent busy status (e.g., if plan agent is running, don't include "plan" even if the stage allows it)
+
+This way the web UI has everything it needs to render action buttons correctly.
+
+### Step 4: Add `start_agent` server endpoint
+
+**File: `server/api.go`** — Add new endpoint:
+```
+POST /api/clients/{id}/features/{fid}/start-agent
+Body: {"action": "plan" | "implement"}
+```
+
+Validation:
+1. Look up the client by ID
+2. Find the feature by `fid` in the client's state
+3. Check the feature's stage is in the allowed stages for the requested action (using stage_actions from client state)
+4. Check the respective agent (plan/impl) is not already running (from client state's plan_agent/impl_agent status)
+5. If all checks pass, send a `start_agent` WebSocket message to the client: `{"type": "start_agent", "feature_id": "...", "action": "plan"|"implement"}`
+6. Return 200 OK (or 409 Conflict if agent busy, 400 if invalid stage)
+
+### Step 5: Handle `start_agent` command in Python client
+
+**File: `pipeline/server_client.py`** — Add handler in `_handle_incoming()` for `start_agent` message type:
+```python
+elif msg_type == "start_agent":
+    feature_id = data.get("feature_id")
+    action = data.get("action")  # "plan" or "implement"
+    if self.on_start_agent:
+        self.on_start_agent(feature_id, action)
+```
+
+Add `on_start_agent` callback parameter to constructor.
+
+### Step 6: Wire up TUI to handle `start_agent` callback
+
+**File: `pipeline/tui.py`** — Add callback handler:
+1. Register `on_start_agent` callback when creating the `PipelineClient`
+2. In the callback: find the feature by ID, validate stage (using `STAGE_ACTIONS`), check agent not busy, then call `_run_plan_async()` or `_run_implement_async()` as appropriate
+3. Use `call_from_thread()` to safely interact with the TUI from the WebSocket handler thread
+
+### Step 7: Add action buttons to web UI
+
+**File: `server/static/` (frontend JS/HTML)** — For each feature card:
+1. Read the feature's `available_actions` from the state
+2. Render a "Start Planning" and/or "Start Implementing" button based on available actions
+3. Disable buttons when `available_actions` is empty (agent busy or wrong stage)
+4. On click, POST to `/api/clients/{id}/features/{fid}/start-agent` with the action
+5. Show loading/disabled state after clicking until next state update confirms agent is running
+
+### Step 8: Update Go hub to store and expose stage_actions
+
+**File: `server/hub.go`** — Extend `ClientState` to include `StageActions` map and per-feature `AvailableActions`. Parse these from the `state_update` message.
+
+**File: `server/api.go`** — Include `stage_actions` and per-feature `available_actions` in the client state API response. Use these for server-side validation in the `start-agent` endpoint.
+
+### File Change Summary
+
+| File | Change |
+|------|--------|
+| `pipeline/state.py` | Add `STAGE_ACTIONS` dict |
+| `pipeline/tui.py` | Refactor to use `STAGE_ACTIONS`; add `on_start_agent` callback handler |
+| `pipeline/server_client.py` | Add `available_actions` to state push; handle `start_agent` incoming message |
+| `server/hub.go` | Extend `ClientState` with stage actions and available actions |
+| `server/api.go` | Add `POST .../start-agent` endpoint; include actions in API response |
+| `server/static/` (frontend) | Add action buttons per feature with proper enable/disable logic |
+
+### Key Design Decisions
+
+1. **Single source of truth in Python** — `STAGE_ACTIONS` lives in `state.py`, pushed to server via state updates. No separate JSON config file needed since Go only consumes, never originates these rules.
+2. **Pre-computed `available_actions`** — Python computes what's available (considering both stage and agent busy state) so the frontend doesn't need to duplicate logic.
+3. **Server-side validation** — The Go endpoint validates before sending the WebSocket command, providing immediate error feedback to the web UI.
+4. **Same pattern as `set_auto_mode`** — Follows the existing architecture: HTTP POST → Go validates → WebSocket command → Python callback → TUI action.
+
+Write a detailed implementation spec — a list of specific coding tasks.
+For each task: what to create or modify, the approach, and dependencies on other tasks.
+Be concrete. No preamble.

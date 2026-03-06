@@ -1,0 +1,19 @@
+Based on my review of the plan, here is my assessment:
+
+**VERDICT: PASS**
+
+The plan comprehensively addresses all aspects of the feature:
+
+1. **Completeness**: Covers config schema changes, CONTEXT.md handling, path validation & security, agent invocation changes (working directory + instruction prepending), per-board configuration for future-proofing, CLI commands, and backward compatibility.
+
+2. **Clarity**: The plan is well-structured with clear sections. The derivation algorithm is explicitly defined, and the distinction between "every new agent session" vs "every message" is correctly clarified.
+
+3. **Feasibility**: The technical approach is sound - path validation with symlink resolution, security restrictions on sensitive directories, graceful error handling for missing/unreadable files, and the 100KB size limit for CONTEXT.md.
+
+4. **Edge cases**: Handled appropriately:
+   - Missing CONTEXT.md → empty context, no error
+   - Unreadable CONTEXT.md → log error, continue
+   - File too large → truncate with message
+   - Invalid paths → use derivation fallback with warnings
+
+5. **Dependencies**: All relevant files are identified (`pipeline/config.py`, `pipeline/runner.py`, `pipeline/phases.py`, `pipeline/pipeline.py`) with corresponding test files.

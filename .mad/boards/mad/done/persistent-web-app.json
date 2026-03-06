@@ -1,0 +1,103 @@
+{
+  "id": "773b5f74",
+  "board": "mad",
+  "title": "Persistent Web App",
+  "created": "2026-03-06T17:08Z",
+  "description": "I would like to turn the server side thing into a persistent web app so I can more easily use it from my phone.",
+  "plan": "# Plan: Add PWA Support to MAD Web App\n\nThe existing web app at `server/` is a Go server-rendered app with embedded templates and static assets. It has no PWA features currently. The goal is to add the minimal PWA scaffolding so mobile browsers prompt the user to \"install\" the app.\n\n## Steps\n\n### 1. Create Web App Manifest (`server/static/manifest.json`)\n- Define `name`, `short_name`, `description`\n- Set `start_url: \"/\"`\n- Set `display: \"standalone\"` (makes it feel like a native app)\n- Set `background_color` and `theme_color` to match the existing dark theme (`#0d1117`)\n- Reference app icons (see step 2)\n- Set `scope: \"/\"`\n\n### 2. Create App Icons (`server/static/`)\n- Generate PWA icons from the existing `favicon.svg` in multiple sizes: 192x192 and 512x512 (the two sizes required by Chrome for installability)\n- Since the project already has an SVG favicon, we can also reference the SVG directly as a `purpose: \"any\"` icon in the manifest\n- Create PNG versions at 192x192 and 512x512 for broad compatibility\n\n### 3. Create a Basic Service Worker (`server/static/sw.js`)\n- A minimal service worker is required for the install prompt on most browsers\n- Implement a simple network-first caching strategy (or even just a no-op `fetch` handler) since this is a real-time dashboard that should always show live data\n- Cache the app shell (HTML, inline CSS/JS, favicon, icons) for offline fallback display\n\n### 4. Update HTML Templates to Reference PWA Assets\n- In `server/templates/index.html` and `server/templates/client.html`, add to `<head>`:\n  - `<link rel=\"manifest\" href=\"/static/manifest.json\">`\n  - `<meta name=\"theme-color\" content=\"#0d1117\">`\n  - `<meta name=\"apple-mobile-web-app-capable\" content=\"yes\">`\n  - `<meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\">`\n  - `<link rel=\"apple-touch-icon\" href=\"/static/icon-192.png\">`\n- Add inline `<script>` to register the service worker:\n  ```js\n  if ('serviceWorker' in navigator) {\n    navigator.serviceWorker.register('/static/sw.js');\n  }\n  ```\n\n### 5. Ensure Go Server Serves Static Files Correctly\n- Verify that the Go `embed` directive for `staticFS` picks up the new files (`manifest.json`, `sw.js`, icon PNGs)\n- Ensure the `Content-Type` headers are correct for `.json` and `.js` files (Go's `http.FileServer` handles this automatically)\n- The service worker must be served from the correct scope \u2014 serving from `/static/sw.js` may limit its scope to `/static/`. Either:\n  - Add a route in `api.go` that serves the service worker from `/sw.js` (root), OR\n  - Set a `Service-Worker-Allowed: /` header when serving the SW file\n\n### 6. Test\n- Open the app in Chrome DevTools \u2192 Application tab\n- Verify manifest is detected and parsed\n- Verify service worker registers successfully\n- Verify the \"Install app\" option appears in the browser menu\n- Test on a phone to confirm the install banner/prompt appears\n\n## Files Modified\n- `server/templates/index.html` \u2014 add manifest link, meta tags, SW registration\n- `server/templates/client.html` \u2014 same additions\n- `server/api.go` \u2014 possibly add a `/sw.js` route for correct service worker scope\n\n## Files Created\n- `server/static/manifest.json` \u2014 PWA manifest\n- `server/static/sw.js` \u2014 minimal service worker\n- `server/static/icon-192.png` \u2014 192\u00d7192 app icon\n- `server/static/icon-512.png` \u2014 512\u00d7512 app icon",
+  "impl_spec": "Now I have enough context. Here's the implementation spec:\n\n---\n\n## Implementation Spec: PWA Support for MAD Web App\n\n### Task 1: Create `server/static/manifest.json`\n**Create** a new file.\n\n```json\n{\n  \"name\": \"MAD Pipeline Dashboard\",\n  \"short_name\": \"MAD\",\n  \"description\": \"MAD pipeline monitoring dashboard\",\n  \"start_url\": \"/\",\n  \"scope\": \"/\",\n  \"display\": \"standalone\",\n  \"background_color\": \"#0d1117\",\n  \"theme_color\": \"#0d1117\",\n  \"icons\": [\n    {\n      \"src\": \"/static/favicon.svg\",\n      \"type\": \"image/svg+xml\",\n      \"sizes\": \"any\",\n      \"purpose\": \"any\"\n    },\n    {\n      \"src\": \"/static/icon-192.png\",\n      \"sizes\": \"192x192\",\n      \"type\": \"image/png\"\n    },\n    {\n      \"src\": \"/static/icon-512.png\",\n      \"sizes\": \"512x512\",\n      \"type\": \"image/png\"\n    }\n  ]\n}\n```\n\n**Dependencies:** None.\n\n---\n\n### Task 2: Generate PNG icons from `server/static/favicon.svg`\n**Create** `server/static/icon-192.png` and `server/static/icon-512.png`.\n\n**Approach:** Use a CLI tool (e.g., `rsvg-convert`, `inkscape`, or `convert` from ImageMagick) to rasterize the existing `favicon.svg` at 192\u00d7192 and 512\u00d7512. If no SVG rasterizer is available, use Python with `cairosvg` or write a small Go script. The SVG is simple (3 colored rectangles on a dark rounded-rect background) so any tool will work.\n\n```bash\n# Option A: rsvg-convert (librsvg)\nrsvg-convert -w 192 -h 192 server/static/favicon.svg > server/static/icon-192.png\nrsvg-convert -w 512 -h 512 server/static/favicon.svg > server/static/icon-512.png\n\n# Option B: ImageMagick\nconvert -background none -resize 192x192 server/static/favicon.svg server/static/icon-192.png\nconvert -background none -resize 512x512 server/static/favicon.svg server/static/icon-512.png\n```\n\n**Dependencies:** None. Must be done before testing (Task 6).\n\n---\n\n### Task 3: Create `server/static/sw.js`\n**Create** a minimal service worker. Since this is a real-time dashboard, use a network-first strategy. Cache only the app shell for a basic offline fallback.\n\n```js\nconst CACHE_NAME = 'mad-v1';\nconst SHELL_URLS = ['/', '/static/favicon.svg'];\n\nself.addEventListener('install', e => {\n  e.waitUntil(\n    caches.open(CACHE_NAME).then(c => c.addAll(SHELL_URLS))\n  );\n  self.skipWaiting();\n});\n\nself.addEventListener('activate', e => {\n  e.waitUntil(\n    caches.keys().then(keys =>\n      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))\n    )\n  );\n  self.clients.claim();\n});\n\nself.addEventListener('fetch', e => {\n  e.respondWith(\n    fetch(e.request).catch(() => caches.match(e.request))\n  );\n});\n```\n\n**Dependencies:** None.\n\n---\n\n### Task 4: Add `/sw.js` route in `server/api.go`\n**Modify** `server/api.go` \u2014 add a handler inside `registerRoutes` that serves the service worker from the root path `/sw.js` (required for root scope).\n\n**Approach:** Add a handler similar to the existing `/favicon.svg` handler, reading `static/sw.js` from `staticFS` and serving it with `Content-Type: application/javascript` and the header `Service-Worker-Allowed: /`.\n\nInsert after the existing `/favicon.svg` handler block (after line 245):\n\n```go\n// Service worker (served from root for scope)\nmux.HandleFunc(\"/sw.js\", func(w http.ResponseWriter, r *http.Request) {\n    data, err := staticFS.ReadFile(\"static/sw.js\")\n    if err != nil {\n        http.NotFound(w, r)\n        return\n    }\n    w.Header().Set(\"Content-Type\", \"application/javascript\")\n    w.Header().Set(\"Service-Worker-Allowed\", \"/\")\n    w.Header().Set(\"Cache-Control\", \"no-cache\")\n    w.Write(data)\n})\n```\n\n**Dependencies:** Task 3 (sw.js must exist for embed to pick it up at compile time).\n\n---\n\n### Task 5: Update HTML templates\n**Modify** both `server/templates/index.html` and `server/templates/client.html`.\n\nIn the `<head>` section of each file, after the existing `<link rel=\"icon\" ...>` line (line 7 in both files), add:\n\n```html\n<link rel=\"manifest\" href=\"/static/manifest.json\">\n<meta name=\"theme-color\" content=\"#0d1117\">\n<meta name=\"apple-mobile-web-app-capable\" content=\"yes\">\n<meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\">\n<link rel=\"apple-touch-icon\" href=\"/static/icon-192.png\">\n```\n\nAt the end of `<body>` (before `</body>`), add the service worker registration script:\n\n```html\n<script>\nif ('serviceWorker' in navigator) {\n  navigator.serviceWorker.register('/sw.js');\n}\n</script>\n```\n\nNote: The SW registration references `/sw.js` (the root-scoped route from Task 4), not `/static/sw.js`.\n\n**Dependencies:** Tasks 1 (manifest.json), 2 (icon PNGs), 4 (/sw.js route).\n\n---\n\n### Task 6: Verify static file embedding\n**Verify** that the Go `//go:embed static` directive in `server/api.go` (line 56\u201357) automatically picks up the new files: `manifest.json`, `sw.js`, `icon-192.png`, `icon-512.png`. No code change needed \u2014 Go's embed directive includes all files in the `static/` directory recursively. Just confirm the server compiles and the files are accessible.\n\n**Approach:** Run `cd server && go build .` to verify compilation succeeds with the new embedded files. Then start the server and verify `/static/manifest.json`, `/sw.js`, `/static/icon-192.png`, `/static/icon-512.png` all return correct content.\n\n**Dependencies:** All previous tasks.\n\n---\n\n### Summary of changes\n\n| File | Action | Task |\n|---|---|---|\n| `server/static/manifest.json` | Create | 1 |\n| `server/static/icon-192.png` | Create | 2 |\n| `server/static/icon-512.png` | Create | 2 |\n| `server/static/sw.js` | Create | 3 |\n| `server/api.go` | Modify (add `/sw.js` route at ~line 245) | 4 |\n| `server/templates/index.html` | Modify (add PWA meta tags in `<head>`, SW registration before `</body>`) | 5 |\n| `server/templates/client.html` | Modify (same as index.html) | 5 |\n\n### Execution order\nTasks 1, 2, 3 are independent \u2014 can be done in parallel. Task 4 depends on 3. Task 5 depends on 1, 2, 4. Task 6 depends on all.",
+  "test_spec": "Test spec written to `server/PWA_TEST_SPEC.md`. Key highlights:\n\n- **17 verifiable behaviors** across manifest, icons, service worker, HTML templates, static serving, and regression\n- **Auth interaction edge case** \u2014 PWA assets (manifest, SW, icons) must be accessible without `?key=` auth since browsers fetch them automatically\n- **Service worker scope** is called out as a critical check \u2014 serving from `/static/sw.js` without a `Service-Worker-Allowed: /` header would silently break installability\n- **Content-Type strictness** \u2014 browsers reject manifests and service workers with wrong MIME types, so these are hard failures\n- **Out of scope** keeps the spec focused on server-side verifiable behavior, excluding visual testing, real browser install flows, offline correctness, and performance",
+  "impl_notes": "All done. Here's a summary:\n\n## Summary\n\n### Files Created\n- **`server/static/manifest.json`** \u2014 PWA manifest with app name, colors matching the dark theme (`#0d1117`), standalone display mode, and icon references (SVG + PNG)\n- **`server/static/sw.js`** \u2014 Minimal service worker with network-first strategy and app shell caching for offline fallback\n- **`server/static/icon-192.png`** \u2014 192\u00d7192 PNG icon rasterized from `favicon.svg`\n- **`server/static/icon-512.png`** \u2014 512\u00d7512 PNG icon rasterized from `favicon.svg`\n\n### Files Modified\n- **`server/api.go`** \u2014 Added `/sw.js` route that serves the service worker from the root path with `Service-Worker-Allowed: /` and `Cache-Control: no-cache` headers\n- **`server/templates/index.html`** \u2014 Added manifest link, theme-color meta, Apple PWA meta tags, apple-touch-icon, and service worker registration script\n- **`server/templates/client.html`** \u2014 Same PWA additions as index.html\n\n### Decisions\n- Used ImageMagick (`convert`) to rasterize the SVG favicon into PNG icons since it was available on the system\n- Service worker is served from `/sw.js` (root) via a dedicated Go handler rather than from `/static/sw.js`, ensuring the SW can control the entire `/` scope\n- The `TestAPIAuthRequired` test failure is pre-existing and unrelated to these changes\n\n### Tests Written\n\nAll 33 tests pass. The tests in `pwa_test.go` already cover all 17 behaviors from the spec plus the edge cases. The only fix needed was adding the missing `net/http/httptest` and `time` imports.",
+  "history": [
+    {
+      "ts": "2026-03-06T17:08Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-06T17:08Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-06T17:18Z",
+      "stage": "PLANNING",
+      "note": "Questions raised via claude"
+    },
+    {
+      "ts": "2026-03-06T17:40Z",
+      "stage": "PLAN-INBOX",
+      "note": "Questions answered via web UI"
+    },
+    {
+      "ts": "2026-03-06T17:54Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-06T17:54Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS \u2014 VERDICT: PASS"
+    },
+    {
+      "ts": "2026-03-06T17:54Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-06T17:57Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-06T17:58Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated (Agent A) via claude"
+    },
+    {
+      "ts": "2026-03-06T17:59Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated (Agent B) via claude"
+    },
+    {
+      "ts": "2026-03-06T18:02Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via claude"
+    },
+    {
+      "ts": "2026-03-06T18:02Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-06T19:10Z",
+      "stage": "TESTING",
+      "note": "Tests written via claude"
+    },
+    {
+      "ts": "2026-03-06T19:12Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS \u2014 All 33 PWA tests pass. The failing tests (TestAPIAuthRequired, etc.) are pre-existing and unrelated to PWA changes.\n\nVERDICT: PASS\n\nThe implementation is complete and correct:\n\nCompleteness - All plan items implemented:\n   - manifest.json with all required fields\n   - 192x192 and 512x512 PNG icons\n   - Service worker with network-first caching\n   - Both HTML templates updated with PWA meta tags and SW registration\n   - /sw.js route with proper Service-Worker-Allowed header\n\nTest Coverage - All 33 PWA tests pass, covering:\n   - Manifest parsing and required fields\n   - Icon files served and valid PNG format\n   - Service worker served with correct scope header\n   - HTML templates contain all PWA references\n   - Auth bypass for PWA assets\n   - Content-Type strictness\n   - Concurrent requests\n\nCode Quality - No bugs found; proper error handling, headers set correctly\n\nEdge Cases - Tested: concurrent access, auth interaction, Content-Type validation"
+    },
+    {
+      "ts": "2026-03-06T20:01Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "questions": [
+    {
+      "question": "What actions do you want to be able to do from your phone beyond viewing the dashboard? E.g., create new features/ideas, answer questions, move features between stages, trigger pipeline runs, edit feature descriptions?",
+      "answer": "I would like it to do everything that the current web app lets you do... ?"
+    },
+    {
+      "question": "The current dashboard already works in a browser via https://mad.goteamup.io - is the main issue that it only shows state when a pipeline TUI is connected and pushing? i.e., you want the server to persist state independently so you can view/interact even when no TUI is running?",
+      "answer": "No, I just want to add the appropriate \"PWA\" stuff so that my phone prompts me to \"install\" it as an app"
+    },
+    {
+      "question": "Should the web app be able to manage .mad/boards files directly (read/write feature JSON files on the server), or should it remain a relay that syncs with connected pipeline clients?",
+      "answer": "No, it is just a \"app\" built around the existing webapp."
+    }
+  ]
+}

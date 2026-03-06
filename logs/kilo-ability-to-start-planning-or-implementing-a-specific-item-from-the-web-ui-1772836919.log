@@ -1,0 +1,22 @@
+The feature "Ability to start planning or implementing a specific item from the web UI" is **already fully implemented** in the codebase. Here's what exists:
+
+**Python side:**
+- `pipeline/state.py:23-26` - `STAGE_ACTIONS` dict defines which actions are allowed per stage
+- `pipeline/tui.py:1217` - `on_start_agent` callback wired up to `_handle_start_agent`
+- `pipeline/tui.py:1271-1310` - `_handle_start_agent` validates stage, checks agent busy status, and triggers the appropriate action
+- `pipeline/server_client.py:16` - imports `STAGE_ACTIONS`
+- `pipeline/server_client.py:88-162` - `push_state()` includes `stage_actions` and per-feature `available_actions`
+- `pipeline/server_client.py:205-212` - handles incoming `start_agent` message
+
+**Go side:**
+- `server/hub.go:40` - `FeatureSummary.AvailableActions` field
+- `server/hub.go:68` - `ClientState.StageActions` field
+- `server/hub.go:268-273` - parses `stage_actions` from state update
+- `server/api.go:191-193` - routes to `serveStartAgent`
+- `server/api.go:438-528` - `serveStartAgent` validates stage and agent status, sends WebSocket message
+
+**Frontend:**
+- `server/templates/client.html:495-508` - renders action buttons based on `available_actions`
+- `server/templates/client.html:554-569` - `startAgent()` function calls the API
+
+The Go tests fail due to a **pre-existing template parsing bug** (`{{define}}` blocks placed after `</html>` tag in index.html), unrelated to this feature. The build succeeds.

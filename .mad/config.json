@@ -1,5 +1,5 @@
 {
-  "current_agent": "claude",
+  "current_agent": "kilo",
   "agents": {
     "claude": {
       "command": "claude",
@@ -10,8 +10,9 @@
     },
     "kilo": {
       "command": "kilo",
-      "headless_flag": "run",
+      "headless_flag": "",
       "headless_extra_flags": [
+        "run",
         "--auto"
       ]
     }
@@ -19,12 +20,20 @@
   "boards": [
     "mad"
   ],
+  "server": {
+    "enabled": true,
+    "url": "wss://mad.goteamup.io",
+    "api_key": "9505ddd5b9a59795bfcd2e32b37e97f7a2c52913d0cbd5f0",
+    "client_id": "wsl-mad-cwd",
+    "push_interval_seconds": 10
+  },
   "agent_for_phase": {
-    "planning": "claude",
-    "spec_writing": "claude",
-    "implementing": "claude",
-    "fix_feedback": "claude",
-    "testing": "claude",
-    "review": "kilo"
+    "planning": "default",
+    "spec_writing": "default",
+    "implementing": "default",
+    "fix_feedback": "default",
+    "testing": "default",
+    "review": "kilo",
+    "reviewing_plan": "default"
   }
 }

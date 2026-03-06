@@ -1,0 +1,9 @@
+VERDICT: FAIL
+FEEDBACK:
+- Unclear decision on CONTEXT.md location: The plan mentions both `<project_root>/.mad/CONTEXT.md` and `~/.mad/boards/<boardname>/CONTEXT.md` as alternatives but doesn't specify which one to use
+- Ambiguous agent invocation scope: "Every time an agent is invoked" is unclear - does this mean every turn in a conversation or every new agent session? The implementation should clarify if context is prepended to every message or just the initial message
+- Redundant field: The plan lists `context_file` in config schema but never explains how it differs from or relates to `code_path`
+- Missing size handling: No mention of what to do if CONTEXT.md is very large - should there be a size limit or truncation?
+- Symlink handling: If `code_path` is a symlink, should it be resolved to the real path before use?
+- Security consideration: Setting agent's working directory could have implications if the agent runs malicious code - should document or add safeguards
+- Per-board config inheritance unclear: The plan says per-board config "inherits from global" but doesn't specify the merging logic (shallow vs deep merge)

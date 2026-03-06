@@ -1,0 +1,23 @@
+Let me explore the codebase to understand the current details pane implementation before creating a plan.
+Based on my analysis of the codebase, I can see the current implementation:
+
+**TUI** (`pipeline/tui.py`): Uses a Markdown widget showing: header, title, description, plan, impl_spec, test_spec, impl_notes, questions, history, pipeline_log
+
+**Web UI** (`server/templates/client.html`): Shows inline details with: title, stage, board, created, ID, description, history, questions (only when `stage === 'requested-input'`), actions
+
+Based on the review feedback, there are two key clarification questions that must be answered before a complete plan can be created:
+```json
+{
+  "questions": [
+    {
+      "question": "The TUI currently shows a 'Pipeline Log' section. Should this be included as a collapsible section in the slimmer-item-details feature, or should it be excluded?",
+      "answer": ""
+    },
+    {
+      "question": "In the web UI, the Questions form is only shown when stage === 'requested-input'. Should the questions be placed inside a collapsible section (so they can be hidden when not relevant), or should they continue to be conditionally rendered outside of collapsibles?",
+      "answer": ""
+    }
+  ],
+  "plan": ""
+}
+```

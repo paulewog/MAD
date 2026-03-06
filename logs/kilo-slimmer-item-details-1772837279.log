@@ -1,0 +1,8 @@
+Based on my analysis of the codebase and the review feedback, I have one clarification needed before writing a complete plan.
+I've updated the instructions file with two clarification questions:
+
+1. **Pipeline Log** - The TUI currently shows this section but it's not mentioned in the feature description. Should it be included?
+
+2. **Questions form** - In the web UI, this is conditionally rendered only for `stage === 'requested-input'`. Should it go in a collapsible section or be handled separately?
+
+The plan is intentionally left empty until these questions are answered, as required by the instructions format.

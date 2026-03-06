@@ -4,6 +4,7 @@ Each phase function takes a FeatureFile and AgentRunner, runs the appropriate
 headless agent call, updates the feature file, and moves it to the next stage.
 """
 
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -14,6 +15,20 @@ from agent_status import AgentStatus
 from config import Config
 from runner import AgentRunner
 from state import FeatureFile
+
+# Set up logging
+_log_dir = Path(__file__).parent.parent / ".mad" / "logs"
+_log_dir.mkdir(parents=True, exist_ok=True)
+_log_file = _log_dir / "pipeline.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[
+        logging.FileHandler(_log_file),
+    ]
+)
+logger = logging.getLogger("pipeline")
 
 console = Console()
 
@@ -76,29 +91,107 @@ def run_planning(
     feature: FeatureFile,
     runner: AgentRunner,
     status: Optional[AgentStatus] = None,
-) -> None:
-    """Generate a plan for the feature and move to reviewing-plan."""
+) -> bool:
+    """Generate a plan for the feature.
+    
+    Returns True if plan is complete, False if human input is needed (questions).
+    """
+    import sys
+    
     runner = runner.for_phase("planning")
     console.print(f"\n[bold blue]Planning:[/bold blue] {feature.title}")
+    logger.info(f"[planning] Starting: {feature.title}")
+    print(f"[DEBUG] Starting planning for {feature.title}", file=sys.stderr)
+    sys.stderr.flush()
 
-    template = _load_prompt("plan.md")
-    prompt = template.format(
-        title=feature.title,
-        description=feature.get_section("Description"),
-        filepath=str(feature.path),
-    )
+    # Check if there are previous answers to include
+    questions = feature.questions
+    questions_context = ""
+    if questions:
+        answered = [q for q in questions if q.get("answer")]
+        if answered:
+            questions_context = "\n\n## Previous Answers:\n"
+            for q in answered:
+                questions_context += f"- Q: {q['question']}\n  A: {q['answer']}\n"
+
+    # Check if there's previous review feedback to include
+    feedback_context = ""
+    latest_feedback = _get_latest_feedback(feature)
+    if latest_feedback and latest_feedback != "No previous feedback available.":
+        feedback_context = f"\n\n## Previous Review Feedback (you MUST address these issues):\n{latest_feedback}\n"
+
+    template = _load_prompt("plan-headless.md")
+    # Use string replace instead of .format() to avoid issues with curly braces in template
+    prompt = template.replace("{title}", feature.title)
+    prompt = prompt.replace("{description}", feature.get_section("Description") or "(no description)")
+    
+    if questions_context:
+        prompt += questions_context
+    
+    if feedback_context:
+        prompt += feedback_context
 
     if status is not None:
         status.phase = "planning"
         status.agent = runner.agent.name
+    print(f"[DEBUG] About to call runner.headless()", file=sys.stderr)
+    sys.stderr.flush()
     output = runner.headless(prompt, status=status)
+    print(f"[DEBUG] headless returned, output length: {len(output)}", file=sys.stderr)
+    print(f"[DEBUG] output repr: {repr(output[:500])}", file=sys.stderr)
+    sys.stderr.flush()
 
+    # Try to parse JSON output for questions and plan
+    import json
+    import re
+    
+    console.print(f"[dim]Planning output length: {len(output)} chars[/dim]")
+    
+    # Extract JSON from output
+    json_match = re.search(r'\{[\s\S]*\}', output)
+    if json_match:
+        matched = json_match.group()
+        console.print(f"[dim]Matched JSON: {matched[:200]}...[/dim]")
+        try:
+            result = json.loads(matched)
+            console.print(f"[dim]Parsed JSON keys: {list(result.keys())}[/dim]")
+            
+            # Handle questions - must be a list
+            if "questions" in result and isinstance(result["questions"], list) and result["questions"]:
+                questions = result["questions"]
+                feature.set_questions(questions)
+                feature.add_history("PLANNING", f"Questions raised via {runner.agent.name}")
+                feature.save()
+                feature.move_to_stage("requested-input")
+                console.print(f"[yellow]Plan has {len(questions)} questions for human. Moving to requested-input.[/yellow]")
+                return False
+            
+            # Handle plan - must be a string
+            if "plan" in result and isinstance(result.get("plan"), str) and result["plan"]:
+                feature.set_plan(result["plan"])
+                feature.add_history("PLANNING", f"Plan generated via {runner.agent.name}")
+                feature.save()
+                feature.move_to_stage("reviewing-plan")
+                console.print("[green]Plan generated. Feature moved to reviewing-plan.[/green]")
+                return True
+            
+            console.print(f"[yellow]JSON found but no valid questions or plan. result={result}[/yellow]")
+                
+        except json.JSONDecodeError as e:
+            console.print(f"[red]JSON decode error: {e}, matched: {matched[:100]}[/red]")
+        except Exception as e:
+            console.print(f"[red]Error processing planning output: {e}[/red]")
+            raise
+    
+    # Fallback: treat entire output as plan
+    console.print("[yellow]No valid JSON found, using fallback[/yellow]")
     feature.set_plan(output.strip())
     feature.add_history("PLANNING", f"Plan generated via {runner.agent.name}")
     feature.save()
     feature.move_to_stage("reviewing-plan")
-
+    
     console.print("[green]Plan generated. Feature moved to reviewing-plan.[/green]")
+    return True
 
 
 def run_plan_review(
@@ -113,6 +206,7 @@ def run_plan_review(
     """
     runner = runner.for_phase("reviewing_plan")
     console.print(f"\n[bold blue]Reviewing Plan:[/bold blue] {feature.title}")
+    logger.info(f"[plan-review] Starting: {feature.title}")
 
     template = _load_prompt("review-plan.md")
     
@@ -169,6 +263,7 @@ def run_spec_writing(
     """Run two headless calls to generate implementation spec and test spec."""
     runner = runner.for_phase("spec_writing")
     console.print(f"\n[bold blue]Spec Writing:[/bold blue] {feature.title}")
+    logger.info(f"[spec-writing] Starting: {feature.title}")
 
     # Move to spec-writing stage while working
     feature.move_to_stage("spec-writing")
@@ -220,6 +315,7 @@ def run_implementing(
     """Run the implementation phase headlessly."""
     runner = runner.for_phase("implementing")
     console.print(f"\n[bold blue]Implementing:[/bold blue] {feature.title}")
+    logger.info(f"[implementing] Starting: {feature.title}")
 
     template = _load_prompt("implement.md")
     prompt = template.format(
@@ -397,9 +493,18 @@ def run_pipeline(
         border_style="cyan",
     ))
 
-    # Phase 0: Planning (if in plan-inbox)
-    if feature.current_stage == "plan-inbox":
-        run_planning(feature, runner, status=status)
+    # Phase 0: Planning loop (plan-inbox -> planning -> [requested-input | reviewing-plan])
+    if feature.current_stage == "plan-inbox" or feature.current_stage == "requested-input":
+        # Keep running planning until no more questions
+        while feature.current_stage in ("plan-inbox", "requested-input"):
+            plan_complete = run_planning(feature, runner, status=status)
+            if not plan_complete:
+                # Questions were raised, stop and wait for human input
+                console.print("[yellow]Pipeline paused - human input needed. Run pipeline again after answering questions.[/yellow]")
+                return
+            # Plan complete, should be in reviewing-plan now
+            if feature.current_stage != "reviewing-plan":
+                break
     
     # Phase 0b: Plan review (with retries)
     if feature.current_stage == "reviewing-plan":

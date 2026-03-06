@@ -1,0 +1,9 @@
+VERDICT: FAIL
+FEEDBACK:
+- Config file location mismatch: Original description specifies `~/.mad/config.json` (global), but plan uses `<project_root>/.mad.config.json` (per-project). Must clarify which is correct.
+- CONTEXT.md location mismatch: Original says `~/.mad/CONTEXT.md`, plan says `<project_root>/.mad/CONTEXT.md`. Inconsistency must be resolved.
+- Agent working directory conflict: Setting cwd to project root breaks agents that need to operate on work item directories (e.g., `ideas/abc123/`). Plan doesn't address how agents access work item files.
+- No config write validation: Plan doesn't handle errors when `mad config set code_path` fails (permissions, disk full, etc.)
+- Editor fallback incomplete: Plan mentions `$EDITOR or vim` but doesn't handle case when neither environment variable is set.
+- Missing Windows path handling: Plan uses Unix-style paths (`~/`) without addressing Windows compatibility (`%USERPROFILE%`)
+- Session definition unclear: Plan says "per session, not per message" but doesn't define what constitutes a session boundary.

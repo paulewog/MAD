@@ -8,4 +8,9 @@ Test Spec (behaviors to verify):
 Implementation Notes (what was built):
 {impl_notes}
 
+IMPORTANT: After writing tests, you MUST verify:
+1. The tests compile without errors
+2. All tests pass
+3. Fix any test failures before completing
+
 Write actual test code following the project's existing testing patterns. Cover all behaviors in the test spec. Include edge cases. No preamble — just write the tests.

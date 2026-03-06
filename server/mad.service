@@ -1,0 +1,14 @@
+[Unit]
+Description=MAD Server
+After=network.target
+
+[Service]
+Environment=SERVER_PORT=8081
+Environment=SERVER_API_KEY=9505ddd5b9a59795bfcd2e32b37e97f7a2c52913d0cbd5f0
+Environment=SERVER_DASHBOARD_KEY=5067558f4c6b90ab22593d3b
+ExecStart=/mad-server/mad-server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,141 @@
+# Test Specification: Add Code Path to Board
+
+## 1. Behaviors That MUST Be Verified
+
+### 1.1 Config Schema Changes
+
+**Global Configuration (.mad.config.json)**
+- When `mad config set code_path /path/to/project` is executed, the value must be persisted to `<project_root>/.mad.config.json` under the `code_path` key
+- When `mad config get code_path` is executed, the current value must be returned or indicate if not set
+- The `context_file` field defaults to `<project_root>/.mad/CONTEXT.md` when not explicitly set
+- Symlinks in the configured path must be resolved to their real path when read using `os.path.realpath()`
+
+**Per-Board Configuration**
+- When a board-specific config exists at `<project_root>/.mad/boards/<boardname>/config.json`, it must take precedence over global config
+- Per-board config must directly override global config (no merging of values)
+- Per-board `code_path` can be set independently; if not set, falls back to default derivation
+
+### 1.2 CONTEXT.md File Handling
+
+- When the system reads CONTEXT.md, it must successfully read from `<project_root>/.mad/CONTEXT.md`
+- If CONTEXT.md does not exist, the system must continue without error and indicate the file is missing when queried
+- If CONTEXT.md exceeds 100KB, the system must truncate the file at the nearest byte boundary (not UTF-8 character) to stay within limit
+- If CONTEXT.md cannot be read due to permissions or other errors, the system must silently ignore the failure
+
+### 1.3 Agent Working Directory
+
+- When a new agent session is invoked, the working directory (cwd) must be set to the `code_path` (project root), not the board's item directory
+- This behavioral change must be verified by checking that agents operate from the project root
+
+### 1.4 Agent Instructions Prepending
+
+- When a new agent session starts, the initial instruction prompt must include: "Code Path: <code_path>" as the first line(s)
+- The initial instruction prompt must also include: "Context File: <project_root>/.mad/CONTEXT.md"
+- This prepending must occur only for new sessions, not for every message turn within a session
+- Even if CONTEXT.md doesn't exist, the path must still be included in the instructions
+
+### 1.5 CLI Commands
+
+**mad config set code_path \<path\>**
+- Must store the provided path in `<project_root>/.mad.config.json`
+- Must return success confirmation or error message
+
+**mad config get code_path**
+- Must return the currently configured code_path value
+- Must indicate if code_path is not set
+
+**mad context edit**
+- Must open CONTEXT.md in the editor specified by $EDITOR environment variable
+- If $EDITOR is not set, must fall back to vim
+- If no editor is available, must return an error message
+
+**mad context view**
+- Must display the current contents of CONTEXT.md
+- If CONTEXT.md is missing, must display a message indicating it doesn't exist
+- If CONTEXT.md was truncated due to size, this should be noted
+
+### 1.6 Default Code Path Derivation
+
+- When code_path is not set in config, the system must derive it from the board location using board_directory.parent.parent (grandparent of board directory)
+- The system must allow code_path to be set even if the directory doesn't exist yet (new project scenario)
+- No validation of directory existence is required at config write time
+
+---
+
+## 2. Edge Cases
+
+### 2.1 Empty/Null Inputs
+
+- `mad config set code_path` with no path argument must return an error indicating missing required argument
+- `mad config set code_path ""` (empty string) should either reject with error or treat as unsetting the value
+- `mad context edit` with no CONTEXT.md existing should create a new empty file for editing
+
+### 2.2 Boundary Conditions
+
+- CONTEXT.md exactly at 100KB must be handled without truncation
+- CONTEXT.md at 100KB + 1 byte must be truncated at the 100KB byte boundary
+- CONTEXT.md with multi-byte UTF-8 characters must be truncated at byte boundary, not character boundary, to avoid corrupting UTF-8 sequences
+- Very long paths (exceeding filesystem limits) must be handled gracefully
+
+### 2.3 Invalid States
+
+- .mad.config.json with invalid JSON must be handled gracefully (treat as if config doesn't exist)
+- Per-board config with invalid JSON must be handled gracefully (fall back to global config)
+- Board name with special characters (spaces, slashes, etc.) must be handled properly in file paths
+
+### 2.4 Concurrent Operations
+
+- Simultaneous config writes from multiple processes must not corrupt the config file (consider file locking or atomic writes)
+- Concurrent context edits should handle file locking or warn about conflicts
+
+### 2.5 Error Conditions
+
+- Disk full when writing config must return meaningful error message
+- Permission denied when reading/writing config or context must be handled silently for optional operations, or return clear error for required operations
+- Invalid path characters in code_path must be validated or rejected
+
+---
+
+## 3. What Constitutes Failure
+
+### 3.1 Criteria for Test Failure
+
+- Config value not persisted after `mad config set` command
+- `mad config get` returns incorrect value or crashes
+- Agent working directory is set to board item location instead of project root
+- New agent sessions missing code_path or context_file in initial instructions
+- CONTEXT.md not truncated at 100KB byte boundary
+- CONTEXT.md truncated in middle of multi-byte UTF-8 character
+- CLI commands return unexpected errors or crash
+- Per-board config not taking precedence over global config
+
+### 3.2 Error Messages Expected
+
+- Missing required arguments should return: "error: missing required argument: path"
+- Config read failure should return: "error: unable to read config" or similar
+- Editor not available should return: "error: no editor found. Set $EDITOR or install vim"
+- File not found for context view should return: "Context file not found at <path>"
+
+### 3.3 Rollback Behavior
+
+- If config write fails mid-operation, the original config should be preserved
+- If CONTEXT.md write fails, the original content should be preserved
+- No automatic rollback mechanism is required for agent session failures (external process)
+
+---
+
+## 4. Out of Scope
+
+The following are explicitly NOT tested:
+
+- **UI timing**: Any assertions about how long UI elements take to render or respond
+- **Visual assertions**: Checking colors, fonts, layout, or visual elements
+- **Performance benchmarks**: Speed of operations, memory usage, or throughput measurements
+- **Network conditions**: Behavior under slow network, network failures, or latency simulation
+- **Browser automation**: Any browser-specific testing or visual regression
+- **Long-running stability**: Memory leaks over extended use or overnight runs
+- **Concurrent user load**: Multiple simultaneous users or high concurrency scenarios
+- **Cross-platform visual differences**: OS-specific UI rendering differences
+- **Third-party integration**: External API behavior beyond basic connectivity
+- **Accessibility testing**: Screen reader compatibility, keyboard navigation
+- **Internationalization**: Multiple language support or locale-specific formatting

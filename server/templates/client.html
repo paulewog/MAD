@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Client: {{.ClientID}}</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#0d1117">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="/static/icon-192.png">
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+            background: #0d1117;
+            color: #c9d1d9;
+            padding: 2rem;
+        }
+        h1, h2 {
+            color: #58a6ff;
+            font-weight: 600;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+        h2 { font-size: 1.1rem; margin: 2rem 0 1rem 0; }
+        a { color: #58a6ff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .back-link { margin-bottom: 1.5rem; display: inline-block; font-size: 0.9rem; }
+        .client-status {
+            font-size: 0.85rem;
+            margin-bottom: 1rem;
+            color: #8b949e;
+        }
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 0.4rem;
+        }
+        .status-active { background: #3fb950; }
+        .status-stale { background: #484f58; }
+        /* Stage sections */
+        .stage-section {
+            background: #161b22;
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
+            overflow: hidden;
+        }
+        .stage-toggle {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.6rem 0.75rem;
+            background: #1c2128;
+            border: none;
+            color: #8b949e;
+            font-family: inherit;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            cursor: pointer;
+            text-align: left;
+        }
+        .stage-toggle:hover { background: #21262d; }
+        .stage-toggle .arrow {
+            transition: transform 0.15s;
+            font-size: 0.7rem;
+        }
+        .stage-toggle.collapsed .arrow { transform: rotate(-90deg); }
+        .stage-count {
+            background: #30363d;
+            color: #8b949e;
+            padding: 0.1rem 0.45rem;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            min-width: 1.3rem;
+            text-align: center;
+            margin-left: 0.5rem;
+        }
+        .stage-count.has-items {
+            background: #1f6feb;
+            color: #fff;
+        }
+        .stage-body {
+            padding: 0.5rem 0.75rem;
+        }
+        .stage-body.hidden { display: none; }
+        .feature-card {
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 4px;
+            padding: 0.5rem 0.6rem;
+            font-size: 0.8rem;
+            cursor: pointer;
+            margin-bottom: 0.4rem;
+            transition: border-color 0.15s;
+        }
+        .feature-card:last-child { margin-bottom: 0; }
+        .feature-card:hover { border-color: #58a6ff; }
+        .feature-card .title {
+            color: #c9d1d9;
+            font-weight: 500;
+            margin-bottom: 0.25rem;
+            word-break: break-word;
+        }
+        .feature-card .meta {
+            color: #484f58;
+            font-size: 0.7rem;
+        }
+        .feature-card .meta span { margin-right: 0.5rem; }
+        /* Feature detail (inline expand) */
+        .feature-detail {
+            background: #1c2128;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            padding: 0.75rem;
+            margin-bottom: 0.4rem;
+            font-size: 0.8rem;
+        }
+        .feature-detail .detail-row {
+            display: flex;
+            padding: 0.3rem 0;
+            border-bottom: 1px solid #21262d;
+        }
+        .feature-detail .detail-row:last-child { border-bottom: none; }
+        .feature-detail .detail-label {
+            color: #8b949e;
+            width: 70px;
+            flex-shrink: 0;
+            font-weight: 600;
+        }
+        .feature-detail .detail-value {
+            color: #c9d1d9;
+            word-break: break-word;
+        }
+        /* Logs */
+        .log-list {
+            background: #161b22;
+            border-radius: 6px;
+            padding: 1rem;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .log-entry {
+            padding: 0.35rem 0;
+            border-bottom: 1px solid #21262d;
+            font-size: 0.85rem;
+            font-family: monospace;
+        }
+        .log-entry:last-child { border-bottom: none; }
+        .log-ts { color: #484f58; margin-right: 0.5rem; }
+        .log-phase { color: #d2a8ff; margin-right: 0.5rem; font-weight: 600; }
+        .log-output { color: #c9d1d9; }
+        .empty-state {
+            text-align: center;
+            padding: 2rem;
+            color: #484f58;
+        }
+        .empty-stage {
+            color: #484f58;
+            font-size: 0.75rem;
+            font-style: italic;
+            padding: 0.25rem 0;
+        }
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.6);
+            z-index: 100;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 1.5rem;
+            max-width: 500px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <a class="back-link" href="/?key={{.Key}}">&larr; Back to Dashboard</a>
+    <h1>Client: {{.ClientID}}</h1>
+    <div class="client-status">
+        {{if .Connected}}<span class="status-dot status-active"></span>Connected{{else}}<span class="status-dot status-stale"></span>Disconnected{{end}}
+        &mdash; Last seen: {{.LastSeen.Format "2006-01-02 15:04:05"}}
+    </div>
+    <div id="agent-status" style="display:flex;gap:1rem;margin:1rem 0">
+        <div id="plan-agent-card" style="flex:1;background:#161b22;border-radius:6px;padding:0.75rem">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem">
+                <span style="color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase">Plan Agent</span>
+                <button id="auto-plan-btn" onclick="toggleAutoMode('plan')"
+                    style="padding:0.2rem 0.6rem;border:none;border-radius:4px;cursor:pointer;font-size:0.7rem;font-family:inherit;font-weight:600;{{if .AutoPlan}}background:#238636;color:#fff{{else}}background:#30363d;color:#8b949e{{end}}">
+                    Auto-Plan {{if .AutoPlan}}ON{{else}}OFF{{end}}
+                </button>
+            </div>
+            <span id="plan-agent-body">{{if .PlanAgent.Running}}<span class="status-dot status-active"></span><span style="color:#c9d1d9">{{.PlanAgent.Phase}}</span>
+            {{if .PlanAgent.Feature}}<span style="color:#484f58;font-size:0.8rem"> &mdash; {{.PlanAgent.Feature}}</span>{{end}}
+            {{if .PlanAgent.Agent}}<span style="color:#484f58;font-size:0.75rem"> ({{.PlanAgent.Agent}})</span>{{end}}
+            {{else}}<span style="color:#484f58">idle</span>{{end}}</span>
+        </div>
+        <div id="impl-agent-card" style="flex:1;background:#161b22;border-radius:6px;padding:0.75rem">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.3rem">
+                <span style="color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase">Impl Agent</span>
+                <button id="auto-impl-btn" onclick="toggleAutoMode('impl')"
+                    style="padding:0.2rem 0.6rem;border:none;border-radius:4px;cursor:pointer;font-size:0.7rem;font-family:inherit;font-weight:600;{{if .AutoImpl}}background:#238636;color:#fff{{else}}background:#30363d;color:#8b949e{{end}}">
+                    Auto-Impl {{if .AutoImpl}}ON{{else}}OFF{{end}}
+                </button>
+            </div>
+            <span id="impl-agent-body">{{if .ImplAgent.Running}}<span class="status-dot status-active"></span><span style="color:#c9d1d9">{{.ImplAgent.Phase}}</span>
+            {{if .ImplAgent.Feature}}<span style="color:#484f58;font-size:0.8rem"> &mdash; {{.ImplAgent.Feature}}</span>{{end}}
+            {{if .ImplAgent.Agent}}<span style="color:#484f58;font-size:0.75rem"> ({{.ImplAgent.Agent}})</span>{{end}}
+            {{else}}<span style="color:#484f58">idle</span>{{end}}</span>
+        </div>
+    </div>
+    <div>
+    <h2>Features <button onclick="showNewIdeaModal()" style="margin-left:0.5rem;padding:0.2rem 0.6rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem;font-family:inherit;font-weight:600">+ New Idea</button></h2>
+    <div id="features-container">
+        {{template "feature_stages" .}}
+    </div>
+    <!-- New Idea Modal -->
+    <div class="modal-overlay" id="new-idea-modal" onclick="closeNewIdeaModal(event)">
+        <div class="modal" onclick="event.stopPropagation()" style="max-width:450px">
+            <h3 style="color:#58a6ff;font-size:1rem;margin-bottom:1rem">Create New Idea</h3>
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Title *</label>
+                <input type="text" id="new-idea-title" placeholder="Enter idea title" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
+            </div>
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Board *</label>
+                <input type="text" id="new-idea-board" placeholder="e.g., default" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
+            </div>
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Description</label>
+                <textarea id="new-idea-description" placeholder="Optional description" rows="3" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit;resize:vertical"></textarea>
+            </div>
+            <div style="display:flex;gap:0.5rem;justify-content:flex-end">
+                <button onclick="closeNewIdeaModal()" style="padding:0.5rem 1rem;background:#30363d;color:#c9d1d9;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-family:inherit">Cancel</button>
+                <button onclick="submitNewIdea()" id="submit-idea-btn" style="padding:0.5rem 1rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-family:inherit">Create Idea</button>
+            </div>
+            <div id="new-idea-feedback" style="margin-top:0.75rem;font-size:0.85rem"></div>
+        </div>
+    </div>
+    <h2>Logs</h2>
+    <div class="log-list" hx-get="/clients/{{.ClientID}}/logs?key={{.Key}}" hx-trigger="every 5s" hx-swap="innerHTML">
+        {{template "log_entries" .Logs}}
+    </div>
+    <script>
+        var _clientID = "{{.ClientID}}";
+        var _dashKey = "{{.Key}}";
+        // Smart polling: fetch features HTML, only update cards that actually changed.
+        // Preserves collapsed stages, expanded details, and form state.
+        var _featuresURL = '/clients/' + _clientID + '/features?key=' + encodeURIComponent(_dashKey);
+        var _lastFeaturesHTML = '';
+        function smartPollFeatures() {
+            fetch(_featuresURL).then(function(r) { return r.text(); }).then(function(html) {
+                if (html === _lastFeaturesHTML) return; // nothing changed at all
+                _lastFeaturesHTML = html;
+                var container = document.getElementById('features-container');
+                // Parse new HTML into a temp div
+                var tmp = document.createElement('div');
+                tmp.innerHTML = html;
+                // Build map of current cards by feature id
+                var curCards = {};
+                container.querySelectorAll('.feature-card').forEach(function(c) {
+                    curCards[c.getAttribute('data-id')] = c;
+                });
+                // Walk new stage sections, update in place
+                var newSections = tmp.querySelectorAll('.stage-section');
+                var curSections = container.querySelectorAll('.stage-section');
+                // If structure changed (stages added/removed), full replace
+                if (newSections.length !== curSections.length) {
+                    container.innerHTML = html;
+                    return;
+                }
+                for (var si = 0; si < newSections.length; si++) {
+                    var curSec = curSections[si];
+                    var newSec = newSections[si];
+                    // Update count badge without touching collapsed state
+                    var curCount = curSec.querySelector('.stage-count');
+                    var newCount = newSec.querySelector('.stage-count');
+                    if (curCount && newCount) {
+                        curCount.textContent = newCount.textContent;
+                        curCount.className = newCount.className;
+                    }
+                    // Compare cards in this stage
+                    var curBody = curSec.querySelector('.stage-body');
+                    var newBody = newSec.querySelector('.stage-body');
+                    var newCards = newBody.querySelectorAll('.feature-card');
+                    var curStageCards = curBody.querySelectorAll('.feature-card');
+                    // Build a hash of each card's data attributes
+                    function cardHash(card) {
+                        return [card.getAttribute('data-id'),
+                                card.getAttribute('data-stage'),
+                                card.getAttribute('data-title'),
+                                card.getAttribute('data-description'),
+                                card.getAttribute('data-history'),
+                                card.getAttribute('data-questions') || '',
+                                card.getAttribute('data-available-actions') || ''].join('|');
+                    }
+                    // Quick check: same number of cards with same hashes?
+                    var same = curStageCards.length === newCards.length;
+                    if (same) {
+                        for (var ci = 0; ci < newCards.length; ci++) {
+                            if (cardHash(curStageCards[ci]) !== cardHash(newCards[ci])) {
+                                same = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (!same) {
+                        // Cards changed in this stage - save expanded state, replace body content, restore
+                        var expanded = {};
+                        curBody.querySelectorAll('.feature-card').forEach(function(c) {
+                            var next = c.nextElementSibling;
+                            if (next && next.classList.contains('feature-detail')) {
+                                expanded[c.getAttribute('data-id')] = next.innerHTML;
+                            }
+                        });
+                        // Replace only the cards inside the body, preserving the body element itself
+                        var wasHidden = curBody.classList.contains('hidden');
+                        curBody.innerHTML = newBody.innerHTML;
+                        if (wasHidden) curBody.classList.add('hidden');
+                        // Restore expanded details for cards that still exist and haven't changed
+                        curBody.querySelectorAll('.feature-card').forEach(function(c) {
+                            var fid = c.getAttribute('data-id');
+                            if (fid in expanded) {
+                                var detail = document.createElement('div');
+                                detail.className = 'feature-detail';
+                                detail.innerHTML = expanded[fid];
+                                c.after(detail);
+                            }
+                        });
+                    }
+                    // If same, do nothing - cards are identical, leave DOM untouched
+                }
+            }).catch(function() {});
+        }
+        setInterval(smartPollFeatures, 5000);
+        // Poll agent status via JSON API
+        var _agentURL = '/api/clients/' + _clientID + '?key=' + encodeURIComponent(_dashKey);
+        function renderAgent(agent) {
+            if (!agent || !agent.running) return '<span style="color:#484f58">idle</span>';
+            var h = '<span class="status-dot status-active"></span><span style="color:#c9d1d9">' + escapeHtml(agent.phase) + '</span>';
+            if (agent.feature) h += '<span style="color:#484f58;font-size:0.8rem"> &mdash; ' + escapeHtml(agent.feature) + '</span>';
+            if (agent.agent) h += '<span style="color:#484f58;font-size:0.75rem"> (' + escapeHtml(agent.agent) + ')</span>';
+            return h;
+        }
+        function updateAutoBtn(btnId, label, enabled) {
+            var btn = document.getElementById(btnId);
+            if (!btn) return;
+            btn.textContent = label + (enabled ? ' ON' : ' OFF');
+            btn.style.background = enabled ? '#238636' : '#30363d';
+            btn.style.color = enabled ? '#fff' : '#8b949e';
+            btn.setAttribute('data-enabled', enabled ? 'true' : 'false');
+        }
+        function toggleAutoMode(mode) {
+            var btnId = mode === 'plan' ? 'auto-plan-btn' : 'auto-impl-btn';
+            var btn = document.getElementById(btnId);
+            var currentlyEnabled = btn.getAttribute('data-enabled') === 'true';
+            var newEnabled = !currentlyEnabled;
+            btn.disabled = true;
+            fetch('/api/clients/' + encodeURIComponent(_clientID) + '/auto-mode?key=' + encodeURIComponent(_dashKey), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({mode: mode, enabled: newEnabled})
+            }).then(function(resp) {
+                if (resp.ok) {
+                    var label = mode === 'plan' ? 'Auto-Plan' : 'Auto-Impl';
+                    updateAutoBtn(btnId, label, newEnabled);
+                }
+                btn.disabled = false;
+            }).catch(function() { btn.disabled = false; });
+        }
+        // Initialize data-enabled attributes
+        document.getElementById('auto-plan-btn').setAttribute('data-enabled', '{{if .AutoPlan}}true{{else}}false{{end}}');
+        document.getElementById('auto-impl-btn').setAttribute('data-enabled', '{{if .AutoImpl}}true{{else}}false{{end}}');
+        function pollAgentStatus() {
+            fetch(_agentURL, {headers:{'Accept':'application/json'}}).then(function(r){return r.json();}).then(function(data) {
+                var planHTML = renderAgent(data.plan_agent);
+                var implHTML = renderAgent(data.impl_agent);
+                var planEl = document.getElementById('plan-agent-body');
+                var implEl = document.getElementById('impl-agent-body');
+                if (planEl && planEl.innerHTML !== planHTML) planEl.innerHTML = planHTML;
+                if (implEl && implEl.innerHTML !== implHTML) implEl.innerHTML = implHTML;
+                // Sync auto-mode button states
+                if (typeof data.auto_plan === 'boolean') updateAutoBtn('auto-plan-btn', 'Auto-Plan', data.auto_plan);
+                if (typeof data.auto_impl === 'boolean') updateAutoBtn('auto-impl-btn', 'Auto-Impl', data.auto_impl);
+            }).catch(function(){});
+        }
+        setInterval(pollAgentStatus, 5000);
+        function toggleStage(btn) {
+            var body = btn.nextElementSibling;
+            btn.classList.toggle('collapsed');
+            body.classList.toggle('hidden');
+        }
+        function toggleFeatureDetail(card) {
+            var existing = card.nextElementSibling;
+            if (existing && existing.classList.contains('feature-detail')) {
+                existing.remove();
+                return;
+            }
+            var detail = document.createElement('div');
+            detail.className = 'feature-detail';
+            var html =
+                '<div class="detail-row"><span class="detail-label">Title</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-title')) + '</span></div>' +
+                '<div class="detail-row"><span class="detail-label">Stage</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-stage')) + '</span></div>' +
+                '<div class="detail-row"><span class="detail-label">Board</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-board')) + '</span></div>' +
+                '<div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-created')) + '</span></div>' +
+                '<div class="detail-row"><span class="detail-label">ID</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-id')) + '</span></div>';
+            var description = card.getAttribute('data-description') || '';
+            if (description) {
+                html += '<div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d">' +
+                    '<div style="color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem">Description</div>' +
+                    '<div style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap">' + escapeHtml(description) + '</div></div>';
+            }
+            try {
+                var history = JSON.parse(card.getAttribute('data-history') || '[]');
+                if (history.length > 0) {
+                    html += '<div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d">' +
+                        '<div style="color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem">History (' + history.length + ')</div>';
+                    for (var i = 0; i < history.length; i++) {
+                        var h = history[i];
+                        html += '<div style="font-size:0.7rem;padding:0.15rem 0;border-bottom:1px solid #161b22">' +
+                            '<span style="color:#484f58">' + escapeHtml(h.ts || '') + '</span> ' +
+                            '<span style="color:#d2a8ff;font-weight:600">' + escapeHtml(h.stage || '') + '</span> ' +
+                            '<span style="color:#c9d1d9">' + escapeHtml(h.note || '') + '</span></div>';
+                    }
+                    html += '</div>';
+                }
+            } catch(e) {}
+            // Questions form for requested-input features
+            try {
+                var questions = JSON.parse(card.getAttribute('data-questions') || '[]');
+                var stage = card.getAttribute('data-stage');
+                if (questions.length > 0 && stage === 'requested-input') {
+                    var featureID = card.getAttribute('data-id');
+                    html += '<div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d">' +
+                        '<div style="color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.4rem">Questions (' + questions.length + ')</div>';
+                    for (var qi = 0; qi < questions.length; qi++) {
+                        var q = questions[qi];
+                        html += '<div style="margin-bottom:0.5rem">' +
+                            '<label style="display:block;color:#c9d1d9;font-size:0.8rem;margin-bottom:0.2rem">' + escapeHtml(q.question) + '</label>' +
+                            '<input type="text" class="qa-input" data-qi="' + qi + '" value="' + escapeHtml(q.answer || '') + '" ' +
+                            'style="width:100%;padding:0.3rem 0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.8rem;font-family:inherit" />' +
+                            '</div>';
+                    }
+                    html += '<button onclick="submitAnswers(this,\'' + escapeHtml(featureID) + '\')" ' +
+                        'style="padding:0.35rem 0.8rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-family:inherit">Submit Answers</button>' +
+                        '<span class="answer-feedback" style="margin-left:0.5rem;font-size:0.8rem"></span>' +
+                        '</div>';
+                }
+            } catch(e) {}
+            // Action buttons (plan / implement)
+            try {
+                var actions = JSON.parse(card.getAttribute('data-available-actions') || '[]');
+                if (actions && actions.length > 0) {
+                    html += '<div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d;display:flex;gap:0.5rem">';
+                    for (var ai = 0; ai < actions.length; ai++) {
+                        var act = actions[ai];
+                        var label = act === 'plan' ? 'Start Planning' : 'Start Implementing';
+                        var btnColor = act === 'plan' ? '#1f6feb' : '#8957e5';
+                        var fid = card.getAttribute('data-id');
+                        html += '<button onclick="event.stopPropagation();startAgent(this,\'' + escapeHtml(fid) + '\',\'' + act + '\')" ' +
+                            'style="padding:0.35rem 0.8rem;background:' + btnColor + ';color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-family:inherit">' +
+                            label + '</button>';
+                    }
+                    html += '</div>';
+                }
+            } catch(e) {}
+            detail.innerHTML = html;
+            card.after(detail);
+        }
+        function submitAnswers(btn, featureID) {
+            var detail = btn.closest('.feature-detail');
+            var inputs = detail.querySelectorAll('.qa-input');
+            var questions = [];
+            try {
+                var card = detail.previousElementSibling;
+                questions = JSON.parse(card.getAttribute('data-questions') || '[]');
+            } catch(e) {}
+            var answers = [];
+            inputs.forEach(function(inp) {
+                var idx = parseInt(inp.getAttribute('data-qi'));
+                answers.push({question: questions[idx] ? questions[idx].question : '', answer: inp.value});
+            });
+            var feedback = detail.querySelector('.answer-feedback');
+            btn.disabled = true;
+            btn.textContent = 'Submitting...';
+            fetch('/api/clients/' + encodeURIComponent(_clientID) + '/features/' + encodeURIComponent(featureID) + '/answers?key=' + encodeURIComponent(_dashKey), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({answers: answers})
+            }).then(function(resp) {
+                return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+            }).then(function(result) {
+                if (result.ok) {
+                    feedback.style.color = '#3fb950';
+                    feedback.textContent = 'Answers submitted!';
+                } else {
+                    feedback.style.color = '#f85149';
+                    feedback.textContent = result.data.error || 'Failed';
+                }
+                btn.disabled = false;
+                btn.textContent = 'Submit Answers';
+            }).catch(function(err) {
+                feedback.style.color = '#f85149';
+                feedback.textContent = 'Network error';
+                btn.disabled = false;
+                btn.textContent = 'Submit Answers';
+            });
+        }
+        function startAgent(btn, featureID, action) {
+            btn.disabled = true;
+            var origText = btn.textContent;
+            var origBg = btn.style.background;
+            btn.textContent = 'Starting...';
+            fetch('/api/clients/' + encodeURIComponent(_clientID) + '/features/' + encodeURIComponent(featureID) + '/start-agent?key=' + encodeURIComponent(_dashKey), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action: action})
+            }).then(function(resp) {
+                return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+            }).then(function(result) {
+                if (result.ok) {
+                    btn.textContent = 'Started!';
+                    btn.style.background = '#238636';
+                    setTimeout(function() { btn.disabled = false; btn.textContent = origText; btn.style.background = origBg; }, 3000);
+                } else {
+                    btn.textContent = result.data.error || 'Failed';
+                    btn.style.background = '#f85149';
+                    setTimeout(function() { btn.disabled = false; btn.textContent = origText; btn.style.background = origBg; }, 3000);
+                }
+            }).catch(function() {
+                btn.textContent = 'Network error';
+                btn.style.background = '#f85149';
+                setTimeout(function() { btn.disabled = false; btn.textContent = origText; btn.style.background = origBg; }, 3000);
+            });
+        }
+        function showNewIdeaModal() {
+            document.getElementById('new-idea-modal').classList.add('active');
+            document.getElementById('new-idea-title').value = '';
+            document.getElementById('new-idea-board').value = '';
+            document.getElementById('new-idea-description').value = '';
+            document.getElementById('new-idea-feedback').textContent = '';
+            document.getElementById('new-idea-title').focus();
+        }
+        function closeNewIdeaModal(event) {
+            if (!event || event.target === document.getElementById('new-idea-modal')) {
+                document.getElementById('new-idea-modal').classList.remove('active');
+            }
+        }
+        function submitNewIdea() {
+            var title = document.getElementById('new-idea-title').value.trim();
+            var board = document.getElementById('new-idea-board').value.trim();
+            var description = document.getElementById('new-idea-description').value.trim();
+            var feedback = document.getElementById('new-idea-feedback');
+            var btn = document.getElementById('submit-idea-btn');
+            if (!title) {
+                feedback.style.color = '#f85149';
+                feedback.textContent = 'Title is required';
+                return;
+            }
+            if (!board) {
+                feedback.style.color = '#f85149';
+                feedback.textContent = 'Board is required';
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = 'Creating...';
+            fetch('/api/clients/' + encodeURIComponent(_clientID) + '/ideas?key=' + encodeURIComponent(_dashKey), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({title: title, board: board, description: description})
+            }).then(function(resp) {
+                return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+            }).then(function(result) {
+                if (result.ok) {
+                    feedback.style.color = '#3fb950';
+                    feedback.textContent = 'Idea created successfully!';
+                    setTimeout(function() {
+                        closeNewIdeaModal();
+                        // Trigger immediate poll to see the new idea
+                        smartPollFeatures();
+                    }, 1000);
+                } else {
+                    feedback.style.color = '#f85149';
+                    feedback.textContent = result.data.error || 'Failed to create idea';
+                    btn.disabled = false;
+                    btn.textContent = 'Create Idea';
+                }
+            }).catch(function(err) {
+                feedback.style.color = '#f85149';
+                feedback.textContent = 'Network error';
+                btn.disabled = false;
+                btn.textContent = 'Create Idea';
+            });
+        }
+        function escapeHtml(text) {
+            var div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+    <script>if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js'); }</script>
+</body>
+</html>

@@ -3,6 +3,7 @@
 import os
 import subprocess
 import time
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -12,6 +13,26 @@ from agent_status import AgentStatus
 from config import AgentConfig, Config
 
 console = Console()
+
+# Set up file logging - less verbose
+_log_dir = Path(__file__).parent.parent / ".mad" / "logs"
+_log_dir.mkdir(parents=True, exist_ok=True)
+_log_file = _log_dir / "runner.log"
+
+logging.basicConfig(
+    level=logging.INFO,  # Changed from DEBUG
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[
+        logging.FileHandler(_log_file),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("runner")
+
+
+class RateLimitError(Exception):
+    """Raised when the AI agent is rate limited."""
+    pass
 
 
 class AgentRunner:
@@ -41,20 +62,45 @@ class AgentRunner:
     def interactive(self, workdir: Path, initial_message: str = None) -> None:
         """Launch the agent interactively in workdir.
 
-        If initial_message is given, write it to CONTEXT.md in workdir first.
+        If initial_message is given, write it to .tmp/<item>.instructions and use --prompt.
         """
         workdir = Path(workdir).expanduser().resolve()
         workdir.mkdir(parents=True, exist_ok=True)
 
-        if initial_message:
-            context_path = workdir / "CONTEXT.md"
-            context_path.write_text(initial_message)
-
-        cmd = [self.agent.command]
-        if initial_message:
-            cmd.append(initial_message)
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        # Remove CLAUDECODE to allow nested invocation
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
+        env["TERM"] = "xterm-256color"
+        
         console.print(f"[dim]Launching {self.agent.name} interactively in {workdir}[/dim]")
+        
+        if initial_message:
+            # Create .tmp directory
+            tmp_dir = workdir / ".tmp"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Extract item name from workdir or use default
+            item_name = workdir.name
+            
+            # Write instructions to .tmp/<item>.instructions
+            instructions_path = tmp_dir / f"{item_name}.instructions"
+            instructions_path.write_text(initial_message)
+            logger.info(f"[runner] Interactive instructions for '{item_name}': {len(initial_message)} chars")
+            logger.info(f"[runner] Instructions preview: {initial_message[:200]}...")
+            
+            console.print(f"[dim].tmp/{item_name}.instructions contains the task. Just talk to kilo naturally![/dim]")
+            
+            # Build command: kilo uses --prompt, claude uses positional arg for interactive TUI
+            if self.agent.command == "kilo":
+                cmd = [self.agent.command, "--prompt", f"Read {instructions_path} and follow the instructions exactly."]
+            else:
+                # claude: positional arg opens TUI with context
+                cmd = [self.agent.command, f"Read {instructions_path} and follow the instructions exactly."]
+        else:
+            console.print(f"[dim]Just talk to kilo naturally![/dim]")
+            cmd = [self.agent.command]
+        
+        # Use subprocess.run with shell=False for proper argument handling
         subprocess.run(cmd, cwd=str(workdir), env=env)
 
     def headless(
@@ -69,17 +115,55 @@ class AgentRunner:
         appends each stdout line to status.lines (capped at 200 entries).
         stderr is captured for error messages but not added to status.lines.
         
-        Prompt is passed via stdin to avoid shell escaping issues.
+        Instructions are written to .tmp/<item>.instructions file and read via --prompt.
         """
         try:
-            # Build command to pipe prompt via stdin
-            cmd = [
-                self.agent.command,
-                self.agent.headless_flag,
-            ] + self.agent.headless_extra_flags
+            workdir = workdir or self._workdir
+            workdir = Path(workdir).expanduser().resolve()
+            workdir.mkdir(parents=True, exist_ok=True)
+            
+            # Get item name from status if available
+            item_name = "default"
+            if status is not None:
+                item_name = getattr(status, 'feature_slug', None) or item_name
+            
+            # Create .tmp directory
+            tmp_dir = workdir / ".tmp"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Delete any existing .instructions* files for this item
+            for f in tmp_dir.glob(f"{item_name}.instructions*"):
+                f.unlink()
+            
+            # Write instructions to .tmp/<item>.instructions file
+            instructions_path = tmp_dir / f"{item_name}.instructions"
+            instructions_path.write_text(prompt)
+            logger.info(f"[runner] Wrote instructions for '{item_name}': {len(prompt)} chars")
+            logger.info(f"[runner] Instructions preview: {prompt[:200]}...")
+            
+            # Build command:
+            # For kilo: "kilo run --format json --auto <message>"
+            # For claude: "claude -p <message> --dangerously-skip-permissions"
+            cmd = [self.agent.command]
+            
+            if self.agent.command == "kilo":
+                # kilo: run comes first, then flags, then message
+                for f in self.agent.headless_extra_flags:
+                    if not f.startswith("-"):
+                        cmd.append(f)
+                for f in self.agent.headless_extra_flags:
+                    if f.startswith("-"):
+                        cmd.append(f)
+                cmd.append(f"Read {instructions_path} and follow the instructions exactly.")
+            else:
+                # claude: -p flag, then message, then extra flags
+                if self.agent.headless_flag:
+                    cmd.append(self.agent.headless_flag)
+                cmd.append(f"Read {instructions_path} and follow the instructions exactly.")
+                cmd.extend(self.agent.headless_extra_flags)
 
-            # Use the runner's workdir (defaults to MAD_DIR env var or current dir)
-            cwd = str(self._workdir)
+            # Use the workdir
+            cwd = str(workdir)
 
             # Strip CLAUDECODE so claude allows nested invocation
             env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
@@ -91,23 +175,99 @@ class AgentRunner:
             process = subprocess.Popen(
                 cmd,
                 cwd=cwd,
-                stdin=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 env=env,
             )
 
-            # Write prompt to stdin
-            stdout, stderr_output = process.communicate(input=prompt)
-
+            # Read stdout while process is running (streaming)
             output_lines = []
-            for line in stdout.splitlines():
-                output_lines.append(line)
-                if status is not None:
-                    status.lines.append(line)
-                    if len(status.lines) > 200:
+            is_json_format = "--format" in cmd and "json" in cmd
+            
+            # Debug logging
+            logger.info(f"Starting {self.agent.name} with cmd: {cmd}")
+            
+            # Set up file logging for debugging - always create log for kilo
+            log_file = None
+            feature_slug = "unknown"
+            if status is not None:
+                feature_slug = getattr(status, 'feature_slug', 'unknown') or 'unknown'
+                logger.info(f"status.feature_slug = {feature_slug!r}")
+                
+            if status is not None and feature_slug != 'unknown':
+                log_dir = self._workdir
+                try:
+                    log_dir = log_dir.resolve()
+                    (log_dir / "logs").mkdir(parents=True, exist_ok=True)
+                    timestamp = int(time.time())
+                    log_path = log_dir / "logs" / f"{self.agent.name}-{feature_slug}-{timestamp}.log"
+                    log_file = open(log_path, "w")
+                    logger.info(f"Logging to: {log_path}")
+                except Exception as e:
+                    if status is not None:
+                        status.lines.append(f"[runner] Log failed: {e}")
+                    log_file = None
+            
+            while True:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
+                if line:
+                    # Write raw line to log file for debugging
+                    if log_file:
+                        log_file.write(line)
+                        log_file.flush()
+                    
+                    # If using JSON format (kilo), extract text from JSON events
+                    if is_json_format:
+                        try:
+                            import json
+                            event = json.loads(line.strip())
+                            if event.get("type") == "text":
+                                text = event.get("part", {}).get("text", "")
+                                if text:
+                                    output_lines.append(text)
+                                    if status is not None:
+                                        status.lines.append(text)
+                            elif event.get("type") == "tool_result":
+                                content = event.get("part", {}).get("content", "")
+                                if content:
+                                    output_lines.append(content)
+                                    if status is not None:
+                                        status.lines.append(content)
+                            elif event.get("type") == "tool_use":
+                                tool_name = event.get("part", {}).get("name", "")
+                                if tool_name:
+                                    tool_line = f"[tool: {tool_name}]"
+                                    output_lines.append(tool_line)
+                                    if status is not None:
+                                        status.lines.append(tool_line)
+                        except (json.JSONDecodeError, KeyError, TypeError):
+                            # Not valid JSON or unexpected format, output as-is
+                            output_lines.append(line.rstrip('\n'))
+                            if status is not None:
+                                status.lines.append(line.rstrip('\n'))
+                    else:
+                        output_lines.append(line.rstrip('\n'))
+                        if status is not None:
+                            status.lines.append(line.rstrip('\n'))
+                    
+                    if status is not None and len(status.lines) > 200:
                         status.lines = status.lines[-200:]
+            
+            # Close log file
+            if log_file:
+                log_file.close()
+                print(f"[runner] Log file closed", file=__import__('sys').stderr)
+            
+            stderr_output = process.stderr.read() if process.stderr else ""
+            full_output = "\n".join(output_lines)
+
+            # Check for rate limiting
+            if "out of" in full_output.lower() and "usage" in full_output.lower():
+                raise RateLimitError(full_output)
 
             if process.returncode != 0:
                 stderr_snippet = stderr_output[:500] if stderr_output else "(no stderr)"
@@ -116,7 +276,7 @@ class AgentRunner:
                     f"stderr: {stderr_snippet}"
                 )
 
-            return "\n".join(output_lines)
+            return full_output
 
         finally:
             if status is not None:

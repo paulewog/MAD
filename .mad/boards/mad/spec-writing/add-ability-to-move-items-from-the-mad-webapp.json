@@ -1,0 +1,44 @@
+{
+  "id": "3cf4ac56",
+  "board": "mad",
+  "title": "Add ability to \"move\" items from the MAD webapp",
+  "created": "2026-03-06T18:07Z",
+  "description": "I would like the ability to move items from the MAD webapp - specifically, I want to be able to approve (move it to plan) ideas.",
+  "plan": "# Plan: Add Ability to \"Move\" (Approve) Ideas from the MAD Webapp\n\n## Overview\n\nAdd a feature to the MAD webapp that allows users to approve ideas \u2014 moving them from the `ideas` stage to `plan-inbox`. This follows the exact same pattern already established by the \"Submit Answers\" feature (REST endpoint \u2192 WebSocket message \u2192 pipeline client handler).\n\n## Architecture\n\nThe flow is:\n1. User clicks \"Approve\" button on an idea card in the web UI\n2. Frontend sends `POST /api/clients/{id}/features/{fid}/move` with `{\"target_stage\": \"plan-inbox\"}`\n3. Server validates the request and sends a `move_feature` WebSocket message to the connected pipeline client\n4. Pipeline client receives the message, calls `FeatureFile.move_to_stage()`, adds a history entry, and pushes updated state back to the server\n5. Next poll cycle picks up the change and the UI updates\n\n## Implementation Steps\n\n### Step 1: Add REST Endpoint in `server/api.go`\n\n- Add handler for `POST /api/clients/{id}/features/{fid}/move`\n- Accept JSON body: `{\"target_stage\": \"plan-inbox\"}`\n- Validate:\n  - Client exists and is connected\n  - Feature ID exists in the client's current state\n  - Target stage is a valid stage name\n- Send a `move_feature` message via WebSocket to the pipeline client: `{\"type\": \"move_feature\", \"feature_id\": \"...\", \"target_stage\": \"...\"}`\n- Return `{\"ok\": true}` on success, or `{\"ok\": false, \"error\": \"...\"}` on failure\n- Register the route in the existing mux setup\n\n### Step 2: Handle `move_feature` Message in `pipeline/server_client.py`\n\n- In `_handle_incoming()`, add a handler for `msg_type == \"move_feature\"`\n- Extract `feature_id` and `target_stage` from the message\n- Call a new callback `self._on_move_requested(feature_id, target_stage)` if registered\n- Add `on_move_requested` callback parameter to `__init__` (following the same pattern as `on_answers_received`)\n\n### Step 3: Implement Move Logic in `pipeline/tui.py`\n\n- Add `_on_move_requested(feature_id, target_stage)` async method\n- Find the feature by ID using `FeatureFile` utilities\n- Validate the feature exists and the target stage is valid\n- Call `feature.add_history(target_stage.upper(), f\"Moved via web UI\")`\n- Call `feature.move_to_stage(target_stage)`\n- Trigger a state push to the server so the UI reflects the change immediately\n- Register this callback when creating the `ServerClient` instance\n\n### Step 4: Add \"Approve\" Button in `server/templates/client.html`\n\n- In the `toggleFeatureDetail()` function, when building the detail HTML for a feature in the `ideas` stage, add an \"Approve Idea\" button\n- Implement `moveFeature(btn, featureID, targetStage)` JavaScript function:\n  - Disable button while request is in flight\n  - `POST` to `/api/clients/{clientID}/features/{featureID}/move` with `{\"target_stage\": targetStage}`\n  - Show success/error feedback inline\n  - Re-enable button on completion\n- Style the button consistently with the existing \"Submit Answers\" button\n\n## Files to Modify\n\n| File | Change |\n|------|--------|\n| `server/api.go` | Add `POST /api/clients/{id}/features/{fid}/move` endpoint and route registration |\n| `pipeline/server_client.py` | Add `move_feature` message handler and `on_move_requested` callback |\n| `pipeline/tui.py` | Add `_on_move_requested()` method and register callback with `ServerClient` |\n| `server/templates/client.html` | Add \"Approve\" button for ideas and `moveFeature()` JS function |\n\n## Scope Constraints\n\n- Initially only support moving `ideas` \u2192 `plan-inbox` (the \"approve\" action)\n- The existing `move_to_stage()` in `state.py` already handles the filesystem move \u2014 no changes needed there\n- No new dependencies required\n- Authentication uses the existing dashboard key mechanism (same as submit answers)",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "history": [
+    {
+      "ts": "2026-03-06T18:07Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-06T18:07Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-06T19:05Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-06T19:05Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS \u2014 VERDICT: PASS"
+    },
+    {
+      "ts": "2026-03-06T19:05Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-06T19:53Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    }
+  ],
+  "pipeline_log": []
+}

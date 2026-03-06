@@ -1,0 +1,12 @@
+Let me explore the codebase to understand the current structure before creating a plan.
+Plan written to `/home/paule/MAD/.tmp/add-code-path-to-board.plan.json`
+
+The plan addresses all review feedback:
+- CONTEXT.md location: `~/.mad/CONTEXT.md` (matches original spec)
+- Agent scope: prepended to initial message of each new session
+- Path validation: existence, accessibility, symlink resolution at read time
+- Security: blocks `/etc`, `/var`, `/usr`, `~/.ssh`, etc.; prevents path escaping
+- Error handling: graceful handling for missing/unreadable CONTEXT.md (100KB max)
+- Per-board: schema prepared with shallow merge for future (global for v1)
+- CLI commands: required implementation (`config code-path`, `context view/edit`)
+- Derivation: explicit algorithm: board at `<root>/.mad/boards/<board>` → code_path = `<root>`

@@ -1,0 +1,7 @@
+www.goteamup.io, goteamup.io {
+    reverse_proxy 127.0.0.1:8080
+}
+
+mad.goteamup.io {
+    reverse_proxy 127.0.0.1:8081
+}

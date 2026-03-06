@@ -1,0 +1,8 @@
+VERDICT: FAIL
+FEEDBACK:
+- Config location discrepancy: Original description mentions `~/.mad/config.json` (global) but plan uses `<project_root>/.mad.config.json` (per-project). Need clarification on which is correct.
+- Derivation logic unclear: "board's parent.parent" is confusing notation - should clarify it's the board directory's parent directory's parent (i.e., project root).
+- Missing validation: No validation that `code_path` exists or is accessible before use.
+- Encoding truncation: Truncating at "character boundary" for 100KB with multi-byte UTF-8 could still produce invalid character sequences. Should truncate at byte boundary instead.
+- Agent cwd concern: Setting cwd to project root instead of work item directory may break existing workflows that expect cwd at work item level.
+- Missing migration: No mention of how to handle existing projects/boards when this feature is added.

@@ -93,7 +93,7 @@ def ensure_local_config(cwd: Path) -> Path:
     
     # Create board structure
     stages = [
-        "ideas", "plan-inbox", "approved", "reviewing-plan", "spec-writing",
+        "ideas", "plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing",
         "implementing", "testing", "review", "final-human-approval", "done", "rejected",
     ]
     for stage in stages:
@@ -110,6 +110,16 @@ class AgentConfig:
     command: str
     headless_flag: str
     headless_extra_flags: List[str]
+
+
+@dataclass
+class ServerConfig:
+    """Configuration for server push."""
+    enabled: bool
+    url: str
+    api_key: str
+    client_id: str
+    push_interval_seconds: float = 10.0
 
 
 class Config:
@@ -190,6 +200,31 @@ class Config:
         return self._data.get("current_agent", "claude")
 
     @property
+    def server(self) -> Optional["ServerConfig"]:
+        """Get server configuration if present."""
+        data = self._data.get("server", {})
+        if not data.get("enabled", False):
+            return None
+        url = data.get("url", "")
+        api_key = data.get("api_key", "")
+        client_id = data.get("client_id", "")
+        if not url or not api_key:
+            import logging
+            logging.warning("server.url or server.api_key not configured, skipping server connection")
+            return None
+        if not client_id:
+            import logging
+            logging.warning("server.client_id not configured, skipping server connection")
+            return None
+        return ServerConfig(
+            enabled=True,
+            url=url,
+            api_key=api_key,
+            client_id=client_id,
+            push_interval_seconds=data.get("push_interval_seconds", 10.0),
+        )
+
+    @property
     def agent_for_phase(self) -> Dict[str, str]:
         """Get agent name for a given phase."""
         return self._data.get("agent_for_phase", {})
@@ -197,6 +232,9 @@ class Config:
     def get_agent_for_phase(self, phase: str) -> AgentConfig:
         """Get the agent config for a specific phase."""
         agent_name = self.agent_for_phase.get(phase, self.current_agent_name)
+        # Handle "default" option - use the current default agent
+        if agent_name == "default":
+            agent_name = self.current_agent_name
         agents = self.agents
         if agent_name in agents:
             return agents[agent_name]
@@ -207,7 +245,8 @@ class Config:
         """Set which agent to use for a specific phase."""
         if "agent_for_phase" not in self._data:
             self._data["agent_for_phase"] = {}
-        if agent_name not in self._data["agents"]:
+        # Allow "default" as a value (means use the default agent)
+        if agent_name != "default" and agent_name not in self._data["agents"]:
             raise ValueError(f"Unknown agent: {agent_name}")
         self._data["agent_for_phase"][phase] = agent_name
         self._save()
@@ -217,7 +256,8 @@ class Config:
         if "agent_for_phase" not in self._data:
             self._data["agent_for_phase"] = {}
         for phase, agent_name in phase_mapping.items():
-            if agent_name not in self._data["agents"]:
+            # Allow "default" as a value (means use the default agent)
+            if agent_name != "default" and agent_name not in self._data["agents"]:
                 raise ValueError(f"Unknown agent: {agent_name}")
             self._data["agent_for_phase"][phase] = agent_name
         self._save()
@@ -233,7 +273,7 @@ class Config:
     def setup_boards(self) -> None:
         """Create all board/stage directories if they don't exist."""
         stages = [
-            "ideas", "plan-inbox", "approved", "reviewing-plan", "spec-writing",
+            "ideas", "plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing",
             "implementing", "testing", "review", "final-human-approval", "done", "rejected",
         ]
         for board in self.boards:
@@ -249,6 +289,6 @@ class Config:
         boards.append(name)
         self._data["boards"] = boards
         self._save()
-        for stage in ["inbox", "awaiting-human", "approved", "reviewing-plan", "spec-writing",
-                      "implementing", "testing", "review", "needs-human", "done", "rejected"]:
+        for stage in ["ideas", "plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing",
+                      "implementing", "testing", "review", "final-human-approval", "done", "rejected"]:
             (self.boards_dir / name / stage).mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,11 @@
+**Feature Iteration: slimmer-item-details**
+
+The feature file is at: `slimmer-item-details.json`
+
+**Current Description:**
+I would like to update the "details" pane to have show/hide sections for what we can.  For example, the "plan" and "impl_notes" sections can be quite large... same with other sections around testing, spec, etc.
+
+**Current Plan:**
+(no plan yet)
+
+Please discuss and iterate on this feature with the user. You can update the Description and Plan sections of the feature file based on your discussion. When finished, let the user know they're done.

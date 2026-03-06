@@ -1,0 +1,13 @@
+
+--- STDERR ---
+[91m[1mError: [0mFailed to change directory to /home/paule/MAD/## Feature Iteration: add code path to board
+
+The feature file is at: `add-code-path-to-board.json`
+
+## Current Description:
+Add a code path to a board configuration so that agents know where to look on the filesystem for associated code. Maybe this is just having a "board context" file that is always used?
+
+## Current Plan:
+(no plan yet)
+
+Please discuss and iterate on this feature with the user. You can update the Description and Plan sections of the feature file based on your discussion. When finished, let the user know they're done.
