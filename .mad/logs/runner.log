@@ -537,3 +537,43 @@ Based on the feature description and previous Q&A, here is the implementation pl
 2026-03-06 15:50:19,789 INFO [auto-plan] Checking boards: ['mad']
 2026-03-06 15:50:19,789 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
 2026-03-06 15:50:19,789 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 15:51:29,777 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 15:51:29,777 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 15:51:29,777 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 15:52:02,323 INFO Server connection lost, will reconnect...
+2026-03-06 15:52:03,541 WARNING Failed to connect to server: server rejected WebSocket connection: HTTP 502
+2026-03-06 15:52:05,761 WARNING Failed to connect to server: server rejected WebSocket connection: HTTP 502
+2026-03-06 15:52:07,433 INFO [runner] Wrote instructions for 'add-code-path-to-board': 3896 chars
+2026-03-06 15:52:07,433 INFO [runner] Instructions preview: Write tests for the following implemented feature.
+
+Feature: add code path to board
+
+Test Spec (behaviors to verify):
+I'll write a comprehensive test specification based on the feature plan provided i...
+2026-03-06 15:52:07,434 INFO Starting kilo with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/add-code-path-to-board.instructions and follow the instructions exactly.']
+2026-03-06 15:52:07,434 INFO status.feature_slug = 'add-code-path-to-board'
+2026-03-06 15:52:07,434 INFO Logging to: /home/paule/MAD/logs/kilo-add-code-path-to-board-1772841127.log
+2026-03-06 15:52:10,427 INFO Connected to server as 'wsl-mad-cwd'
+2026-03-06 15:52:39,760 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 15:52:39,761 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 15:52:39,761 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 15:53:11,460 INFO Server connection lost, will reconnect...
+2026-03-06 15:53:12,681 WARNING Failed to connect to server: server rejected WebSocket connection: HTTP 502
+2026-03-06 15:53:14,844 WARNING Failed to connect to server: server rejected WebSocket connection: HTTP 502
+2026-03-06 15:53:19,111 INFO Connected to server as 'wsl-mad-cwd'
+2026-03-06 15:53:49,740 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 15:53:49,740 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 15:53:49,740 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 15:54:59,731 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 15:54:59,732 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 15:54:59,732 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 15:56:09,725 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 15:56:09,726 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 15:56:09,726 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 15:56:13,587 INFO Server connection lost, will reconnect...
+2026-03-06 15:56:14,845 WARNING Failed to connect to server: server rejected WebSocket connection: HTTP 502
+2026-03-06 15:56:17,083 WARNING Failed to connect to server: server rejected WebSocket connection: HTTP 502
+2026-03-06 15:56:21,392 INFO Connected to server as 'wsl-mad-cwd'
+2026-03-06 15:57:19,706 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 15:57:19,706 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 15:57:19,707 INFO [auto-plan] Starting: slimmer-item-details (approved)
