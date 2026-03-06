@@ -1,0 +1,62 @@
+[
+  {
+    "id": "b72d678828854528b31015d6d6cfd1ef",
+    "feature_id": "107e6f05",
+    "feature_slug": "scheduled-pipeline-execution",
+    "schedule_id": null,
+    "trigger_source": "manual",
+    "scheduled_trigger_time": null,
+    "started_at": "2026-03-05T04:46:25Z",
+    "ended_at": null,
+    "status": "running",
+    "error": null
+  },
+  {
+    "id": "298a51cf3eea455cadbf74045d97cec1",
+    "feature_id": "107e6f05",
+    "feature_slug": "scheduled-pipeline-execution",
+    "schedule_id": null,
+    "trigger_source": "manual",
+    "scheduled_trigger_time": null,
+    "started_at": "2026-03-05T04:51:35Z",
+    "ended_at": null,
+    "status": "running",
+    "error": null
+  },
+  {
+    "id": "53e514728d214c35bbcf3f7b42492e03",
+    "feature_id": "107e6f05",
+    "feature_slug": "scheduled-pipeline-execution",
+    "schedule_id": null,
+    "trigger_source": "manual",
+    "scheduled_trigger_time": null,
+    "started_at": "2026-03-05T05:01:48Z",
+    "ended_at": "2026-03-05T05:09:17Z",
+    "status": "success",
+    "error": null
+  },
+  {
+    "id": "56aee1a20a2e4b7cba703e63b378a185",
+    "feature_id": "tqc00001",
+    "feature_slug": "tutorial-quest-chain",
+    "schedule_id": null,
+    "trigger_source": "manual",
+    "scheduled_trigger_time": null,
+    "started_at": "2026-03-05T19:24:02Z",
+    "ended_at": null,
+    "status": "running",
+    "error": null
+  },
+  {
+    "id": "a611acfbf0c9438f90977cfa793bf614",
+    "feature_id": "tqc00001",
+    "feature_slug": "tutorial-quest-chain",
+    "schedule_id": null,
+    "trigger_source": "manual",
+    "scheduled_trigger_time": null,
+    "started_at": "2026-03-05T19:47:49Z",
+    "ended_at": "2026-03-05T20:06:29Z",
+    "status": "failed",
+    "error": "[Errno 7] Argument list too long: 'claude'"
+  }
+]

@@ -1,0 +1,30 @@
+{
+  "current_agent": "claude",
+  "agents": {
+    "claude": {
+      "command": "claude",
+      "headless_flag": "-p",
+      "headless_extra_flags": [
+        "--dangerously-skip-permissions"
+      ]
+    },
+    "kilo": {
+      "command": "kilo",
+      "headless_flag": "run",
+      "headless_extra_flags": [
+        "--auto"
+      ]
+    }
+  },
+  "boards": [
+    "mad"
+  ],
+  "agent_for_phase": {
+    "planning": "claude",
+    "spec_writing": "claude",
+    "implementing": "claude",
+    "fix_feedback": "claude",
+    "testing": "claude",
+    "review": "kilo"
+  }
+}

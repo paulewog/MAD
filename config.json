@@ -1,0 +1,31 @@
+{
+  "current_agent": "claude",
+  "agents": {
+    "claude": {
+      "command": "claude",
+      "headless_flag": "-p",
+      "headless_extra_flags": [
+        "--dangerously-skip-permissions"
+      ]
+    },
+    "kilo": {
+      "command": "kilo",
+      "headless_flag": "",
+      "headless_extra_flags": ["run", "--auto"]
+    }
+  },
+  "agent_for_phase": {
+    "planning": "claude",
+    "spec_writing": "claude",
+    "implementing": "claude",
+    "testing": "claude",
+    "review": "claude",
+    "design_update": "claude"
+  },
+  "boards_dir": "~/MAD/boards",
+  "boards": [
+    "chickencity",
+    "chickentracks",
+    "mad"
+  ]
+}
