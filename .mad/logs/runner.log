@@ -462,3 +462,59 @@ Update the details pane (in both the TUI and web UI) to have collapsible show...
 2026-03-06 15:36:59,884 INFO [auto-plan] Skipping - planning already in progress
 2026-03-06 15:37:09,880 INFO [auto-plan] Skipping - planning already in progress
 2026-03-06 15:37:19,878 INFO [auto-plan] Skipping - planning already in progress
+2026-03-06 15:37:29,876 INFO [auto-plan] Skipping - planning already in progress
+2026-03-06 15:37:39,881 INFO [auto-plan] Skipping - planning already in progress
+2026-03-06 15:37:49,886 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 15:37:49,924 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 15:37:49,924 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 15:38:59,866 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 15:38:59,866 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 15:38:59,866 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 15:40:00,080 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 15:40:00,080 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 15:40:00,080 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 15:40:11,948 INFO [spec-writing] Starting: add code path to board
+2026-03-06 15:40:11,951 INFO [runner] Wrote instructions for 'add-code-path-to-board': 3404 chars
+2026-03-06 15:40:11,952 INFO [runner] Instructions preview: You are an implementer breaking down a feature plan into concrete coding tasks.
+
+Feature: add code path to board
+
+Plan:
+Based on the feature description and previous Q&A, here is the implementation pl...
+2026-03-06 15:40:11,952 INFO Starting kilo with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/add-code-path-to-board.instructions and follow the instructions exactly.']
+2026-03-06 15:40:11,952 INFO status.feature_slug = 'add-code-path-to-board'
+2026-03-06 15:40:11,952 INFO Logging to: /home/paule/MAD/logs/kilo-add-code-path-to-board-1772840411.log
+2026-03-06 15:41:09,848 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 15:41:09,848 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 15:41:09,848 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 15:41:31,541 INFO [runner] Wrote instructions for 'add-code-path-to-board': 3869 chars
+2026-03-06 15:41:31,541 INFO [runner] Instructions preview: You are a QA engineer writing a test specification from a feature plan.
+
+## Feature: add code path to board
+
+### Plan:
+Based on the feature description and previous Q&A, here is the implementation pla...
+2026-03-06 15:41:31,541 INFO Starting kilo with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/add-code-path-to-board.instructions and follow the instructions exactly.']
+2026-03-06 15:41:31,542 INFO status.feature_slug = 'add-code-path-to-board'
+2026-03-06 15:41:31,542 INFO Logging to: /home/paule/MAD/logs/kilo-add-code-path-to-board-1772840491.log
+2026-03-06 15:42:19,841 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 15:42:19,842 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 15:42:19,843 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 15:42:32,228 INFO [implementing] Starting: add code path to board
+2026-03-06 15:42:32,229 INFO [runner] Wrote instructions for 'add-code-path-to-board': 5613 chars
+2026-03-06 15:42:32,229 INFO [runner] Instructions preview: Implement the following feature.
+
+Feature: add code path to board
+
+Plan:
+Based on the feature description and previous Q&A, here is the implementation plan:
+
+## 1. Config Schema Changes
+
+### Add to <p...
+2026-03-06 15:42:32,229 INFO Starting kilo with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/add-code-path-to-board.instructions and follow the instructions exactly.']
+2026-03-06 15:42:32,229 INFO status.feature_slug = 'add-code-path-to-board'
+2026-03-06 15:42:32,229 INFO Logging to: /home/paule/MAD/logs/kilo-add-code-path-to-board-1772840552.log
+2026-03-06 15:43:29,837 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 15:43:29,837 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 15:43:29,838 INFO [auto-plan] Starting: slimmer-item-details (approved)

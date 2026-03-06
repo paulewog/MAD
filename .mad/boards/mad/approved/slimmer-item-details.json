@@ -1,0 +1,99 @@
+{
+  "id": "6e0d261e",
+  "board": "mad",
+  "title": "slimmer-item-details",
+  "created": "2026-03-06T20:21Z",
+  "description": "Update the details pane (in both the TUI and web UI) to have collapsible show/hide sections. Title and description are always visible. History is expanded by default. All other sections (plan, impl_spec, test_spec, impl_notes, etc.) default to collapsed. Empty sections are shown but collapsed rather than hidden. State does not persist across sessions.",
+  "plan": "## Implementation Plan: Slirmer Item Details with Collapsible Sections\n\n### Overview\nAdd collapsible show/hide sections to the Item Details pane in both TUI and web UI. Title and Description are always visible. History is expanded by default. All other sections (plan, impl_spec, test_spec, impl_notes, questions) default to collapsed. Empty sections are shown but collapsed. State does not persist across sessions.\n\n---\n\n### Phase 1: Data Layer Changes (Web UI)\n\n1. **Update FeatureSummary struct** in `server/hub.go:31-42`:\n   - Add `Plan string `json:\"plan,omitempty\"``\n   - Add `ImplSpec string `json:\"impl_spec,omitempty\"``\n   - Add `TestSpec string `json:\"test_spec,omitempty\"``\n   - Add `ImplNotes string `json:\"impl_notes,omitempty\"`\n\n2. **Update pipeline server_client** to send these new fields:\n   - Modify `server_client.py` to include plan, impl_spec, test_spec, impl_notes when sending feature data to the server\n\n3. **Update client.html data attributes**:\n   - Add `data-plan`, `data-impl-spec`, `data-test-spec`, `data-impl-notes` to feature card elements in the HTML template\n\n---\n\n### Phase 2: Web UI Implementation\n\n1. **Modify `toggleFeatureDetail()` in `client.html:407-483`**:\n   - Restructure the details pane to use collapsible sections\n   - Always visible: Title, Description\n   - Collapsible sections with expand/collapse toggle:\n     - History (default: expanded)\n     - Plan (default: collapsed)\n     - Implementation Spec (impl_spec) (default: collapsed)\n     - Test Spec (test_spec) (default: collapsed)\n     - Implementation Notes (impl_notes) (default: collapsed)\n     - Questions (default: collapsed, or inline when stage === 'requested-input')\n   - Empty sections: Render section header with toggle but collapsed (show \"No [section] provided\" placeholder)\n\n2. **Questions form conditional rendering**:\n   - When stage === 'requested-input': Render questions inline (as-is, not in collapsible)\n   - When stage !== 'requested-input': Render as collapsible section, collapsed by default\n\n3. **Use existing CSS pattern** from stage toggles:\n   - Apply `.stage-toggle.collapsed` and `.stage-body.hidden` classes\n   - Ensure toggle icons rotate appropriately\n\n4. **Accessibility**:\n   - Add `aria-expanded` attributes to toggle buttons\n   - Add `aria-controls` linking toggles to content sections\n   - Ensure keyboard navigation (Enter/Space to toggle)\n   - Add `role=\"region\"` to collapsible content areas\n\n5. **Handle long content**:\n   - Add `max-height` and `overflow-y: auto` to collapsible content containers\n   - Smooth transition on expand/collapse\n\n---\n\n### Phase 3: TUI Implementation\n\n1. **Verify Textual Collapsible widget**:\n   - Check that Textual version supports `Collapsible` widget (available since v0.37.0)\n   - If not available, implement custom collapsible using `CollapsibleGroup` or toggle behavior\n\n2. **Modify `_feature_markdown()` in `tui.py:100-150`**:\n   - Replace flat Markdown rendering with structured layout using Widgets\n   - Use Textual's `Collapsible` widget for each section\n\n3. **TUI Section Structure**:\n   - Always visible: Title, Description (rendered outside collapsibles)\n   - Collapsible sections:\n     - History (default: expanded)\n     - Plan (default: collapsed)\n     - Implementation Spec (impl_spec) (default: collapsed)\n     - Test Spec (test_spec) (default: collapsed)\n     - Implementation Notes (impl_notes) (default: collapsed)\n     - Questions for Human (default: collapsed)\n   - Exclude Pipeline Log (confirmed: only actual Item Details)\n\n4. **Empty section handling**:\n   - Show section header with collapse icon\n   - Display \"No [section] provided\" text inside collapsed section\n\n5. **Styling**:\n   - Match existing TUI theme (colors, borders)\n   - Ensure toggle indicators are visible\n   - Add keyboard shortcuts for expand/collapse (optional: arrow keys)\n\n---\n\n### Phase 4: Testing\n\n1. **Test empty sections**: Verify empty plan/impl_spec/test_spec/impl_notes show as collapsed with placeholder text\n2. **Test default states**: Verify History expanded, others collapsed on initial load\n3. **Test toggle behavior**: Verify expand/collapse works via click and keyboard\n4. **Test non-persistence**: Refresh page/TTY and verify default states restored\n5. **Test long content**: Verify scroll behavior in collapsed sections\n6. **Test Questions conditional**: Verify inline rendering when stage === 'requested-input'\n\n---\n\n### Files to Modify\n\n1. `server/hub.go` - Add fields to FeatureSummary\n2. `pipeline/server_client.py` - Send new fields to server\n3. `server/templates/client.html` - Web UI collapsible sections\n4. `pipeline/tui.py` - TUI collapsible sections\n",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "history": [
+    {
+      "ts": "2026-03-06T20:21Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-06T22:32Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-06T22:38Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via kilo"
+    },
+    {
+      "ts": "2026-03-06T22:40Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL \u2014 Plan adds \"stage, board, created, ID\" as always-visible rows but original spec only states \"Title and description are always visible\" - this expands scope beyond original requirements\nPlan includes \"Questions for Human\" and \"Actions\" in collapsible sections, but Questions in web UI is only shown when stage === 'requested-input' - this conditional logic needs clarification\nPlan mentions \"Pipeline Log (collapsed default) - TUI only\" but original spec doesn't mention this section - verify if this should be included\nMissing: Accessibility considerations for keyboard navigation and screen reader support in collapsible sections\nMissing: How to handle the Questions form (web UI) which is conditionally rendered based on stage - should it be inside a collapsible or handled separately\nTUI dependency: Plan assumes Textual's Collapsible widget is available but version is not pinned in requirements.txt - verify compatibility\nEdge case: Very long content in collapsible sections may need max-height or scroll handling\nAmbiguity: \"Implementation Spec\" in plan vs actual field name \"impl_spec\" in code - ensure consistent naming\n```"
+    },
+    {
+      "ts": "2026-03-06T22:40Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Plan adds \"stage, board, created, ID\" as always-visible rows but original spec only states \"Title and description are always visible\" - this expands scope beyond original requirements\nPlan includes \"Questions for Human\" and \"Actions\" in collapsible sections, but Questions in web UI is only shown when stage === 'requested-input' - this conditional logic needs clarification\nPlan mentions \"Pipeline Log (collapsed default) - TUI only\" but original spec doesn't mention this section - verify if this should be included\nMissing: Accessibility considerations for keyboard navigation and screen reader support in collapsible sections\nMissing: How to handle the Questions form (web UI) which is conditionally rendered based on stage - should it be inside a collapsible or handled separately\nTUI dependency: Plan assumes Textual's Collapsible widget is available but version is not pinned in requirements.txt - verify compatibility\nEdge case: Very long content in collapsible sections may need max-height or scroll handling\nAmbiguity: \"Implementation Spec\" in plan vs actual field name \"impl_spec\" in code - ensure consistent naming\n```"
+    },
+    {
+      "ts": "2026-03-06T22:50Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via kilo"
+    },
+    {
+      "ts": "2026-03-06T22:50Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL \u2014 No plan is provided - the instructions explicitly state \"The plan is intentionally left empty\" which means there's nothing to review\nThe two clarification questions (Pipeline Log in TUI, Questions form in web UI) must be answered before a plan can be created\nOnce the clarification questions are answered, a complete plan covering all aspects of the feature (collapsible sections, default states, empty section handling, non-persistent state) should be provided for review"
+    },
+    {
+      "ts": "2026-03-06T22:50Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: No plan is provided - the instructions explicitly state \"The plan is intentionally left empty\" which means there's nothing to review\nThe two clarification questions (Pipeline Log in TUI, Questions form in web UI) must be answered before a plan can be created\nOnce the clarification questions are answered, a complete plan covering all aspects of the feature (collapsible sections, default states, empty section handling, non-persistent state) should be provided for review"
+    },
+    {
+      "ts": "2026-03-06T22:51Z",
+      "stage": "PLANNING",
+      "note": "Questions raised via kilo"
+    },
+    {
+      "ts": "2026-03-06T23:14Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via kilo"
+    },
+    {
+      "ts": "2026-03-06T23:16Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL \u2014 -Missing data fields in Web UI**: The FeatureSummary struct in server/hub.go:31-42 does NOT include plan, impl_spec, test_spec, or impl_notes fields. The current web UI only receives: Title, Stage, Board, Created, ID, Description, History, Questions, AvailableActions. The plan fails to address that these additional fields must be added to FeatureSummary and passed from the pipeline client to enable collapsible rendering in the web UI.\n\nIncomplete Web UI section list: The plan lists only Title, Stage/Board/Created/ID, Description, History, Questions (conditional), and Available Actions for the web UI. However, the original description explicitly states \"All other sections (plan, impl_spec, test_spec, impl_notes, etc.) default to collapsed\" - this applies to both TUI and web UI. The plan omits these sections for the web UI entirely.\n\nNaming inconsistency: The plan uses \"Questions for Human\" in TUI but just \"Questions\" in web UI. Should be consistent (preferably \"Questions\" to match the field name).\n\nPipeline Log clarification needed: The plan excludes Pipeline Log saying \"confirmed by human\", but the current TUI does show this section. Verify if exclusion is correct or if it should be included as collapsed by default.\n\nQuestions condition mismatch: The plan says \"Show as collapsible when stage !== 'requested-input', render inline (as-is) when stage === 'requested-input'\" but the current web UI only renders the questions form when stage === 'requested-input'. The conditional rendering logic needs clarification."
+    },
+    {
+      "ts": "2026-03-06T23:16Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: -Missing data fields in Web UI**: The FeatureSummary struct in server/hub.go:31-42 does NOT include plan, impl_spec, test_spec, or impl_notes fields. The current web UI only receives: Title, Stage, Board, Created, ID, Description, History, Questions, AvailableActions. The plan fails to address that these additional fields must be added to FeatureSummary and passed from the pipeline client to enable collapsible rendering in the web UI.\n\nIncomplete Web UI section list: The plan lists only Title, Stage/Board/Created/ID, Description, History, Questions (conditional), and Available Actions for the web UI. However, the original description explicitly states \"All other sections (plan, impl_spec, test_spec, impl_notes, etc.) default to collapsed\" - this applies to both TUI and web UI. The plan omits these sections for the web UI entirely.\n\nNaming inconsistency: The plan uses \"Questions for Human\" in TUI but just \"Questions\" in web UI. Should be consistent (preferably \"Questions\" to match the field name).\n\nPipeline Log clarification needed: The plan excludes Pipeline Log saying \"confirmed by human\", but the current TUI does show this section. Verify if exclusion is correct or if it should be included as collapsed by default.\n\nQuestions condition mismatch: The plan says \"Show as collapsible when stage !== 'requested-input', render inline (as-is) when stage === 'requested-input'\" but the current web UI only renders the questions form when stage === 'requested-input'. The conditional rendering logic needs clarification."
+    },
+    {
+      "ts": "2026-03-06T23:35Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via kilo"
+    },
+    {
+      "ts": "2026-03-06T23:37Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS \u2014 Scope expansion (minor): The plan adds \"Stage, Board, Created, ID\" as always-visible in web UI, but the original description only states \"Title and description are always visible\". While arguably a reasonable UX choice (these are header metadata), it does expand beyond the original requirements."
+    },
+    {
+      "ts": "2026-03-06T23:37Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    }
+  ],
+  "pipeline_log": [],
+  "questions": [
+    {
+      "question": "The TUI currently shows a 'Pipeline Log' section. Should this be included as a collapsible section in the slimmer-item-details feature, or should it be excluded?",
+      "answer": "No, I'm just talking about the actual Item Details"
+    },
+    {
+      "question": "In the web UI, the Questions form is only shown when stage === 'requested-input'. Should the questions be placed inside a collapsible section (so they can be hidden when not relevant), or should they continue to be conditionally rendered outside of collapsibles?",
+      "answer": "Collapsible section when not in requested-input, as-is when in requested-input"
+    }
+  ]
+}
