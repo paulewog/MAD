@@ -48,7 +48,7 @@ class ServerClient:
                  on_answers_received=None,
                  on_set_auto_mode: Optional[Callable[[str, bool], None]] = None,
                  on_start_agent: Optional[Callable[[str, str], None]] = None,
-                 on_idea_created: Optional[Callable[[str, str, str], Awaitable[None]]] = None,
+                 on_idea_created: Optional[Callable[[str, str, str, str], Awaitable[None]]] = None,
                  on_move_requested: Optional[Callable[[str, str], None]] = None):
         self._url = url
         self._api_key = api_key
@@ -246,9 +246,10 @@ class ServerClient:
             title = data.get("title", "")
             board = data.get("board", "")
             description = data.get("description", "")
+            item_type = data.get("item_type", "feature")
             if self._on_idea_created and title and board:
                 try:
-                    await self._on_idea_created(title, board, description)
+                    await self._on_idea_created(title, board, description, item_type)
                 except Exception as e:
                     logger.warning(f"Error handling create_idea: {e}")
         elif msg_type == "move_feature":

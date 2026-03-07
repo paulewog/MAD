@@ -1029,11 +1029,19 @@ class AgentStatusWidget(Static):
         else:
             elapsed_str = "0s"
 
+        stale_str = ""
+        if status.last_activity_at:
+            idle_time = time.time() - status.last_activity_at
+            if idle_time > 150:
+                idle_mins = int(idle_time // 60)
+                idle_secs = int(idle_time % 60)
+                stale_str = f" [yellow][STALE {idle_mins}m{idle_secs}s][/yellow]"
+
         return (
             f"[bold cyan]●[/bold cyan] {label}: [bold]{status.agent}[/bold] "
             f"[blue]{status.feature_slug}[/blue] "
             f"[yellow]{status.phase}[/yellow] "
-            f"[dim]{elapsed_str}[/dim]"
+            f"[dim]{elapsed_str}[/dim]{stale_str}"
         )
 
     def _render_single(self, status: AgentStatus) -> str:
@@ -1049,11 +1057,19 @@ class AgentStatusWidget(Static):
         else:
             elapsed_str = "0s"
 
+        stale_str = ""
+        if status.last_activity_at:
+            idle_time = time.time() - status.last_activity_at
+            if idle_time > 150:
+                idle_mins = int(idle_time // 60)
+                idle_secs = int(idle_time % 60)
+                stale_str = f" [yellow][STALE {idle_mins}m{idle_secs}s][/yellow]"
+
         parts = [
             f"[bold cyan]●[/bold cyan] [bold]{status.agent}[/bold] "
             f"[blue]{status.feature_slug}[/blue] "
             f"[yellow]{status.phase}[/yellow] "
-            f"[dim]{elapsed_str}[/dim]",
+            f"[dim]{elapsed_str}[/dim]{stale_str}",
         ]
 
         tail = status.lines[-_STATUS_TAIL_LINES:] if status.lines else []
@@ -1099,10 +1115,18 @@ class AgentStatusWidget(Static):
         else:
             elapsed_str = "0s"
         
+        stale_str = ""
+        if status.last_activity_at:
+            idle_time = time.time() - status.last_activity_at
+            if idle_time > 150:
+                idle_mins = int(idle_time // 60)
+                idle_secs = int(idle_time % 60)
+                stale_str = f" [yellow][STALE {idle_mins}m{idle_secs}s][/yellow]"
+        
         return (
             f"[bold cyan]●[/bold cyan] {label}: [bold]{status.agent}[/bold] "
             f"[blue]{status.feature_slug}[/blue] "
-            f"[yellow]{status.phase}[/yellow] [dim]{elapsed_str}[/dim]"
+            f"[yellow]{status.phase}[/yellow] [dim]{elapsed_str}[/dim]{stale_str}"
         )
 
 
@@ -1138,6 +1162,8 @@ class PipelineApp(App):
         Binding(";", "go_to_settings", "Settings"),
         Binding("up", "focus_previous", "Up"),
         Binding("down", "focus_next", "Down"),
+        Binding("k", "kill_agent", "Kill Agent", show=False),
+        Binding("ctrl+k", "restart_agent", "Restart Agent", show=False),
     ]
 
     # Stage -> list of available actions (key, action, label)
@@ -1185,6 +1211,11 @@ class PipelineApp(App):
         """Get bindings - global + stage-specific actions."""
         # Always include global hotkeys
         bindings = list(self.GLOBAL_BINDINGS)
+        
+        # Show kill/restart when an agent is running
+        if self._plan_running or self._implement_running:
+            bindings.append(("k", "kill_agent", "Kill"))
+            bindings.append(("ctrl+k", "restart_agent", "Restart"))
         
         if not self.selected_feature:
             return bindings + [("ctrl+q", "quit", "Quit")]
@@ -1530,10 +1561,10 @@ class PipelineApp(App):
                 self._run_implement_async(feature)
         self.call_from_thread(_do_start)
 
-    async def _handle_create_idea(self, title: str, board: str, description: str) -> None:
+    async def _handle_create_idea(self, title: str, board: str, description: str, item_type: str = "feature") -> None:
         """Handle create_idea message from the server (web UI created a new idea)."""
         try:
-            feature = FeatureFile.create(board, title, description)
+            feature = FeatureFile.create(board, title, description, item_type=item_type)
             logger.info(f"Created new idea: {feature.title} ({feature.id}) in board {board}")
             self._refresh_board(self.active_board)
             if self._server_client and self._server_client.connected:
@@ -2291,6 +2322,80 @@ class PipelineApp(App):
         # Run in background thread
         self._run_restart_async(f, stage)
 
+    def action_kill_agent(self) -> None:
+        """Kill the currently running agent."""
+        if not self._plan_running and not self._implement_running:
+            self.notify("No agent is running", severity="warning")
+            return
+        
+        # Kill plan agent if running
+        if self._plan_running and self._plan_agent_status:
+            self._plan_agent_status.kill_requested = True
+            slug = self._plan_agent_status.feature_slug
+            self.notify(f"Killing plan agent for {slug}")
+            self._log_line(f"[user] Kill requested for plan agent ({slug})")
+            # Add history entry
+            from state import FeatureFile
+            feature = FeatureFile.find(slug)
+            if feature:
+                elapsed = ""
+                if self._plan_agent_status.started_at:
+                    elapsed_secs = int(time.time() - self._plan_agent_status.started_at)
+                    elapsed = f"{elapsed_secs // 60}m{elapsed_secs % 60}s"
+                feature.add_history("KILLED", f"Agent terminated by user after {elapsed}")
+        # Kill implement agent if running
+        elif self._implement_running and self._implement_agent_status:
+            self._implement_agent_status.kill_requested = True
+            slug = self._implement_agent_status.feature_slug
+            self.notify(f"Killing implement agent for {slug}")
+            self._log_line(f"[user] Kill requested for implement agent ({slug})")
+            # Add history entry
+            from state import FeatureFile
+            feature = FeatureFile.find(slug)
+            if feature:
+                elapsed = ""
+                if self._implement_agent_status.started_at:
+                    elapsed_secs = int(time.time() - self._implement_agent_status.started_at)
+                    elapsed = f"{elapsed_secs // 60}m{elapsed_secs % 60}s"
+                feature.add_history("KILLED", f"Agent terminated by user after {elapsed}")
+
+    def action_restart_agent(self) -> None:
+        """Kill and restart the currently running agent."""
+        if not self._plan_running and not self._implement_running:
+            self.notify("No agent is running", severity="warning")
+            return
+        
+        if self._plan_running and self._plan_agent_status:
+            self._plan_agent_status.kill_requested = True
+            self._plan_agent_status.restart_requested = True
+            slug = self._plan_agent_status.feature_slug
+            self.notify("Restarting plan agent...")
+            self._log_line(f"[user] Restart requested for plan agent ({slug})")
+            # Add history entry
+            from state import FeatureFile
+            feature = FeatureFile.find(slug)
+            if feature:
+                elapsed = ""
+                if self._plan_agent_status.started_at:
+                    elapsed_secs = int(time.time() - self._plan_agent_status.started_at)
+                    elapsed = f"{elapsed_secs // 60}m{elapsed_secs % 60}s"
+                feature.add_history("RESTARTED", f"Agent restarted by user after {elapsed}")
+        elif self._implement_running and self._implement_agent_status:
+            self._implement_agent_status.kill_requested = True
+            self._implement_agent_status.restart_requested = True
+            slug = self._implement_agent_status.feature_slug
+            self.notify("Restarting implement agent...")
+            self._log_line(f"[user] Restart requested for implement agent ({slug})")
+            # Add history entry
+            from state import FeatureFile
+            feature = FeatureFile.find(slug)
+            if feature:
+                elapsed = ""
+                if self._implement_agent_status.started_at:
+                    elapsed_secs = int(time.time() - self._implement_agent_status.started_at)
+                    elapsed = f"{elapsed_secs // 60}m{elapsed_secs % 60}s"
+                feature.add_history("RESTARTED", f"Agent restarted by user after {elapsed}")
+
     @work(thread=True, exclusive=True, group="pipeline")
     def _run_restart_async(self, feature: FeatureFile, stage: str) -> None:
         """Run restart pipeline in background thread."""
@@ -2707,6 +2812,23 @@ class PipelineApp(App):
             self.running = False
             self._plan_running = False
             status.running = False
+            restart = status.restart_requested
+            status.restart_requested = False
+            status.kill_requested = False
+            if restart:
+                refreshed = FeatureFile.find(feature.slug)
+                if refreshed:
+                    stage = refreshed.current_stage
+                    if stage in ("plan-inbox", "reviewing-plan", "requested-input", "approved"):
+                        self.app.call_from_thread(self._log_line, f"[user] Restarting plan agent for {feature.slug}")
+                        self.app.call_from_thread(self._refresh_board, self.active_board)
+                        self._run_plan_async(refreshed)
+                        return
+                    elif stage in ("spec-writing", "implementing", "testing"):
+                        self.app.call_from_thread(self._log_line, f"[user] Restarting as implement agent for {feature.slug} (stage: {stage})")
+                        self.app.call_from_thread(self._refresh_board, self.active_board)
+                        self._run_implement_async(refreshed)
+                        return
             self.app.call_from_thread(self._on_plan_done, feature.slug)
 
     @work(thread=True, exclusive=True, group="implement")
@@ -2777,6 +2899,23 @@ class PipelineApp(App):
             self.running = False
             self._implement_running = False
             status.running = False
+            restart = status.restart_requested
+            status.restart_requested = False
+            status.kill_requested = False
+            if restart:
+                refreshed = FeatureFile.find(feature.slug)
+                if refreshed:
+                    stage = refreshed.current_stage
+                    if stage in ("plan-inbox", "reviewing-plan", "requested-input", "approved"):
+                        self.app.call_from_thread(self._log_line, f"[user] Restarting as plan agent for {feature.slug} (stage: {stage})")
+                        self.app.call_from_thread(self._refresh_board, self.active_board)
+                        self._run_plan_async(refreshed)
+                        return
+                    elif stage in ("approved", "spec-writing", "implementing", "testing"):
+                        self.app.call_from_thread(self._log_line, f"[user] Restarting implement agent for {feature.slug}")
+                        self.app.call_from_thread(self._refresh_board, self.active_board)
+                        self._run_implement_async(refreshed)
+                        return
             self.app.call_from_thread(self._on_implement_done, feature.slug)
 
     def _on_plan_done(self, slug: str) -> None:

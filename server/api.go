@@ -733,6 +733,7 @@ type createIdeaData struct {
 	Title       string `json:"title"`
 	Board       string `json:"board"`
 	Description string `json:"description"`
+	Type        string `json:"type"`
 }
 
 func serveCreateIdea(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string) {
@@ -776,11 +777,16 @@ func serveCreateIdea(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Conf
 		return
 	}
 
+	ideaType := idea.Type
+	if ideaType == "" {
+		ideaType = "feature"
+	}
 	msg, _ := json.Marshal(map[string]interface{}{
 		"type":        "create_idea",
 		"title":       idea.Title,
 		"board":       idea.Board,
 		"description": idea.Description,
+		"item_type":   ideaType,
 	})
 	if err := hub.SendToClient(clientID, msg); err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})

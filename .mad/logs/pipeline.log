@@ -1,0 +1,19 @@
+2026-03-07 11:31:18,282 INFO [planning] Running: Test Feature
+2026-03-07 11:31:18,283 INFO [planning] Running: Test Feature
+2026-03-07 11:31:18,285 INFO [planning] Running: Test Feature
+2026-03-07 11:31:18,286 INFO [planning] Running: Test Feature
+2026-03-07 11:31:18,287 INFO [planning] Running: Test Feature
+2026-03-07 11:31:18,289 INFO [planning] Running: Test Feature
+2026-03-07 11:31:18,289 ERROR [planning] Empty output for Test Feature
+2026-03-07 11:31:18,290 INFO [planning] Running: Test Feature
+2026-03-07 11:31:18,290 ERROR [planning] Empty output for Test Feature
+2026-03-07 11:31:18,292 INFO [planning] Running: Test Feature
+2026-03-07 11:31:18,292 ERROR [planning] headless() failed for Test Feature: API Error
+2026-03-07 11:31:18,293 INFO [spec_writing] Running: Test Feature
+2026-03-07 11:31:18,998 INFO <rich.panel.Panel object at 0x7a0b6133c590>
+2026-03-07 11:31:18,998 INFO [bold blue]Spec Writing:[/bold blue] <MagicMock name='FeatureFile.find().title' id='134189295793840'>
+2026-03-07 11:31:18,999 INFO [spec-writing] Starting: <MagicMock name='FeatureFile.find().title' id='134189295793840'>
+2026-03-07 11:31:19,002 INFO <rich.panel.Panel object at 0x7a0b61357e60>
+2026-03-07 11:31:19,002 INFO [bold blue]Spec Writing:[/bold blue] <MagicMock name='FeatureFile.find().title' id='134189294131136'>
+2026-03-07 11:31:19,002 INFO [spec-writing] Starting: <MagicMock name='FeatureFile.find().title' id='134189294131136'>
+2026-03-07 11:31:27,797 WARNING [git] Commit failed: Command '['git', 'add', '-A', '.mad/boards/', '.mad/logs/']' returned non-zero exit status 1.

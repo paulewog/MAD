@@ -81,8 +81,10 @@ def cli():
 @click.argument("board")
 @click.argument("title")
 @click.option("--desc", default="", help="Feature description")
-def new(board: str, title: str, desc: str):
-    """Create a new feature and generate its plan."""
+@click.option("--type", "item_type", default="feature", type=click.Choice(["feature", "bug"]),
+              help="Item type: feature (default) or bug")
+def new(board: str, title: str, desc: str, item_type: str):
+    """Create a new feature or bug report and generate its plan."""
     config = get_config()
 
     if board not in config.boards:
@@ -90,7 +92,7 @@ def new(board: str, title: str, desc: str):
         console.print(f"[dim]Available boards: {', '.join(config.boards)}[/dim]")
         sys.exit(1)
 
-    feature = FeatureFile.create(board, title, desc)
+    feature = FeatureFile.create(board, title, desc, item_type=item_type)
     console.print(f"[green]Created:[/green] {feature.path}")
 
     # Generate plan immediately

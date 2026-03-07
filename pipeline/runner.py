@@ -322,6 +322,9 @@ When you have finished all work:
                 env=env,
             )
 
+            if status is not None:
+                status.pid = process.pid
+
             # Read stdout while process is running (streaming)
             output_lines = []
             is_json_format = "--format" in cmd and "json" in cmd
@@ -360,6 +363,20 @@ When you have finished all work:
             warned_about_stuck = False
             
             while True:
+                # Check if user requested kill from TUI
+                if status is not None and status.kill_requested:
+                    logger.warning(f"[runner] Kill requested by user. Terminating agent.")
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                    if status is not None:
+                        status.lines.append("[runner] Agent killed by user")
+                        status.running = False
+                    break
+
                 # Monitor log activity - warn if stuck
                 elapsed = time.time() - start_time
                 
@@ -398,6 +415,8 @@ When you have finished all work:
                 if not line and process.poll() is not None:
                     break
                 if line:
+                    if status is not None:
+                        status.last_activity_at = time.time()
                     # Check for completion marker
                     if line.strip().upper() == "DONE":
                         logger.info(f"[runner] Received DONE signal")
@@ -491,6 +510,10 @@ When you have finished all work:
         finally:
             if status is not None:
                 status.running = False
+                status.pid = None
+                status.last_activity_at = None
+                status.kill_requested = False
+                status.restart_requested = False
             if log_file:
                 log_file.close()
                 logger.info("[runner] Log file closed")

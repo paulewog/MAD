@@ -444,7 +444,8 @@ def run_planning(
     if latest_feedback and latest_feedback != "No previous feedback available.":
         feedback_context = f"\n\n## Previous Review Feedback (you MUST address these issues):\n{latest_feedback}\n"
 
-    prompt = _build_prompt("plan-headless.md", {
+    template = "plan-bug.md" if feature.item_type == "bug" else "plan-headless.md"
+    prompt = _build_prompt(template, {
         "{title}": feature.title,
         "{description}": feature.get_section("Description") or "(no description)",
         "{feature_slug}": feature.slug,
