@@ -411,15 +411,25 @@ class AgentRunner:
                     logger.warning(f"[runner] Failed to read output file: {e}")
             
             # Use file output if available, otherwise fall back to stdout
-            if output_from_file:
-                full_output = output_from_file
-            else:
-                full_output = "\n".join(output_lines)
+            full_output = output_from_file if output_from_file else "\n".join(output_lines)
+            if not output_from_file:
                 logger.warning(f"[runner] No output file found, using stdout")
-
-            # Check for rate limiting
-            if "out of" in full_output.lower() and "usage" in full_output.lower():
-                raise RateLimitError(full_output)
+            
+            # Check if we got the completion marker - if so, don't check for rate limit
+            got_completion_marker = any("DONE" in line.upper() for line in output_lines)
+            
+            # Only check for rate limiting if we didn't get a completion marker
+            if not got_completion_marker:
+                output_lower = full_output.lower()
+                rate_limit_phrases = [
+                    "rate limit",
+                    "rate limit exceeded", 
+                    "you are being rate limited",
+                    "rate limited due to",
+                    "too many requests",
+                ]
+                if any(phrase in output_lower for phrase in rate_limit_phrases):
+                    raise RateLimitError(full_output)
 
             if process.returncode != 0:
                 stderr_snippet = stderr_output[:500] if stderr_output else "(no stderr)"

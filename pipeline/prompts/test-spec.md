@@ -35,25 +35,20 @@ Write a comprehensive test spec with these sections:
 
 Write in plain language, NOT actual test code. Focus on "what should happen" not "how to test it".
 
-## Checkpoint Instructions
-After completing each meaningful unit of work, write a checkpoint file to:
-  .mad/checkpoints/<feature-slug>.checkpoint.json
+{checkpoint_instructions}
 
-The feature slug for this task is: {feature_slug}
+## Output Format
 
-Use this exact JSON format:
+Write your response as JSON with exactly this field:
+- "test_spec": Your complete test specification as text
+
+Example:
+```json
 {
-  "feature_slug": "{feature_slug}",
-  "feature_id": "{feature_id}",
-  "phase": "{phase}",
-  "last_checkpoint": "<current ISO timestamp>",
-  "completed_steps": ["list of what you've done so far"],
-  "next_step": "what you plan to do next",
-  "notes": "any context needed to resume",
-  "files_modified": ["list of files you've changed"]
+  "test_spec": "1. Behaviors: ...\n2. Edge cases: ..."
 }
+```
 
-Overwrite the file each time (not append). Create the .mad/checkpoints/ directory if it doesn't exist.
-If writing the checkpoint fails for any reason (permissions, disk space), just continue working — checkpoints are best-effort and should never block your actual work.
+Write ONLY valid JSON to the output file. Nothing else.
 
-When finished, write "TESTDONE" on its own line and then exit. Do not wait for more input.
+When finished, write DONE on its own line and then exit.
