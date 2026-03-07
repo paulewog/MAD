@@ -1,9 +1,12 @@
-**Feature Iteration: slimmer-item-details**
+Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
 
-The feature file is at: `slimmer-item-details.json`
+**Feature Iteration: AI Agent Checkpoint System**
+
+The feature file is at: `ai-agent-checkpoint-system.json`
 
 **Current Description:**
-I would like to update the "details" pane to have show/hide sections for what we can.  For example, the "plan" and "impl_notes" sections can be quite large... same with other sections around testing, spec, etc.
+Agents sometimes agents hang and have to get killed, or they hit a usage restriction/backoff.  IT would be nice if our instructions said to periodically save how far they got along so that another agent session (or even different agent) can come along and pick up where they left off.  Maybe some sort of context for each phase that is saved?
 
 **Current Plan:**
 (no plan yet)

@@ -1,0 +1,59 @@
+{
+  "id": "f771cdf5",
+  "board": "mad",
+  "title": "Bug: cannot create new item from webui",
+  "created": "2026-03-07T05:01Z",
+  "description": "Two related bugs: (1) Creating a new item from the web UI silently fails \u2014 the server returns 200 OK but the create_idea WebSocket message never results in a file being created by the pipeline, even when the pipeline is connected. (2) The board field in the New Idea modal on the per-client (client.html) page is a free-text input instead of a <select> populated with available boards \u2014 the dashboard index.html already does this correctly.",
+  "plan": "Plan complete. Here's a summary of the two bugs and fixes:\n\n**Bug 1 - create_idea silently fails:** The `_handle_create_idea` callback in `tui.py` uses `call_from_thread()` but is invoked from within the Textual asyncio event loop (via `_handle_incoming` in the reconnect loop). `call_from_thread` is designed for cross-thread calls, not same-thread. Fix: make the callback async and `await` it, matching the pattern used by `_handle_server_answers`.\n\n**Bug 2 - Board field is free-text in client.html:** The New Idea modal in `client.html:305` uses `<input type=\"text\">` instead of a `<select>` dropdown. Additionally, `serveClientPage` in `api.go` doesn't pass a `Boards` list to the template. Fix: add `Boards` to the template data and replace the input with a `<select>` populated via `{{range .Boards}}`.",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "history": [
+    {
+      "ts": "2026-03-07T05:01Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-07T05:11Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-07T05:23Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T05:25Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T05:25Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T05:25Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL \u2014 Plan field is empty - marked as \"PLAN_COMPLETE\" but contains no actual implementation plan\nMissing impl_spec - no implementation specification provided\nMissing test_spec - no test specification provided\nCannot assess completeness, clarity, feasibility, edge cases, or dependencies without actual plan content"
+    },
+    {
+      "ts": "2026-03-07T05:25Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Plan field is empty - marked as \"PLAN_COMPLETE\" but contains no actual implementation plan\nMissing impl_spec - no implementation specification provided\nMissing test_spec - no test specification provided\nCannot assess completeness, clarity, feasibility, edge cases, or dependencies without actual plan content"
+    },
+    {
+      "ts": "2026-03-07T05:26Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T05:29Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    }
+  ],
+  "pipeline_log": []
+}
