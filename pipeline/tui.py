@@ -235,6 +235,15 @@ def _feature_markdown(feature: FeatureFile) -> str:
     return "\n".join(lines)
 
 
+def _escape_markup(text: str) -> str:
+    """Escape Rich markup characters to display raw text safely."""
+    import re
+    # Replace markup characters with escaped versions
+    text = text.replace("[", r"\[").replace("]", r"\]")
+    text = text.replace("{", r"\{").replace("}", r"\}")
+    text = re.sub(r'([%])', r'\\\1', text)
+    return text
+
 def _build_feature_detail_widgets(feature: FeatureFile) -> list:
     """Build collapsible widgets for feature detail view.
     
@@ -251,41 +260,47 @@ def _build_feature_detail_widgets(feature: FeatureFile) -> list:
     widgets = []
     
     # Title (always visible) - no ID to avoid duplicate errors
-    widgets.append(Static(f"[b]{feature.title}[/b]"))
+    widgets.append(Static(f"[b]{_escape_markup(feature.title)}[/b]"))
     
     # Description (always visible)
     description = feature.get_section("Description")
     if description:
-        widgets.append(Static(description))
+        widgets.append(Static(_escape_markup(description)))
     
     # History (collapsible, expanded by default)
     if feature.history:
-        escaped_history = feature.history.replace("[", r"\[").replace("]", r"\]")
-        widgets.append(Collapsible(Static(escaped_history), title="History", collapsed=False))
+        # Escape all markup characters for safe display
+        import re
+        escaped = feature.history.replace("[", r"\[").replace("]", r"\]").replace("{", r"\{").replace("}", r"\}")
+        escaped = re.sub(r'([%])', r'\\\1', escaped)
+        widgets.append(Collapsible(Static(escaped), title="History", collapsed=False))
     else:
         widgets.append(Collapsible(Static("[dim]No history provided[/dim]"), title="History", collapsed=False))
     
     # Plan (collapsible, collapsed by default)
     if feature.plan:
-        widgets.append(Collapsible(Static(feature.plan), title="Plan", collapsed=True))
+        import re
+        escaped = feature.plan.replace("[", r"\[").replace("]", r"\]").replace("{", r"\{").replace("}", r"\}")
+        escaped = re.sub(r'([%])', r'\\\1', escaped)
+        widgets.append(Collapsible(Static(escaped), title="Plan", collapsed=True))
     else:
         widgets.append(Collapsible(Static("[dim]No plan provided[/dim]"), title="Plan", collapsed=True))
     
     # Implementation Spec (collapsible, collapsed by default)
     if feature.impl_spec:
-        widgets.append(Collapsible(Static(feature.impl_spec), title="Implementation Spec", collapsed=True))
+        widgets.append(Collapsible(Static(_escape_markup(feature.impl_spec)), title="Implementation Spec", collapsed=True))
     else:
         widgets.append(Collapsible(Static("[dim]No implementation spec provided[/dim]"), title="Implementation Spec", collapsed=True))
     
     # Test Spec (collapsible, collapsed by default)
     if feature.test_spec:
-        widgets.append(Collapsible(Static(feature.test_spec), title="Test Spec", collapsed=True))
+        widgets.append(Collapsible(Static(_escape_markup(feature.test_spec)), title="Test Spec", collapsed=True))
     else:
         widgets.append(Collapsible(Static("[dim]No test spec provided[/dim]"), title="Test Spec", collapsed=True))
     
     # Implementation Notes (collapsible, collapsed by default)
     if feature.impl_notes:
-        widgets.append(Collapsible(Static(feature.impl_notes), title="Implementation Notes", collapsed=True))
+        widgets.append(Collapsible(Static(_escape_markup(feature.impl_notes)), title="Implementation Notes", collapsed=True))
     else:
         widgets.append(Collapsible(Static("[dim]No implementation notes provided[/dim]"), title="Implementation Notes", collapsed=True))
     
@@ -297,11 +312,11 @@ def _build_feature_detail_widgets(feature: FeatureFile) -> list:
             q_text = q.get("question", "")
             a_text = q.get("answer", "")
             if a_text:
-                questions_content.append(f"Q{i+1}: {q_text}\n  A: {a_text}")
+                questions_content.append(f"Q{i+1}: {_escape_markup(q_text)}\n  A: {_escape_markup(a_text)}")
             else:
-                questions_content.append(f"Q{i+1}: {q_text} (unanswered)")
+                questions_content.append(f"Q{i+1}: {_escape_markup(q_text)} (unanswered)")
         questions_text = "\n\n".join(questions_content)
-        widgets.append(Collapsible(Static(questions_text), title=f"Questions ({len(questions)})", collapsed=True))
+        widgets.append(Collapsible(Static(_escape_markup(questions_text)), title=f"Questions ({len(questions)})", collapsed=True))
     else:
         widgets.append(Collapsible(Static("[dim]No questions provided[/dim]"), title="Questions", collapsed=True))
     
@@ -1473,24 +1488,21 @@ class PipelineApp(App):
                 self._run_implement_async(feature)
         self.call_from_thread(_do_start)
 
-    def _handle_create_idea(self, title: str, board: str, description: str) -> None:
+    async def _handle_create_idea(self, title: str, board: str, description: str) -> None:
         """Handle create_idea message from the server (web UI created a new idea)."""
-        def _do_create():
-            try:
-                feature = FeatureFile.create(board, title, description)
-                logger.info(f"Created new idea: {feature.title} ({feature.id}) in board {board}")
-                self._refresh_board(self.active_board)
-                # Push updated state back to server
-                if self._server_client and self._server_client.connected:
-                    features = self._load_features(self.active_board)
-                    asyncio.create_task(self._server_client.push_state(
-                        features, self._plan_agent_status, self._implement_agent_status,
-                        auto_plan_enabled=self.auto_plan_enabled,
-                        auto_impl_enabled=self.auto_implement_enabled,
-                    ))
-            except Exception as e:
-                logger.warning(f"create_idea: failed to create idea: {e}")
-        self.call_from_thread(_do_create)
+        try:
+            feature = FeatureFile.create(board, title, description)
+            logger.info(f"Created new idea: {feature.title} ({feature.id}) in board {board}")
+            self._refresh_board(self.active_board)
+            if self._server_client and self._server_client.connected:
+                features = self._load_features(self.active_board)
+                asyncio.create_task(self._server_client.push_state(
+                    features, self._plan_agent_status, self._implement_agent_status,
+                    auto_plan_enabled=self.auto_plan_enabled,
+                    auto_impl_enabled=self.auto_implement_enabled,
+                ))
+        except Exception as e:
+            logger.warning(f"create_idea: failed to create idea: {e}")
 
     def _on_move_requested(self, feature_id: str, target_stage: str) -> None:
         """Handle move_feature message from the server (web UI moved a feature to a new stage)."""
