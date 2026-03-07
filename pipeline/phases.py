@@ -46,6 +46,216 @@ console = _LogConsole()
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
+PHASE_CONFIG = {
+    "planning": {
+        "runner_phase": "planning",
+        "history_tag": "PLANNING",
+        "status_label": "planning",
+        "template": "plan-headless.md",
+        "done_marker": "DONE",
+    },
+    "reviewing_plan": {
+        "runner_phase": "reviewing_plan",
+        "history_tag": "PLAN_REVIEW",
+        "status_label": "reviewing-plan",
+        "template": "review-plan.md",
+        "done_marker": "DONE",
+    },
+    "spec_impl": {
+        "runner_phase": "spec_writing",
+        "history_tag": "SPEC_WRITING",
+        "status_label": "spec: implementation",
+        "template": "impl-spec.md",
+        "done_marker": "DONE",
+    },
+    "spec_test": {
+        "runner_phase": "spec_writing",
+        "history_tag": "SPEC_WRITING",
+        "status_label": "spec: tests",
+        "template": "test-spec.md",
+        "done_marker": "TESTDONE",
+    },
+    "implementing": {
+        "runner_phase": "implementing",
+        "history_tag": "IMPLEMENTING",
+        "status_label": "implementing",
+        "template": "implement.md",
+        "done_marker": "DONE",
+    },
+    "fix_feedback": {
+        "runner_phase": "fix_feedback",
+        "history_tag": "FIX_FEEDBACK",
+        "status_label": "fixing feedback",
+        "template": "fix-feedback.md",
+        "done_marker": "DONE",
+    },
+    "writing_tests": {
+        "runner_phase": "testing",
+        "history_tag": "TESTING",
+        "status_label": "writing tests",
+        "template": "write-tests.md",
+        "done_marker": "DONE",
+    },
+    "review_impl": {
+        "runner_phase": "review",
+        "history_tag": "REVIEW",
+        "status_label": "review",
+        "template": "review-impl.md",
+        "done_marker": "DONE",
+    },
+}
+
+
+assert all(cfg["history_tag"].replace("_", "").isalpha() for cfg in PHASE_CONFIG.values()), "Invalid history_tag in PHASE_CONFIG"
+
+
+def _build_prompt(template_name: str, replacements: dict[str, str], phase_key: Optional[str] = None) -> str:
+    """Load a prompt template and apply variable substitutions.
+    
+    Raises FileNotFoundError if template doesn't exist.
+    """
+    path = PROMPTS_DIR / template_name
+    if not path.exists():
+        raise FileNotFoundError(f"Prompt template not found: {path}")
+    template = path.read_text()
+    
+    checkpoint_path = PROMPTS_DIR / "_checkpoint-instructions.md"
+    if checkpoint_path.exists() and "{checkpoint_instructions}" in template:
+        checkpoint_text = checkpoint_path.read_text()
+        if phase_key and phase_key in PHASE_CONFIG:
+            checkpoint_text = checkpoint_text.replace("{done_marker}", PHASE_CONFIG[phase_key]["done_marker"])
+        template = template.replace("{checkpoint_instructions}", checkpoint_text)
+    
+    for key, value in replacements.items():
+        template = template.replace(key, value)
+    return template
+
+
+def _run_phase(
+    phase_key: str,
+    feature: FeatureFile,
+    runner: AgentRunner,
+    prompt: str,
+    status: Optional[AgentStatus] = None,
+    start_message: str = "",
+    skip_history_start: bool = False,
+) -> str:
+    """Execute a phase: update status, log, add history, call headless, return output.
+    
+    Args:
+        phase_key: Key into PHASE_CONFIG
+        feature: The feature being processed
+        runner: AgentRunner (already scoped via .for_phase() by caller)
+        prompt: The fully-built prompt string
+        status: Optional AgentStatus to update
+        start_message: Custom start message (defaults to 'Starting {history_tag}')
+        skip_history_start: If True, skip the initial add_history/save (for sub-phases)
+    
+    Returns:
+        The raw output string from runner.headless()
+    
+    Raises:
+        RuntimeError: If runner.headless() returns empty output
+    """
+    config = PHASE_CONFIG[phase_key]
+    
+    if not skip_history_start:
+        msg = start_message or f"Starting {config['history_tag'].lower().replace('_', ' ')}"
+        feature.add_history(config["history_tag"], msg)
+        feature.save()
+    
+    if status is not None:
+        status.phase = config["status_label"]
+        status.agent = runner.agent.name
+    
+    logger.info(f"[{config['runner_phase']}] Running: {feature.title}")
+    
+    try:
+        output = runner.headless(prompt, status=status)
+    except Exception as e:
+        logger.error(f"[{config['runner_phase']}] headless() failed for {feature.title}: {e}")
+        feature.add_history(config["history_tag"], f"FAILED: {e}")
+        feature.save()
+        raise
+    
+    if not output or not output.strip():
+        logger.error(f"[{config['runner_phase']}] Empty output for {feature.title}")
+        feature.add_history(config["history_tag"], "FAILED: Empty output from agent")
+        feature.save()
+        raise RuntimeError(f"Phase {phase_key} produced empty output for {feature.title}")
+    
+    return output
+
+
+def _parse_json_output(output: str, field: str) -> str:
+    """Parse JSON output from agent and extract a specific field.
+    
+    Args:
+        output: The raw output from the agent (JSON string)
+        field: The field name to extract (e.g., "implementation_spec", "test_spec")
+    
+    Returns:
+        The extracted field value, or empty string if not found
+    """
+    import json
+    import re
+    
+    if not output or not output.strip():
+        return ""
+    
+    try:
+        # Find JSON in output
+        json_match = re.search(r'\{[\s\S]*\}', output)
+        if json_match:
+            result = json.loads(json_match.group())
+            if field in result and result[field]:
+                return str(result[field])
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        pass
+    
+    return ""
+
+
+def _parse_verdict(output: str) -> tuple[str, str]:
+    """Parse verdict and feedback from review output.
+    
+    Tries JSON first, falls back to text parsing.
+    Returns (verdict, feedback) where verdict is 'PASS' or 'FAIL'.
+    """
+    import json
+    import re
+    
+    verdict = "FAIL"
+    feedback = output.strip()
+    
+    try:
+        json_match = re.search(r'\{[\s\S]*\}', output)
+        if json_match:
+            result = json.loads(json_match.group())
+            if "verdict" in result:
+                if "PASS" in result["verdict"].upper():
+                    verdict = "PASS"
+            if "feedback" in result and result["feedback"]:
+                feedback = str(result["feedback"])
+            elif "feedback" in result:
+                feedback = ""
+    except (json.JSONDecodeError, AttributeError):
+        verdict_match = re.search(r"\*?\*?VERDICT\*?\*?:\s*(\w+)", output, re.IGNORECASE)
+        if verdict_match:
+            if "PASS" in verdict_match.group(1).upper():
+                verdict = "PASS"
+        feedback_match = re.search(r"\*?\*?FEEDBACK\*?\*?:\s*(.+)", output, re.DOTALL)
+        if feedback_match:
+            feedback = feedback_match.group(1).strip()
+        elif verdict == "FAIL":
+            verdict_pos = output.upper().find("VERDICT:")
+            if verdict_pos >= 0:
+                feedback = output[verdict_pos + 8:].strip()
+    
+    feedback = _strip_markdown(feedback)
+    return verdict, feedback
+
+
 def _git_commit(feature: FeatureFile, stage: str) -> None:
     """Commit current pipeline state to git for safety."""
     try:
@@ -306,45 +516,7 @@ def run_plan_review(
         status.agent = runner.agent.name
     output = runner.headless(prompt, status=status)
 
-    # Parse verdict
-    import json
-    import re
-    verdict = "FAIL"
-    review_feedback = output.strip()
-    
-    # Try to parse JSON first (new file-based output)
-    try:
-        # Find JSON in output (may have extra text around it)
-        json_match = re.search(r'\{[\s\S]*\}', output)
-        if json_match:
-            result = json.loads(json_match.group())
-            if "verdict" in result:
-                verdict_text = result["verdict"].upper()
-                if "PASS" in verdict_text:
-                    verdict = "PASS"
-            if "feedback" in result and result["feedback"]:
-                review_feedback = str(result["feedback"])
-            elif "feedback" in result:
-                review_feedback = ""
-    except (json.JSONDecodeError, AttributeError):
-        # Fall back to text parsing
-        verdict_match = re.search(r"\*?\*?VERDICT\*?\*?:\s*(\w+)", output, re.IGNORECASE)
-        if verdict_match:
-            verdict_text = verdict_match.group(1).upper()
-            if "PASS" in verdict_text:
-                verdict = "PASS"
-        
-        # Extract feedback
-        feedback_match = re.search(r"\*?\*?FEEDBACK\*?\*?:\s*(.+)", output, re.DOTALL)
-        if feedback_match:
-            review_feedback = feedback_match.group(1).strip()
-        elif verdict == "FAIL":
-            verdict_pos = output.upper().find("VERDICT:")
-            if verdict_pos >= 0:
-                review_feedback = output[verdict_pos + 8:].strip()
-    
-    # Strip markdown
-    review_feedback = _strip_markdown(review_feedback)
+    verdict, review_feedback = _parse_verdict(output)
     
     feature.add_history("PLAN_REVIEW", f"Verdict: {verdict} — {review_feedback}")
     
@@ -361,46 +533,46 @@ def run_spec_writing(
     console.print(f"\n[bold blue]Spec Writing:[/bold blue] {feature.title}")
     logger.info(f"[spec-writing] Starting: {feature.title}")
 
-    # Move to spec-writing stage while working
     feature.move_to_stage("spec-writing")
     feature.add_history("SPEC_WRITING", "Starting spec generation")
     feature.save()
 
-    # Agent A: Implementation Spec
-    console.print("[dim]Agent A: Generating implementation spec...[/dim]")
-    impl_template = _load_prompt("impl-spec.md")
-    impl_prompt = impl_template.replace("{title}", feature.title)
-    impl_prompt = impl_prompt.replace("{plan}", feature.plan or "(no plan)")
-    impl_prompt = impl_prompt.replace("{feature_slug}", feature.slug)
-    impl_prompt = impl_prompt.replace("{feature_id}", feature.id)
-    impl_prompt = impl_prompt.replace("{phase}", "spec-implementation")
-    if status is not None:
-        status.phase = "spec: implementation"
-        status.agent = runner.agent.name
-    impl_output = runner.headless(impl_prompt, status=status)
+    impl_prompt = _build_prompt("impl-spec.md", {
+        "{title}": feature.title,
+        "{plan}": feature.plan or "(no plan)",
+        "{feature_slug}": feature.slug,
+        "{feature_id}": feature.id,
+        "{phase}": "spec-implementation",
+    }, "spec_impl")
 
-    feature.set_impl_spec(impl_output.strip())
-    feature.add_history("SPEC_WRITING", f"Implementation spec generated (Agent A) via {runner.agent.name}")
+    output = _run_phase("spec_impl", feature, runner, impl_prompt, status=status)
+    
+    # Parse JSON output
+    impl_spec = _parse_json_output(output, "implementation_spec")
+    if not impl_spec:
+        impl_spec = output.strip()
+    feature.set_impl_spec(impl_spec)
+    feature.add_history("SPEC_WRITING", f"Implementation spec generated via {runner.agent.name}")
     feature.save()
 
-    # Agent B: Test Spec
-    console.print("[dim]Agent B: Generating test spec...[/dim]")
-    test_template = _load_prompt("test-spec.md")
-    test_prompt = test_template.replace("{title}", feature.title)
-    test_prompt = test_prompt.replace("{plan}", feature.plan or "(no plan)")
-    test_prompt = test_prompt.replace("{feature_slug}", feature.slug)
-    test_prompt = test_prompt.replace("{feature_id}", feature.id)
-    test_prompt = test_prompt.replace("{phase}", "spec-test")
-    if status is not None:
-        status.phase = "spec: tests"
-        status.agent = runner.agent.name
-    test_output = runner.headless(test_prompt, status=status)
+    test_prompt = _build_prompt("test-spec.md", {
+        "{title}": feature.title,
+        "{plan}": feature.plan or "(no plan)",
+        "{feature_slug}": feature.slug,
+        "{feature_id}": feature.id,
+        "{phase}": "spec-test",
+    }, "spec_test")
 
-    feature.set_test_spec(test_output.strip())
-    feature.add_history("SPEC_WRITING", f"Test spec generated (Agent B) via {runner.agent.name}")
+    output = _run_phase("spec_test", feature, runner, test_prompt, status=status, skip_history_start=True)
+    
+    # Parse JSON output
+    test_spec = _parse_json_output(output, "test_spec")
+    if not test_spec:
+        test_spec = output.strip()
+    feature.set_test_spec(test_spec)
+    feature.add_history("SPEC_WRITING", f"Test spec generated via {runner.agent.name}")
     feature.save()
 
-    # Move to implementing
     feature.move_to_stage("implementing")
     _delete_checkpoint(feature)
     console.print("[green]Specs generated. Feature moved to implementing.[/green]")
@@ -415,30 +587,23 @@ def run_implementing(
     runner = runner.for_phase("implementing")
     console.print(f"\n[bold blue]Implementing:[/bold blue] {feature.title}")
     logger.info(f"[implementing] Starting: {feature.title}")
-    feature.add_history("IMPLEMENTING", "Starting implementation")
-    feature.save()
 
-    template = _load_prompt("implement.md")
-    prompt = template.replace("{title}", feature.title)
-    prompt = prompt.replace("{plan}", feature.plan or "(no plan)")
-    prompt = prompt.replace("{impl_spec}", feature.impl_spec or "(no impl spec)")
-    prompt = prompt.replace("{test_spec}", feature.test_spec or "(no test spec)")
-    prompt = prompt.replace("{feature_slug}", feature.slug)
-    prompt = prompt.replace("{feature_id}", feature.id)
-    prompt = prompt.replace("{phase}", "implementing")
-    
-    # Check if there's previous review feedback to include
-    feedback_context = ""
+    prompt = _build_prompt("implement.md", {
+        "{title}": feature.title,
+        "{plan}": feature.plan or "(no plan)",
+        "{impl_spec}": feature.impl_spec or "(no impl spec)",
+        "{test_spec}": feature.test_spec or "(no test spec)",
+        "{feature_slug}": feature.slug,
+        "{feature_id}": feature.id,
+        "{phase}": "implementing",
+    }, "implementing")
+
     latest_feedback = _get_latest_feedback(feature)
     if latest_feedback and latest_feedback != "No previous feedback available.":
-        feedback_context = f"\n\n## Previous Review Feedback (you MUST address these issues):\n{latest_feedback}\n"
-        prompt += feedback_context
-
-    if status is not None:
-        status.phase = "implementing"
-        status.agent = runner.agent.name
-    output = runner.headless(prompt, status=status)
-
+        prompt += f"\n\n## Previous Review Feedback (you MUST address these issues):\n{latest_feedback}\n"
+    
+    output = _run_phase("implementing", feature, runner, prompt, status=status,
+                        start_message="Starting implementation")
     feature.set_impl_notes(output.strip())
     feature.add_history("IMPLEMENTING", f"Implementation completed via {runner.agent.name}")
     feature.save()
@@ -460,24 +625,21 @@ def run_fix_feedback(
     """Run the fix-feedback phase - focuses on fixing issues from review feedback."""
     runner = runner.for_phase("fix_feedback")
     console.print(f"\n[bold blue]Fixing Review Feedback:[/bold blue] {feature.title}")
-    feature.add_history("FIX_FEEDBACK", "Starting fix feedback")
-    feature.save()
 
-    template = _load_prompt("fix-feedback.md")
-    prompt = template.replace("{title}", feature.title)
-    prompt = prompt.replace("{plan}", feature.plan or "(no plan)")
-    prompt = prompt.replace("{impl_spec}", feature.impl_spec or "(no impl spec)")
-    prompt = prompt.replace("{test_spec}", feature.test_spec or "(no test spec)")
-    prompt = prompt.replace("{impl_notes}", feature.impl_notes or "(no impl notes)")
-    prompt = prompt.replace("{feedback}", feedback or "(no feedback)")
-    prompt = prompt.replace("{feature_slug}", feature.slug)
-    prompt = prompt.replace("{feature_id}", feature.id)
-    prompt = prompt.replace("{phase}", "fix-feedback")
+    prompt = _build_prompt("fix-feedback.md", {
+        "{title}": feature.title,
+        "{plan}": feature.plan or "(no plan)",
+        "{impl_spec}": feature.impl_spec or "(no impl spec)",
+        "{test_spec}": feature.test_spec or "(no test spec)",
+        "{impl_notes}": feature.impl_notes or "(no impl notes)",
+        "{feedback}": feedback or "(no feedback)",
+        "{feature_slug}": feature.slug,
+        "{feature_id}": feature.id,
+        "{phase}": "fix-feedback",
+    }, "fix_feedback")
 
-    if status is not None:
-        status.phase = "fixing feedback"
-        status.agent = runner.agent.name
-    output = runner.headless(prompt, status=status)
+    output = _run_phase("fix_feedback", feature, runner, prompt, status=status,
+                        start_message="Starting fix feedback")
 
     feature.set_impl_notes(output.strip())
     feature.add_history("FIX_FEEDBACK", f"Fixed issues per review feedback via {runner.agent.name}")
@@ -497,23 +659,19 @@ def run_writing_tests(
     """Run the test-writing phase headlessly."""
     runner = runner.for_phase("testing")
     console.print(f"\n[bold blue]Writing Tests:[/bold blue] {feature.title}")
-    feature.add_history("TESTING", "Starting test writing")
-    feature.save()
 
-    template = _load_prompt("write-tests.md")
-    prompt = template.replace("{title}", feature.title)
-    prompt = prompt.replace("{test_spec}", feature.test_spec or "(no test spec)")
-    prompt = prompt.replace("{impl_notes}", feature.impl_notes or "(no impl notes)")
-    prompt = prompt.replace("{feature_slug}", feature.slug)
-    prompt = prompt.replace("{feature_id}", feature.id)
-    prompt = prompt.replace("{phase}", "writing-tests")
+    prompt = _build_prompt("write-tests.md", {
+        "{title}": feature.title,
+        "{test_spec}": feature.test_spec or "(no test spec)",
+        "{impl_notes}": feature.impl_notes or "(no impl notes)",
+        "{feature_slug}": feature.slug,
+        "{feature_id}": feature.id,
+        "{phase}": "writing-tests",
+    }, "writing_tests")
 
-    if status is not None:
-        status.phase = "writing tests"
-        status.agent = runner.agent.name
-    output = runner.headless(prompt, status=status)
+    output = _run_phase("writing_tests", feature, runner, prompt, status=status,
+                        start_message="Starting test writing")
 
-    # Append test output under a sub-heading in Implementation Notes
     current_notes = feature.impl_notes
     updated = f"{current_notes}\n\n### Tests Written\n\n{output.strip()}"
     feature.set_impl_notes(updated)
@@ -547,45 +705,7 @@ def run_review_impl(
         status.agent = runner.agent.name
     output = runner.headless(prompt, status=status)
 
-    # Parse verdict
-    import json
-    import re
-    verdict = "FAIL"
-    feedback = output.strip()
-
-    # Try to parse JSON first (new file-based output)
-    try:
-        json_match = re.search(r'\{[\s\S]*\}', output)
-        if json_match:
-            result = json.loads(json_match.group())
-            if "verdict" in result:
-                verdict_text = result["verdict"].upper()
-                if "PASS" in verdict_text:
-                    verdict = "PASS"
-            if "feedback" in result and result["feedback"]:
-                feedback = str(result["feedback"])
-            elif "feedback" in result:
-                feedback = ""
-    except (json.JSONDecodeError, AttributeError):
-        # Fall back to text parsing
-        verdict_match = re.search(r"\*?\*?VERDICT\*?\*?:\s*(\w+)", output, re.IGNORECASE)
-        if verdict_match:
-            verdict_text = verdict_match.group(1).upper()
-            if "PASS" in verdict_text:
-                verdict = "PASS"
-        
-        # Extract feedback - everything after FEEDBACK: or after VERDICT: FAIL
-        feedback_match = re.search(r"\*?\*?FEEDBACK\*?\*?:\s*(.+)", output, re.DOTALL)
-        if feedback_match:
-            feedback = feedback_match.group(1).strip()
-        elif verdict == "FAIL":
-            # No explicit FEEDBACK found, use the whole output after VERDICT
-            verdict_pos = output.upper().find("VERDICT:")
-            if verdict_pos >= 0:
-                feedback = output[verdict_pos + 8:].strip()
-    
-    # Strip markdown formatting from feedback for clean history storage
-    feedback = _strip_markdown(feedback)
+    verdict, feedback = _parse_verdict(output)
     
     feature.add_history("REVIEW", f"Verdict: {verdict} — {feedback}")
 

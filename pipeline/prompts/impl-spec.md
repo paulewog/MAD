@@ -9,25 +9,22 @@ Write a detailed implementation spec — a list of specific coding tasks.
 For each task: what to create or modify, the approach, and dependencies on other tasks.
 Be concrete. No preamble.
 
-## Checkpoint Instructions
-After completing each meaningful unit of work, write a checkpoint file to:
-  .mad/checkpoints/<feature-slug>.checkpoint.json
+{checkpoint_instructions}
 
-The feature slug for this task is: {feature_slug}
+## Output Format
 
-Use this exact JSON format:
+Write your response as JSON with exactly these fields:
+- "implementation_spec": The detailed implementation spec as text
+- "test_spec": The test specification as text
+
+Example:
+```json
 {
-  "feature_slug": "{feature_slug}",
-  "feature_id": "{feature_id}",
-  "phase": "{phase}",
-  "last_checkpoint": "<current ISO timestamp>",
-  "completed_steps": ["list of what you've done so far"],
-  "next_step": "what you plan to do next",
-  "notes": "any context needed to resume",
-  "files_modified": ["list of files you've changed"]
+  "implementation_spec": "1. Add function to audio.ts\n2. Update imports in farmDog.ts...",
+  "test_spec": "Verify the dog moves toward the hen during search..."
 }
+```
 
-Overwrite the file each time (not append). Create the .mad/checkpoints/ directory if it doesn't exist.
-If writing the checkpoint fails for any reason (permissions, disk space), just continue working — checkpoints are best-effort and should never block your actual work.
+Write ONLY valid JSON to the output file. Nothing else.
 
-When finished, write "DONE" on its own line and then exit. Do not wait for more input.
+When finished, write DONE on its own line and then exit.

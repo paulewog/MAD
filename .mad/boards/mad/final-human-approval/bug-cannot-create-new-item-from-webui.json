@@ -123,6 +123,26 @@
       "ts": "2026-03-07T08:34Z",
       "stage": "REVIEW",
       "note": "Verdict: FAIL \u2014 {\n  \"verdict\": \"PASS\",\n  \"feedback\": []\n}"
+    },
+    {
+      "ts": "2026-03-07T16:59Z",
+      "stage": "MOVED",
+      "note": "Manual move: implementing -> review"
+    },
+    {
+      "ts": "2026-03-07T16:59Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-07T17:00Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS \u2014 "
+    },
+    {
+      "ts": "2026-03-07T17:00Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
     }
   ],
   "pipeline_log": []
