@@ -307,24 +307,41 @@ def run_plan_review(
     output = runner.headless(prompt, status=status)
 
     # Parse verdict
+    import json
     import re
     verdict = "FAIL"
     review_feedback = output.strip()
-
-    verdict_match = re.search(r"\*?\*?VERDICT\*?\*?:\s*(\w+)", output, re.IGNORECASE)
-    if verdict_match:
-        verdict_text = verdict_match.group(1).upper()
-        if "PASS" in verdict_text:
-            verdict = "PASS"
     
-    # Extract feedback
-    feedback_match = re.search(r"\*?\*?FEEDBACK\*?\*?:\s*(.+)", output, re.DOTALL)
-    if feedback_match:
-        review_feedback = feedback_match.group(1).strip()
-    elif verdict == "FAIL":
-        verdict_pos = output.upper().find("VERDICT:")
-        if verdict_pos >= 0:
-            review_feedback = output[verdict_pos + 8:].strip()
+    # Try to parse JSON first (new file-based output)
+    try:
+        # Find JSON in output (may have extra text around it)
+        json_match = re.search(r'\{[\s\S]*\}', output)
+        if json_match:
+            result = json.loads(json_match.group())
+            if "verdict" in result:
+                verdict_text = result["verdict"].upper()
+                if "PASS" in verdict_text:
+                    verdict = "PASS"
+            if "feedback" in result and result["feedback"]:
+                review_feedback = str(result["feedback"])
+            elif "feedback" in result:
+                review_feedback = ""
+    except (json.JSONDecodeError, AttributeError):
+        # Fall back to text parsing
+        verdict_match = re.search(r"\*?\*?VERDICT\*?\*?:\s*(\w+)", output, re.IGNORECASE)
+        if verdict_match:
+            verdict_text = verdict_match.group(1).upper()
+            if "PASS" in verdict_text:
+                verdict = "PASS"
+        
+        # Extract feedback
+        feedback_match = re.search(r"\*?\*?FEEDBACK\*?\*?:\s*(.+)", output, re.DOTALL)
+        if feedback_match:
+            review_feedback = feedback_match.group(1).strip()
+        elif verdict == "FAIL":
+            verdict_pos = output.upper().find("VERDICT:")
+            if verdict_pos >= 0:
+                review_feedback = output[verdict_pos + 8:].strip()
     
     # Strip markdown
     review_feedback = _strip_markdown(review_feedback)
@@ -531,26 +548,41 @@ def run_review_impl(
     output = runner.headless(prompt, status=status)
 
     # Parse verdict
+    import json
+    import re
     verdict = "FAIL"
     feedback = output.strip()
 
-    # Look for VERDICT and FEEDBACK in the output (with or without **)
-    import re
-    verdict_match = re.search(r"\*?\*?VERDICT\*?\*?:\s*(\w+)", output, re.IGNORECASE)
-    if verdict_match:
-        verdict_text = verdict_match.group(1).upper()
-        if "PASS" in verdict_text:
-            verdict = "PASS"
-    
-    # Extract feedback - everything after FEEDBACK: or after VERDICT: FAIL
-    feedback_match = re.search(r"\*?\*?FEEDBACK\*?\*?:\s*(.+)", output, re.DOTALL)
-    if feedback_match:
-        feedback = feedback_match.group(1).strip()
-    elif verdict == "FAIL":
-        # No explicit FEEDBACK found, use the whole output after VERDICT
-        verdict_pos = output.upper().find("VERDICT:")
-        if verdict_pos >= 0:
-            feedback = output[verdict_pos + 8:].strip()
+    # Try to parse JSON first (new file-based output)
+    try:
+        json_match = re.search(r'\{[\s\S]*\}', output)
+        if json_match:
+            result = json.loads(json_match.group())
+            if "verdict" in result:
+                verdict_text = result["verdict"].upper()
+                if "PASS" in verdict_text:
+                    verdict = "PASS"
+            if "feedback" in result and result["feedback"]:
+                feedback = str(result["feedback"])
+            elif "feedback" in result:
+                feedback = ""
+    except (json.JSONDecodeError, AttributeError):
+        # Fall back to text parsing
+        verdict_match = re.search(r"\*?\*?VERDICT\*?\*?:\s*(\w+)", output, re.IGNORECASE)
+        if verdict_match:
+            verdict_text = verdict_match.group(1).upper()
+            if "PASS" in verdict_text:
+                verdict = "PASS"
+        
+        # Extract feedback - everything after FEEDBACK: or after VERDICT: FAIL
+        feedback_match = re.search(r"\*?\*?FEEDBACK\*?\*?:\s*(.+)", output, re.DOTALL)
+        if feedback_match:
+            feedback = feedback_match.group(1).strip()
+        elif verdict == "FAIL":
+            # No explicit FEEDBACK found, use the whole output after VERDICT
+            verdict_pos = output.upper().find("VERDICT:")
+            if verdict_pos >= 0:
+                feedback = output[verdict_pos + 8:].strip()
     
     # Strip markdown formatting from feedback for clean history storage
     feedback = _strip_markdown(feedback)

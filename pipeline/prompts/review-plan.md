@@ -26,18 +26,18 @@ If previous feedback was provided, verify that the plan addresses those concerns
 
 ## Output Format
 
-Respond with EXACTLY this format (no other text). Use PLAIN TEXT only:
-
-**VERDICT: PASS** or **VERDICT: FAIL**
-
-If FAIL, provide specific feedback:
-FEEDBACK: List each concern with what needs to be fixed or improved.
+Write your review as JSON with exactly these fields:
+- "verdict": "PASS" or "FAIL"
+- "feedback": If FAIL, provide specific actionable feedback. If PASS, use null.
 
 Example:
+```json
+{
+  "verdict": "FAIL",
+  "feedback": "- Missing handling for network errors\n- Need to clarify data migration strategy"
+}
 ```
-VERDICT: FAIL
-FEEDBACK:
-- Missing handling for network errors
-- Need to clarify data migration strategy
-- Consider adding rate limiting
-```
+
+Write ONLY valid JSON to the output file. Nothing else.
+
+When finished, write DONE on its own line and then exit.

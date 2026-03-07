@@ -1,12 +1,12 @@
 Code Path: /home/paule/MAD
 Context File: /home/paule/MAD/.mad/CONTEXT.md
 
-**Feature Iteration: specific-review-slots**
+**Feature Iteration: consolidate-phase-execution**
 
-The feature file is at: `specific-review-slots.json`
+The feature file is at: `consolidate-phase-execution.json`
 
 **Current Description:**
-We should have a specific "review" area (maybe an array?) in the item - one for the plan review, one for the implementation review - so that it's easier to find when agents go grab the item, and also easier to show.
+I think we need to consolidate our phase execution so we can use similar, non-repeated code (such as instructions for how to get the output from the agents) in one spot rather than one per phase/output.
 
 **Current Plan:**
 (no plan yet)

@@ -43,21 +43,18 @@ For each item below, explicitly assess and document your findings:
 
 ## Output Format
 
-Respond with EXACTLY this format (no other text). Use PLAIN TEXT only - no markdown formatting:
-
-**VERDICT: PASS** or **VERDICT: FAIL**
-
-If FAIL, you MUST provide specific, actionable feedback. Use plain text, no bold, no code blocks, no markdown:
-FEEDBACK: List each issue with file/function/line if possible, and what needs to be fixed.
+Write your review as JSON with exactly these fields:
+- "verdict": "PASS" or "FAIL"
+- "feedback": If FAIL, provide specific actionable feedback listing issues found. If PASS, use null.
 
 Example:
-```
-VERDICT: FAIL
-FEEDBACK:
-- Plan item "add authentication" not implemented - no login/user code found
-- Test spec requires "rate limiting" but no tests for it
-- NullPointerException in handle_submit() line 42 if input is None
-- Missing try/finally for file handle in process_data()
+```json
+{
+  "verdict": "FAIL",
+  "feedback": "- Plan item 'add authentication' not implemented - no login/user code found\n- Test spec requires 'rate limiting' but no tests for it\n- NullPointerException in handle_submit() line 42 if input is None"
+}
 ```
 
-When finished, write "DONE" on its own line and then exit. Do not wait for more input.
+Write ONLY valid JSON to the output file. Nothing else.
+
+When finished, write DONE on its own line and then exit.
