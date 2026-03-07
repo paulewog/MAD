@@ -615,3 +615,29 @@
     <script>if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js'); }</script>
 </body>
 </html>
+
+{{define "log_entries"}}{{if .}}{{range .}}<div class="log-entry">
+    <span class="log-ts">{{.Timestamp}}</span>
+    <span class="log-phase">[{{.Phase}}]</span>
+    <span class="log-output">{{.Output}}</span>
+</div>{{end}}{{else}}<div class="empty-state">No log entries</div>{{end}}{{end}}
+
+{{define "feature_stages"}}{{range .StageGroups}}<div class="stage-section">
+    <button class="stage-toggle{{if not .Features}} collapsed{{end}}" onclick="toggleStage(this)">
+        <span>{{.Stage}} <span class="stage-count{{if .Features}} has-items{{end}}">{{len .Features}}</span></span>
+        <span class="arrow">&#9660;</span>
+    </button>
+    <div class="stage-body{{if not .Features}} hidden{{end}}">
+        {{if .Features}}{{range .Features}}<div class="feature-card" onclick="toggleFeatureDetail(this)"
+            data-id="{{.ID}}"
+            data-title="{{.Title}}"
+            data-stage="{{.Stage}}"
+            data-board="{{.Board}}"
+            data-created="{{.Created}}"
+            data-description="{{.Description}}"
+            data-history="{{.History}}">
+            <div class="title">{{.Title}}</div>
+            <div class="meta"><span>{{.Board}}</span><span>{{.Created}}</span></div>
+        </div>{{end}}{{else}}<div class="empty-stage">No features in this stage</div>{{end}}
+    </div>
+</div>{{end}}{{end}}

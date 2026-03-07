@@ -117,7 +117,7 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 		},
 	}
 
-	tmpl := template.Must(template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/index.html"))
+	tmpl := template.Must(template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/index.html", "templates/client.html"))
 
 	// Static files
 	mux.Handle("/static/", http.FileServer(http.FS(staticFS)))
