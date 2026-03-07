@@ -218,8 +218,8 @@ class AgentRunner:
             output_lines = []
             is_json_format = "--format" in cmd and "json" in cmd
             
-            # Monitor log activity - warn if no activity for 5 minutes
-            log_watch_interval = 5 * 60
+            # Monitor log activity - kill if no activity for 15 minutes
+            log_watch_interval = 15 * 60  # 15 minutes
             last_log_time = time.time()
             
             start_time = time.time()
@@ -268,6 +268,19 @@ class AgentRunner:
                             warned_about_stuck = True
                         elif int(elapsed) % 30 == 0:
                             logger.warning(f"[runner] No log activity for {int(elapsed)}s. Agent may be stuck. Feature: {feature_slug}, cwd: {cwd}")
+                        
+                        # Kill the process after 15 minutes of no activity
+                        logger.warning(f"[runner] Killing agent after {int(elapsed)}s of no activity. Feature: {feature_slug}")
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+                        if status is not None:
+                            status.lines.append(f"[runner] Agent killed after {int(elapsed)}s of no activity")
+                            status.running = False
+                        break
                 
                 line = process.stdout.readline()
                 if not line and process.poll() is not None:

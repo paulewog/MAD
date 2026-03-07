@@ -59,3 +59,5 @@ FEEDBACK:
 - NullPointerException in handle_submit() line 42 if input is None
 - Missing try/finally for file handle in process_data()
 ```
+
+When finished, write "REVIEW_COMPLETE" on its own line and then exit. Do not wait for more input.

@@ -31,3 +31,5 @@ You are an AI helping plan this feature. Generate a plan based on the descriptio
 - Write a complete, detailed plan in the "plan" field
 
 Start now and output only valid JSON.
+
+When finished, write "PLAN_COMPLETE" on its own line and then exit. Do not wait for more input.

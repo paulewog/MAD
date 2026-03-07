@@ -34,3 +34,5 @@ Write a comprehensive test spec with these sections:
 ---
 
 Write in plain language, NOT actual test code. Focus on "what should happen" not "how to test it".
+
+When finished, write "TESTSPEC_COMPLETE" on its own line and then exit. Do not wait for more input.

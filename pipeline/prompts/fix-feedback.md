@@ -35,3 +35,5 @@ If the feedback mentions test gaps, add or fix tests.
 If the feedback mentions implementation bugs, fix the implementation code.
 
 Output a summary of what you fixed.
+
+When finished, write "FIX_COMPLETE" on its own line and then exit. Do not wait for more input.
