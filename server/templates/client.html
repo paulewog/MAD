@@ -468,6 +468,28 @@
             btn.classList.toggle('collapsed');
             body.classList.toggle('hidden');
         }
+        function toggleCollapsible(btn) {
+            var body = btn.nextElementSibling;
+            btn.classList.toggle('collapsed');
+            body.classList.toggle('hidden');
+            var expanded = !btn.classList.contains('collapsed');
+            btn.setAttribute('aria-expanded', expanded);
+            body.setAttribute('aria-hidden', !expanded);
+        }
+        function makeCollapsibleSection(title, content, defaultExpanded, isEmpty) {
+            var sectionId = 'section-' + Math.random().toString(36).substr(2, 9);
+            var expanded = defaultExpanded ? '' : ' collapsed';
+            var hidden = defaultExpanded ? '' : ' hidden';
+            var chevron = defaultExpanded ? '&#9660;' : '&#9654;';
+            var placeholder = isEmpty ? '<span style="color:#484f58;font-style:italic">No ' + title + ' provided</span>' : content;
+            return '<div class="collapsible-section" style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d">' +
+                '<button class="stage-toggle' + expanded + '" onclick="toggleCollapsible(this)" aria-expanded="' + (defaultExpanded ? 'true' : 'false') + '" aria-controls="' + sectionId + '" style="background:none;border:none;color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;cursor:pointer;padding:0;display:flex;align-items:center;gap:0.3rem;width:100%">' +
+                '<span class="arrow" style="font-size:0.6rem">' + chevron + '</span>' + title +
+                '</button>' +
+                '<div id="' + sectionId + '" class="stage-body' + hidden + '" role="region" aria-hidden="' + (!defaultExpanded) + '" style="max-height:500px;overflow-y:auto;transition:max-height 0.3s ease">' +
+                placeholder +
+                '</div></div>';
+        }
         function toggleFeatureDetail(card) {
             var existing = card.nextElementSibling;
             if (existing && existing.classList.contains('feature-detail')) {
@@ -476,9 +498,10 @@
             }
             var detail = document.createElement('div');
             detail.className = 'feature-detail';
+            var stage = card.getAttribute('data-stage');
             var html =
                 '<div class="detail-row"><span class="detail-label">Title</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-title')) + '</span></div>' +
-                '<div class="detail-row"><span class="detail-label">Stage</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-stage')) + '</span></div>' +
+                '<div class="detail-row"><span class="detail-label">Stage</span><span class="detail-value">' + escapeHtml(stage) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Board</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-board')) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-created')) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">ID</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-id')) + '</span></div>';
@@ -488,40 +511,74 @@
                     '<div style="color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem">Description</div>' +
                     '<div style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap">' + escapeHtml(description) + '</div></div>';
             }
+            // History section (expanded by default)
+            var historyContent = '';
             try {
                 var history = JSON.parse(card.getAttribute('data-history') || '[]');
                 if (history.length > 0) {
-                    html += '<div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d">' +
-                        '<div style="color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem">History (' + history.length + ')</div>';
                     for (var i = 0; i < history.length; i++) {
                         var h = history[i];
-                        html += '<div style="font-size:0.7rem;padding:0.15rem 0;border-bottom:1px solid #161b22">' +
+                        historyContent += '<div style="font-size:0.7rem;padding:0.15rem 0;border-bottom:1px solid #161b22">' +
                             '<span style="color:#484f58">' + escapeHtml(h.ts || '') + '</span> ' +
                             '<span style="color:#d2a8ff;font-weight:600">' + escapeHtml(h.stage || '') + '</span> ' +
                             '<span style="color:#c9d1d9">' + escapeHtml(h.note || '') + '</span></div>';
                     }
-                    html += '</div>';
                 }
             } catch(e) {}
-            // Questions form for requested-input features
+            html += makeCollapsibleSection('History (' + (history ? history.length : 0) + ')', historyContent, true, !historyContent);
+            // Plan section
+            var plan = card.getAttribute('data-plan') || '';
+            html += makeCollapsibleSection('Plan', '<div style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap">' + escapeHtml(plan) + '</div>', false, !plan);
+            // Implementation Spec section
+            var implSpec = card.getAttribute('data-impl-spec') || '';
+            html += makeCollapsibleSection('Implementation Spec', '<div style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap;font-family:monospace;background:#161b22;padding:0.3rem;border-radius:4px">' + escapeHtml(implSpec) + '</div>', false, !implSpec);
+            // Test Spec section
+            var testSpec = card.getAttribute('data-test-spec') || '';
+            html += makeCollapsibleSection('Test Spec', '<div style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap;font-family:monospace;background:#161b22;padding:0.3rem;border-radius:4px">' + escapeHtml(testSpec) + '</div>', false, !testSpec);
+            // Implementation Notes section
+            var implNotes = card.getAttribute('data-impl-notes') || '';
+            html += makeCollapsibleSection('Implementation Notes', '<div style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap;font-family:monospace;background:#161b22;padding:0.3rem;border-radius:4px">' + escapeHtml(implNotes) + '</div>', false, !implNotes);
+            // Questions section (inline when stage === 'requested-input')
             try {
                 var questions = JSON.parse(card.getAttribute('data-questions') || '[]');
-                var stage = card.getAttribute('data-stage');
-                if (questions.length > 0 && stage === 'requested-input') {
+                if (questions.length > 0) {
+                    if (stage === 'requested-input') {
+                        var featureID = card.getAttribute('data-id');
+                        html += '<div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d">' +
+                            '<div style="color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.4rem">Questions (' + questions.length + ')</div>';
+                        for (var qi = 0; qi < questions.length; qi++) {
+                            var q = questions[qi];
+                            html += '<div style="margin-bottom:0.5rem">' +
+                                '<label style="display:block;color:#c9d1d9;font-size:0.8rem;margin-bottom:0.2rem">' + escapeHtml(q.question) + '</label>' +
+                                '<input type="text" class="qa-input" data-qi="' + qi + '" value="' + escapeHtml(q.answer || '') + '" ' +
+                                'style="width:100%;padding:0.3rem 0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.8rem;font-family:inherit" />' +
+                                '</div>';
+                        }
+                        html += '<button onclick="submitAnswers(this,\'' + escapeHtml(featureID) + '\')" ' +
+                            'style="padding:0.35rem 0.8rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-family:inherit">Submit Answers</button>' +
+                            '<span class="answer-feedback" style="margin-left:0.5rem;font-size:0.8rem"></span>' +
+                            '</div>';
+                    } else {
+                        var questionsContent = '';
+                        for (var qi = 0; qi < questions.length; qi++) {
+                            var q = questions[qi];
+                            var answerText = q.answer ? '<span style="color:#7ee787">A: ' + escapeHtml(q.answer) + '</span>' : '<span style="color:#f0883e;font-style:italic">(unanswered)</span>';
+                            questionsContent += '<div style="font-size:0.7rem;padding:0.15rem 0;border-bottom:1px solid #161b22">' +
+                                '<span style="color:#c9d1d9">Q' + (qi+1) + ': ' + escapeHtml(q.question) + '</span><br>' +
+                                answerText + '</div>';
+                        }
+                        html += makeCollapsibleSection('Questions (' + questions.length + ')', questionsContent, false, false);
+                    }
+                }
+            } catch(e) {}
+            // Approve button for ideas stage
+            try {
+                if (stage === 'ideas') {
                     var featureID = card.getAttribute('data-id');
                     html += '<div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d">' +
-                        '<div style="color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.4rem">Questions (' + questions.length + ')</div>';
-                    for (var qi = 0; qi < questions.length; qi++) {
-                        var q = questions[qi];
-                        html += '<div style="margin-bottom:0.5rem">' +
-                            '<label style="display:block;color:#c9d1d9;font-size:0.8rem;margin-bottom:0.2rem">' + escapeHtml(q.question) + '</label>' +
-                            '<input type="text" class="qa-input" data-qi="' + qi + '" value="' + escapeHtml(q.answer || '') + '" ' +
-                            'style="width:100%;padding:0.3rem 0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.8rem;font-family:inherit" />' +
-                            '</div>';
-                    }
-                    html += '<button onclick="submitAnswers(this,\'' + escapeHtml(featureID) + '\')" ' +
-                        'style="padding:0.35rem 0.8rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-family:inherit">Submit Answers</button>' +
-                        '<span class="answer-feedback" style="margin-left:0.5rem;font-size:0.8rem"></span>' +
+                        '<button onclick="moveFeature(this,\'' + escapeHtml(featureID) + '\',\'plan-inbox\')" ' +
+                        'style="padding:0.35rem 0.8rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-family:inherit">Approve Idea</button>' +
+                        '<span class="move-feedback" style="margin-left:0.5rem;font-size:0.8rem"></span>' +
                         '</div>';
                 }
             } catch(e) {}
@@ -609,6 +666,37 @@
                 btn.textContent = 'Network error';
                 btn.style.background = '#f85149';
                 setTimeout(function() { btn.disabled = false; btn.textContent = origText; btn.style.background = origBg; }, 3000);
+            });
+        }
+        function moveFeature(btn, featureID, targetStage) {
+            var detail = btn.closest('.feature-detail');
+            var feedback = detail.querySelector('.move-feedback');
+            btn.disabled = true;
+            var origText = btn.textContent;
+            btn.textContent = 'Moving...';
+            fetch('/api/clients/' + encodeURIComponent(_clientID) + '/features/' + encodeURIComponent(featureID) + '/move?key=' + encodeURIComponent(_dashKey), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({target_stage: targetStage})
+            }).then(function(resp) {
+                return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+            }).then(function(result) {
+                if (result.ok) {
+                    feedback.style.color = '#3fb950';
+                    feedback.textContent = 'Moved!';
+                    btn.textContent = 'Approved!';
+                    setTimeout(function() { btn.disabled = false; btn.textContent = origText; feedback.textContent = ''; }, 3000);
+                } else {
+                    feedback.style.color = '#f85149';
+                    feedback.textContent = result.data.error || 'Failed';
+                    btn.disabled = false;
+                    btn.textContent = origText;
+                }
+            }).catch(function() {
+                feedback.style.color = '#f85149';
+                feedback.textContent = 'Network error';
+                btn.disabled = false;
+                btn.textContent = origText;
             });
         }
         function showNewIdeaModal() {
@@ -699,9 +787,14 @@
             data-board="{{.Board}}"
             data-created="{{.Created}}"
             data-description="{{.Description}}"
-            data-history="{{.History}}">
-            <div class="title">{{.Title}}</div>
-            <div class="meta"><span>{{.Board}}</span><span>{{.Created}}</span></div>
+            data-history="{{.History}}"
+            data-plan="{{.Plan}}"
+            data-impl-spec="{{.ImplSpec}}"
+            data-test-spec="{{.TestSpec}}"
+            data-impl-notes="{{.ImplNotes}}"
+            data-checkpoint="{{.Checkpoint}}">
+            <div class="title">{{.Title}}{{if .Checkpoint}}{{if .Checkpoint.exists}} <span style="color:#d29922;font-size:0.7rem">● checkpoint</span>{{end}}{{end}}</div>
+            <div class="meta"><span>{{.Board}}</span><span>{{.Created}}</span>{{if .Checkpoint}}{{if .Checkpoint.exists}}<span style="color:#d29922">{{.Checkpoint.last_checkpoint}}</span>{{end}}{{end}}</div>
         </div>{{end}}{{else}}<div class="empty-stage">No features in this stage</div>{{end}}
     </div>
 </div>{{end}}{{end}}

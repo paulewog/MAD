@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, List, Optional
 
 try:
@@ -18,6 +19,31 @@ from state import STAGE_ACTIONS
 logger = logging.getLogger(__name__)
 
 
+def _get_checkpoint_info(feature) -> Optional[dict]:
+    """Read checkpoint file for a feature and return info, or None if not found."""
+    try:
+        config_path = Path(__file__).parent.parent / ".mad" / "config.json"
+        if not config_path.exists():
+            return None
+        with open(config_path) as f:
+            config = json.load(f)
+        mad_dir = Path(config.get("mad_dir", ".mad"))
+        checkpoint_path = mad_dir / "checkpoints" / f"{feature.slug}.checkpoint.json"
+        if not checkpoint_path.exists():
+            return None
+        with open(checkpoint_path) as f:
+            data = json.load(f)
+        return {
+            "exists": True,
+            "last_checkpoint": data.get("last_checkpoint", ""),
+            "completed_steps_count": len(data.get("completed_steps", [])),
+            "next_step": data.get("next_step", "")[:200] if data.get("next_step") else "",
+        }
+    except Exception as e:
+        logger.warning(f"[server_client] Failed to read checkpoint for {feature.slug}: {e}")
+        return None
+
+
 class ServerClient:
     """Async WebSocket client that pushes feature state to the MAD server."""
 
@@ -25,7 +51,8 @@ class ServerClient:
                  on_answers_received=None,
                  on_set_auto_mode: Optional[Callable[[str, bool], None]] = None,
                  on_start_agent: Optional[Callable[[str, str], None]] = None,
-                 on_idea_created: Optional[Callable[[str, str, str], None]] = None):
+                 on_idea_created: Optional[Callable[[str, str, str], None]] = None,
+                 on_move_requested: Optional[Callable[[str, str], None]] = None):
         self._url = url
         self._api_key = api_key
         self._client_id = client_id
@@ -38,6 +65,7 @@ class ServerClient:
         self._on_set_auto_mode = on_set_auto_mode
         self._on_start_agent = on_start_agent
         self._on_idea_created = on_idea_created
+        self._on_move_requested = on_move_requested
 
     @property
     def connected(self) -> bool:
@@ -120,6 +148,11 @@ class ServerClient:
                     "history": f._data.get("history", []),
                     "questions": f.questions,
                     "available_actions": available,
+                    "plan": f.plan[:1000] if f.plan else "",
+                    "impl_spec": f.impl_spec[:1000] if f.impl_spec else "",
+                    "test_spec": f.test_spec[:1000] if f.test_spec else "",
+                    "impl_notes": f.impl_notes[:1000] if f.impl_notes else "",
+                    "checkpoint": _get_checkpoint_info(f),
                 })
                 # Collect log entries from the feature
                 raw_logs = f._data.get("pipeline_log", [])
@@ -219,6 +252,14 @@ class ServerClient:
                     self._on_idea_created(title, board, description)
                 except Exception as e:
                     logger.warning(f"Error handling create_idea: {e}")
+        elif msg_type == "move_feature":
+            feature_id = data.get("feature_id", "")
+            target_stage = data.get("target_stage", "")
+            if self._on_move_requested and feature_id and target_stage:
+                try:
+                    self._on_move_requested(feature_id, target_stage)
+                except Exception as e:
+                    logger.warning(f"Error handling move_feature: {e}")
         # Other message types silently ignored
 
     async def reconnect_loop(self) -> None:

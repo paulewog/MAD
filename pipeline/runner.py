@@ -1,5 +1,6 @@
 """Agent runner — launches AI agents interactively or headlessly."""
 
+import json
 import os
 import subprocess
 import time
@@ -86,6 +87,61 @@ class AgentRunner:
         
         return "\n".join(parts)
 
+    def _read_checkpoint(self, feature_slug: str) -> Optional[str]:
+        """Read checkpoint file and return resume context string, or None."""
+        if not feature_slug or feature_slug == 'default':
+            return None
+        
+        checkpoint_dir = self._workdir / '.mad' / 'checkpoints'
+        checkpoint_path = checkpoint_dir / f'{feature_slug}.checkpoint.json'
+        
+        if not checkpoint_path.exists():
+            return None
+        
+        try:
+            raw = checkpoint_path.read_text()
+            data = json.loads(raw)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f'[runner] Invalid/unreadable checkpoint at {checkpoint_path}: {e}')
+            return None
+        
+        if not isinstance(data, dict):
+            logger.warning(f'[runner] Checkpoint is not a JSON object: {checkpoint_path}')
+            return None
+        if 'feature_slug' not in data or 'phase' not in data:
+            logger.warning(f'[runner] Checkpoint missing required fields (feature_slug, phase): {checkpoint_path}')
+            return None
+        
+        completed = data.get('completed_steps', [])
+        next_step = data.get('next_step', 'Unknown')
+        notes = data.get('notes', '')
+        files = data.get('files_modified', [])
+        phase = data.get('phase', 'unknown')
+        
+        lines = [
+            '',
+            '## Resuming from checkpoint',
+            f'A previous agent session was interrupted during the "{phase}" phase.',
+            'Here is the progress so far:',
+            '',
+        ]
+        if completed:
+            lines.append('Completed steps:')
+            for step in completed:
+                lines.append(f'  - {step}')
+            lines.append('')
+        lines.append(f'Next step: {next_step}')
+        if notes:
+            lines.append(f'Notes: {notes}')
+        if files:
+            lines.append(f'Files modified: {", ".join(files)}')
+        lines.append('')
+        lines.append('Resume from where the previous agent left off. Do NOT redo completed work.')
+        lines.append('')
+        
+        logger.info(f'[runner] Loaded checkpoint for {feature_slug}: {len(completed)} completed steps')
+        return '\n'.join(lines)
+
     def interactive(self, workdir: Path, initial_message: str = None) -> None:
         """Launch the agent interactively in workdir.
 
@@ -166,6 +222,11 @@ class AgentRunner:
                 f.unlink()
             
             full_prompt = self._prepend_context(prompt)
+            
+            # Read checkpoint if it exists
+            checkpoint_context = self._read_checkpoint(item_name)
+            if checkpoint_context:
+                full_prompt += checkpoint_context
             
             # Write instructions to .tmp/<item>.instructions file
             instructions_path = tmp_dir / f"{item_name}.instructions"

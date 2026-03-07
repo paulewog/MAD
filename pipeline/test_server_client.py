@@ -48,6 +48,10 @@ def _make_feature(title="Test Feature", stage="ideas", board="default",
     f.id = fid
     f.description = ""
     f.questions = []
+    f.plan = ""
+    f.impl_spec = ""
+    f.test_spec = ""
+    f.impl_notes = ""
     f._data = {"pipeline_log": logs or [], "history": []}
     return f
 
@@ -1404,3 +1408,144 @@ class TestReconnectLoopStartAgent:
 
         assert received.get("feature_id") == "f1"
         assert received.get("action") == "implement"
+
+
+# ---------------------------------------------------------------------------
+# push_state new fields (plan, impl_spec, test_spec, impl_notes) tests
+# ---------------------------------------------------------------------------
+
+class TestPushStateNewFields:
+
+    @pytest.mark.asyncio
+    async def test_push_state_includes_plan_field(self):
+        fake_ws = FakeWebSocket()
+        sc = ServerClient("ws://localhost:8080", "key", "c")
+        sc._ws = fake_ws
+        sc._connected = True
+
+        feature = _make_feature("F1", "plan-inbox", "board1", "2025-01-01", "f1")
+        feature.plan = "This is a test plan"
+        await sc.push_state([feature])
+
+        payload = json.loads(fake_ws._sent[0])
+        assert payload["features"][0]["plan"] == "This is a test plan"
+
+    @pytest.mark.asyncio
+    async def test_push_state_includes_impl_spec_field(self):
+        fake_ws = FakeWebSocket()
+        sc = ServerClient("ws://localhost:8080", "key", "c")
+        sc._ws = fake_ws
+        sc._connected = True
+
+        feature = _make_feature("F1", "spec-writing", "board1", "2025-01-01", "f1")
+        feature.impl_spec = "Implementation spec content"
+        await sc.push_state([feature])
+
+        payload = json.loads(fake_ws._sent[0])
+        assert payload["features"][0]["impl_spec"] == "Implementation spec content"
+
+    @pytest.mark.asyncio
+    async def test_push_state_includes_test_spec_field(self):
+        fake_ws = FakeWebSocket()
+        sc = ServerClient("ws://localhost:8080", "key", "c")
+        sc._ws = fake_ws
+        sc._connected = True
+
+        feature = _make_feature("F1", "spec-writing", "board1", "2025-01-01", "f1")
+        feature.test_spec = "Test spec content"
+        await sc.push_state([feature])
+
+        payload = json.loads(fake_ws._sent[0])
+        assert payload["features"][0]["test_spec"] == "Test spec content"
+
+    @pytest.mark.asyncio
+    async def test_push_state_includes_impl_notes_field(self):
+        fake_ws = FakeWebSocket()
+        sc = ServerClient("ws://localhost:8080", "key", "c")
+        sc._ws = fake_ws
+        sc._connected = True
+
+        feature = _make_feature("F1", "implementing", "board1", "2025-01-01", "f1")
+        feature.impl_notes = "Implementation notes content"
+        await sc.push_state([feature])
+
+        payload = json.loads(fake_ws._sent[0])
+        assert payload["features"][0]["impl_notes"] == "Implementation notes content"
+
+    @pytest.mark.asyncio
+    async def test_push_state_all_new_fields_together(self):
+        fake_ws = FakeWebSocket()
+        sc = ServerClient("ws://localhost:8080", "key", "c")
+        sc._ws = fake_ws
+        sc._connected = True
+
+        feature = _make_feature("F1", "spec-writing", "board1", "2025-01-01", "f1")
+        feature.plan = "Test plan"
+        feature.impl_spec = "Test impl spec"
+        feature.test_spec = "Test test spec"
+        feature.impl_notes = "Test impl notes"
+        await sc.push_state([feature])
+
+        payload = json.loads(fake_ws._sent[0])
+        f = payload["features"][0]
+        assert f["plan"] == "Test plan"
+        assert f["impl_spec"] == "Test impl spec"
+        assert f["test_spec"] == "Test test spec"
+        assert f["impl_notes"] == "Test impl notes"
+
+    @pytest.mark.asyncio
+    async def test_push_state_empty_fields_not_in_json(self):
+        fake_ws = FakeWebSocket()
+        sc = ServerClient("ws://localhost:8080", "key", "c")
+        sc._ws = fake_ws
+        sc._connected = True
+
+        feature = _make_feature("F1", "ideas", "board1", "2025-01-01", "f1")
+        feature.plan = ""
+        feature.impl_spec = ""
+        feature.test_spec = ""
+        feature.impl_notes = ""
+        await sc.push_state([feature])
+
+        payload = json.loads(fake_ws._sent[0])
+        f = payload["features"][0]
+        assert "plan" not in f or f.get("plan") == ""
+        assert "impl_spec" not in f or f.get("impl_spec") == ""
+        assert "test_spec" not in f or f.get("test_spec") == ""
+        assert "impl_notes" not in f or f.get("impl_notes") == ""
+
+    @pytest.mark.asyncio
+    async def test_push_state_long_content_truncated(self):
+        fake_ws = FakeWebSocket()
+        sc = ServerClient("ws://localhost:8080", "key", "c")
+        sc._ws = fake_ws
+        sc._connected = True
+
+        long_plan = "x" * 2000
+        feature = _make_feature("F1", "plan-inbox", "board1", "2025-01-01", "f1")
+        feature.plan = long_plan
+        await sc.push_state([feature])
+
+        payload = json.loads(fake_ws._sent[0])
+        assert len(payload["features"][0]["plan"]) == 1000
+
+    @pytest.mark.asyncio
+    async def test_push_state_special_characters_preserved(self):
+        fake_ws = FakeWebSocket()
+        sc = ServerClient("ws://localhost:8080", "key", "c")
+        sc._ws = fake_ws
+        sc._connected = True
+
+        feature = _make_feature("F1", "plan-inbox", "board1", "2025-01-01", "f1")
+        feature.plan = "Plan with <html> & \"quotes\" and emojis 🎉"
+        feature.impl_spec = "Impl with <script>alert('xss')</script>"
+        feature.test_spec = "Test with newlines\n\tand tabs"
+        feature.impl_notes = "Notes with unicode: 日本語"
+        await sc.push_state([feature])
+
+        payload = json.loads(fake_ws._sent[0])
+        f = payload["features"][0]
+        assert f["plan"] == "Plan with <html> & \"quotes\" and emojis 🎉"
+        assert f["impl_spec"] == "Impl with <script>alert('xss')</script>"
+        assert f["test_spec"] == "Test with newlines\n\tand tabs"
+        assert f["impl_notes"] == "Notes with unicode: 日本語"

@@ -267,10 +267,7 @@
     {{if .Authenticated}}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
         <h1 style="margin-bottom:0">MAD Pipeline Dashboard</h1>
-        <div style="display:flex;gap:0.5rem;align-items:center">
-            <button onclick="showNewIdeaModal()" style="padding:0.4rem 0.8rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-weight:600">+ New Idea</button>
-            <button onclick="logout()" style="padding:0.4rem 0.8rem;background:#30363d;color:#c9d1d9;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-weight:600">Logout</button>
-        </div>
+        <button onclick="logout()" style="padding:0.4rem 0.8rem;background:#30363d;color:#c9d1d9;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-weight:600">Logout</button>
     </div>
     <div class="section-label">Connected Clients</div>
     <div class="client-grid" hx-get="/api/clients?key={{.Key}}" hx-trigger="every 5s" hx-swap="innerHTML">
@@ -304,7 +301,10 @@
             </div>
             <div style="margin-bottom:1rem">
                 <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Board *</label>
-                <input type="text" id="new-idea-board" placeholder="e.g., default" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
+                <select id="new-idea-board" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
+                    <option value="">Select a board...</option>
+                    {{range .Boards}}<option value="{{.}}">{{.}}</option>{{end}}
+                </select>
             </div>
             <div style="margin-bottom:1rem">
                 <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Description</label>
@@ -637,9 +637,10 @@
             data-id="{{.ID}}"
             data-description="{{.Description}}"
             data-history="{{toJSON .History}}"
-            data-client="{{.ClientID}}">
-            <div class="title">{{.Title}}</div>
-            <div class="meta">{{if .ClientID}}<span style="color:#d2a8ff">{{.ClientID}}</span>{{end}}<span>{{.Board}}</span><span>{{.Created}}</span></div>
+            data-client="{{.ClientID}}"
+            data-checkpoint="{{toJSON .Checkpoint}}">
+            <div class="title">{{.Title}}{{if .Checkpoint}}{{if .Checkpoint.exists}} <span style="color:#d29922;font-size:0.7rem">● checkpoint</span>{{end}}{{end}}</div>
+            <div class="meta">{{if .ClientID}}<span style="color:#d2a8ff">{{.ClientID}}</span>{{end}}<span>{{.Board}}</span><span>{{.Created}}</span>{{if .Checkpoint}}{{if .Checkpoint.exists}}<span style="color:#d29922">{{.Checkpoint.last_checkpoint}}</span>{{end}}{{end}}</div>
         </div>{{end}}{{else}}<div class="empty-stage">No features in this stage</div>{{end}}
     </div>
 </div>

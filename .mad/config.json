@@ -29,8 +29,8 @@
   },
   "agent_for_phase": {
     "planning": "claude",
-    "spec_writing": "claude",
-    "implementing": "claude",
+    "spec_writing": "default",
+    "implementing": "default",
     "fix_feedback": "default",
     "testing": "default",
     "review": "kilo",

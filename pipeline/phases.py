@@ -86,6 +86,17 @@ def _load_prompt(name: str) -> str:
     return path.read_text()
 
 
+def _delete_checkpoint(feature: FeatureFile) -> None:
+    """Delete checkpoint file for a feature. Safe to call even if no checkpoint exists."""
+    config = Config()
+    checkpoint_dir = config.mad_dir / 'checkpoints'
+    checkpoint_path = checkpoint_dir / f'{feature.slug}.checkpoint.json'
+    try:
+        checkpoint_path.unlink(missing_ok=True)
+    except OSError as e:
+        logger.warning(f'[checkpoint] Failed to delete {checkpoint_path}: {e}')
+
+
 def _strip_markdown(text: str) -> str:
     """Strip common markdown formatting for clean plain-text storage."""
     import re
@@ -171,6 +182,9 @@ def run_planning(
     # Use string replace instead of .format() to avoid issues with curly braces in template
     prompt = template.replace("{title}", feature.title)
     prompt = prompt.replace("{description}", feature.get_section("Description") or "(no description)")
+    prompt = prompt.replace("{feature_slug}", feature.slug)
+    prompt = prompt.replace("{feature_id}", feature.id)
+    prompt = prompt.replace("{phase}", "planning")
     
     if questions_context:
         prompt += questions_context
@@ -237,6 +251,7 @@ def run_planning(
     feature.save()
     feature.move_to_stage("reviewing-plan")
     _git_commit(feature, "planning complete")
+    _delete_checkpoint(feature)
     
     console.print("[green]Plan generated. Feature moved to reviewing-plan.[/green]")
     return True
@@ -323,10 +338,11 @@ def run_spec_writing(
     # Agent A: Implementation Spec
     console.print("[dim]Agent A: Generating implementation spec...[/dim]")
     impl_template = _load_prompt("impl-spec.md")
-    impl_prompt = impl_template.format(
-        title=feature.title,
-        plan=feature.plan,
-    )
+    impl_prompt = impl_template.replace("{title}", feature.title)
+    impl_prompt = impl_prompt.replace("{plan}", feature.plan or "(no plan)")
+    impl_prompt = impl_prompt.replace("{feature_slug}", feature.slug)
+    impl_prompt = impl_prompt.replace("{feature_id}", feature.id)
+    impl_prompt = impl_prompt.replace("{phase}", "spec-implementation")
     if status is not None:
         status.phase = "spec: implementation"
         status.agent = runner.agent.name
@@ -339,10 +355,11 @@ def run_spec_writing(
     # Agent B: Test Spec
     console.print("[dim]Agent B: Generating test spec...[/dim]")
     test_template = _load_prompt("test-spec.md")
-    test_prompt = test_template.format(
-        title=feature.title,
-        plan=feature.plan,
-    )
+    test_prompt = test_template.replace("{title}", feature.title)
+    test_prompt = test_prompt.replace("{plan}", feature.plan or "(no plan)")
+    test_prompt = test_prompt.replace("{feature_slug}", feature.slug)
+    test_prompt = test_prompt.replace("{feature_id}", feature.id)
+    test_prompt = test_prompt.replace("{phase}", "spec-test")
     if status is not None:
         status.phase = "spec: tests"
         status.agent = runner.agent.name
@@ -354,6 +371,7 @@ def run_spec_writing(
 
     # Move to implementing
     feature.move_to_stage("implementing")
+    _delete_checkpoint(feature)
     console.print("[green]Specs generated. Feature moved to implementing.[/green]")
 
 
@@ -375,6 +393,9 @@ def run_implementing(
         plan=feature.plan,
         impl_spec=feature.impl_spec,
         test_spec=feature.test_spec,
+        feature_slug=feature.slug,
+        feature_id=feature.id,
+        phase="implementing",
     )
     
     # Check if there's previous review feedback to include
@@ -397,6 +418,7 @@ def run_implementing(
     feature.add_history("TESTING", "Moved to testing phase")
     feature.save()
     _git_commit(feature, "implementation complete")
+    _delete_checkpoint(feature)
     console.print("[green]Implementation done. Feature moved to testing.[/green]")
 
 
@@ -420,6 +442,9 @@ def run_fix_feedback(
         test_spec=feature.test_spec,
         impl_notes=feature.impl_notes,
         feedback=feedback,
+        feature_slug=feature.slug,
+        feature_id=feature.id,
+        phase="fix-feedback",
     )
 
     if status is not None:
@@ -453,6 +478,9 @@ def run_writing_tests(
         title=feature.title,
         test_spec=feature.test_spec,
         impl_notes=feature.impl_notes,
+        feature_slug=feature.slug,
+        feature_id=feature.id,
+        phase="writing-tests",
     )
 
     if status is not None:
@@ -468,6 +496,7 @@ def run_writing_tests(
     feature.save()
 
     feature.move_to_stage("review")
+    _delete_checkpoint(feature)
     console.print("[green]Tests written. Feature moved to review.[/green]")
 
 
@@ -528,6 +557,7 @@ def run_review_impl(
     if verdict == "PASS":
         feature.save()
         feature.move_to_stage("final-human-approval")
+        _delete_checkpoint(feature)
         console.print(f"[green]Review PASSED. Feature moved to final-human-approval.[/green]")
     else:
         # Clean up old feedback first, then add new feedback
@@ -537,6 +567,7 @@ def run_review_impl(
         feature.set_impl_notes(updated)
         feature.save()
         feature.move_to_stage("implementing")
+        _delete_checkpoint(feature)
         console.print(f"[yellow]Review FAILED. Feature moved back to implementing.[/yellow]")
 
     return verdict, feedback
@@ -554,6 +585,19 @@ def run_pipeline(
     Then runs spec_writing -> implementing -> writing_tests -> review_impl
     Retries review_impl up to 5 times on FAIL before giving up.
     """
+    try:
+        _run_pipeline_impl(feature, runner, status)
+    except Exception as e:
+        _delete_checkpoint(feature)
+        raise
+
+
+def _run_pipeline_impl(
+    feature: FeatureFile,
+    runner: AgentRunner,
+    status: Optional[AgentStatus] = None,
+) -> None:
+    """Internal implementation of run_pipeline."""
     console.print(Panel(
         f"[bold]Running full pipeline for:[/bold] {feature.title}",
         border_style="cyan",
@@ -685,6 +729,19 @@ def run_pipeline_from_implementing(
     Runs: implementing -> writing_tests -> review_impl
     Retries review up to 2 times on FAIL before giving up.
     """
+    try:
+        _run_pipeline_from_implementing_impl(feature, runner, status)
+    except Exception as e:
+        _delete_checkpoint(feature)
+        raise
+
+
+def _run_pipeline_from_implementing_impl(
+    feature: FeatureFile,
+    runner: AgentRunner,
+    status: Optional[AgentStatus] = None,
+) -> None:
+    """Internal implementation of run_pipeline_from_implementing."""
     console.print(Panel(
         f"[bold]Resuming pipeline from implementing:[/bold] {feature.title}",
         border_style="cyan",

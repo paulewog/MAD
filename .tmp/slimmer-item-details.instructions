@@ -1,11 +1,11 @@
-You are a senior software architect reviewing a feature plan.
+Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+You are a senior code reviewer tasked with critically evaluating an implementation.
 
 ## Feature: slimmer-item-details
 
-### Original Description:
-Update the details pane (in both the TUI and web UI) to have collapsible show/hide sections. Title and description are always visible. History is expanded by default. All other sections (plan, impl_spec, test_spec, impl_notes, etc.) default to collapsed. Empty sections are shown but collapsed rather than hidden. State does not persist across sessions.
-
-### Generated Plan:
+### Original Plan:
 ## Implementation Plan: Slirmer Item Details with Collapsible Sections
 
 ### Overview
@@ -114,36 +114,111 @@ Add collapsible show/hide sections to the Item Details pane in both TUI and web 
 4. `pipeline/tui.py` - TUI collapsible sections
 
 
+### Test Spec (requirements):
+Test specification written to `/home/paule/MAD/.mad/boards/mad/spec-writing/slimmer-item-details.test-spec.md`.
 
+### Implementation:
+Implementation complete. Here's a summary of changes made:
+
+**Files Modified:**
+
+1. **pipeline/tui.py:**
+   - Added `Collapsible` to imports from `textual.widgets`
+   - Modified compose method to use a `Vertical` container (`#detail-container`) instead of a `Markdown` widget for the detail view
+   - Created new function `_build_feature_detail_widgets()` that builds collapsible sections:
+     - Always visible: Title, Description
+     - Collapsible (expanded by default): History
+     - Collapsible (collapsed by default): Plan, Implementation Spec, Test Spec, Implementation Notes, Questions
+     - Empty sections show "No [section] provided" placeholder
+   - Modified `_update_detail_view()` to mount Collapsible widgets instead of updating a Markdown widget
+   - Updated `action_toggle_focus()` to reference the new container ID
+
+2. **pipeline/test_server_client.py:**
+   - Updated `_make_feature()` test fixture to include the new fields (`plan`, `impl_spec`, `test_spec`, `impl_notes`) that are now sent to the server
+
+**Verification:**
+- Server builds successfully (`make server-build`)
+- All 86 tests in `test_server_client.py` pass
+- TUI imports successfully
+
+The implementation follows the feature spec:
+- Title and Description are always visible (outside collapsibles)
+- History is expanded by default
+- Plan, Impl Spec, Test Spec, Impl Notes, Questions are collapsed by default
+- Empty sections show placeholder text
+- State does not persist across sessions (no persistence mechanism added)
+
+### Tests Written
+
+Now let me examine the server hub.go to verify the FeatureSummary struct:
+Now let me check how the tests are run:
+Let me check if there's more context in the tui.py file:
+Now I understand the code structure. The existing tests already cover much of what's testable in Python. Let me verify what's actually missing by running all tests:
+The existing tests cover the Python-testable behaviors. Let me verify there are no compile or import errors:
+Let me also verify the complete test suite runs:
+The test failures are caused by the `_make_feature` fixture in `test_start_agent_e2e.py` missing the new fields. Let me also check `test_auto_mode_full.py`:
+I need to fix the `_make_feature` fixtures in both test files to include the new fields:
+All 429 tests pass. The existing test files already covered the Python-testable behaviors for the `slimmer-item-details` feature:
+
+1. **Server client** (`test_server_client.py`): Tests that `push_state` sends the new fields (`plan`, `impl_spec`, `test_spec`, `impl_notes`) to the server
+
+2. **TUI** (`test_slimmer_item_details_tui.py`): Tests that:
+   - Title and Description are always visible
+   - History is expanded by default
+   - Plan, ImplSpec, TestSpec, ImplNotes, Questions are collapsed by default
+   - Empty sections show placeholder text
+
+I fixed the test failures by adding the missing fields to `_make_feature` fixtures in:
+- `test_start_agent_e2e.py` 
+- `test_auto_mode_full.py`
 
 ---
 
-## Your Task
+## Review Checklist
 
-Review the plan and provide feedback. Consider:
+For each item below, explicitly assess and document your findings:
 
-1. **Completeness**: Does the plan cover all necessary aspects of the feature?
-2. **Clarity**: Is the plan clear and unambiguous?
-3. **Feasibility**: Are there any technical concerns or blockers?
-4. **Edge cases**: What happens with edge cases or error conditions?
-5. **Dependencies**: Are all dependencies identified?
+1. **Completeness**: Does the implementation cover ALL items in the plan? List any missing items.
 
-If previous feedback was provided, verify that the plan addresses those concerns.
+2. **Test Coverage**: Do tests verify ALL behaviors in the test spec? List any untested behaviors.
+
+3. **Code Quality**:
+   - Are there obvious bugs (null pointer, off-by-one, race conditions)?
+   - Is error handling adequate?
+   - Are there security concerns (injection, auth bypass)?
+   - Is there proper resource cleanup (files, connections)?
+
+4. **Edge Cases**: What happens with:
+   - Empty inputs?
+   - Very large inputs?
+   - Concurrent access?
+   - Network failures?
+   - Invalid states?
+
+5. **Architecture**:
+   - Is the code maintainable?
+   - Are dependencies explicit?
+   - Is there appropriate abstraction?
+
+---
 
 ## Output Format
 
-Respond with EXACTLY this format (no other text). Use PLAIN TEXT only:
+Respond with EXACTLY this format (no other text). Use PLAIN TEXT only - no markdown formatting:
 
 **VERDICT: PASS** or **VERDICT: FAIL**
 
-If FAIL, provide specific feedback:
-FEEDBACK: List each concern with what needs to be fixed or improved.
+If FAIL, you MUST provide specific, actionable feedback. Use plain text, no bold, no code blocks, no markdown:
+FEEDBACK: List each issue with file/function/line if possible, and what needs to be fixed.
 
 Example:
 ```
 VERDICT: FAIL
 FEEDBACK:
-- Missing handling for network errors
-- Need to clarify data migration strategy
-- Consider adding rate limiting
+- Plan item "add authentication" not implemented - no login/user code found
+- Test spec requires "rate limiting" but no tests for it
+- NullPointerException in handle_submit() line 42 if input is None
+- Missing try/finally for file handle in process_data()
 ```
+
+When finished, write "REVIEW_COMPLETE" on its own line and then exit. Do not wait for more input.

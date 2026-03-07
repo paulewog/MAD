@@ -39,6 +39,10 @@ type FeatureSummary struct {
 	Questions        []QuestionAnswer `json:"questions,omitempty"`
 	AvailableActions []string         `json:"available_actions,omitempty"`
 	ClientID         string           `json:"client_id,omitempty"`
+	Plan             string           `json:"plan,omitempty"`
+	ImplSpec         string           `json:"impl_spec,omitempty"`
+	TestSpec         string           `json:"test_spec,omitempty"`
+	ImplNotes        string           `json:"impl_notes,omitempty"`
 }
 
 type LogEntry struct {
@@ -69,12 +73,12 @@ type ClientState struct {
 }
 
 type Client struct {
-	hub        *Hub
-	conn       *websocket.Conn
-	send       chan []byte
-	state      *ClientState
-	clientID   string
-	closeSend  sync.Once
+	hub       *Hub
+	conn      *websocket.Conn
+	send      chan []byte
+	state     *ClientState
+	clientID  string
+	closeSend sync.Once
 }
 
 type Hub struct {

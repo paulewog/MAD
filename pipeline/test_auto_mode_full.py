@@ -46,6 +46,10 @@ def _make_feature(title="Test Feature", stage="ideas", board="default",
     f.id = fid
     f.description = ""
     f.questions = []
+    f.plan = ""
+    f.impl_spec = ""
+    f.test_spec = ""
+    f.impl_notes = ""
     f._data = {"pipeline_log": [], "history": []}
     return f
 

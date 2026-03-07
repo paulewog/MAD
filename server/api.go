@@ -14,8 +14,36 @@ import (
 )
 
 var stageOrder = []string{
-	"ideas", "plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing",
-	"implementing", "testing", "review", "final-human-approval", "done", "rejected",
+	"ideas",
+	"plan-inbox",
+	"reviewing-plan",
+	"requested-input",
+	"approved",
+	"spec-writing",
+	"implementing",
+	"testing",
+	"review",
+	"final-human-approval",
+	"done",
+	"rejected",
+}
+
+func boardsFromClients(clients []ClientState) []string {
+	seen := map[string]bool{}
+	var boards []string
+	for _, c := range clients {
+		for _, f := range c.Features {
+			if f.Board != "" && !seen[f.Board] {
+				seen[f.Board] = true
+				boards = append(boards, f.Board)
+			}
+		}
+	}
+	if len(boards) == 0 {
+		boards = append(boards, "mad")
+	}
+	sort.Strings(boards)
+	return boards
 }
 
 // StageGroup holds features for a single stage, preserving order.
@@ -134,24 +162,6 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 			}
 			return strings.Join(boards, ", ")
 		},
-		"getBoardsFromClients": func(clients []ClientState) []string {
-			seen := map[string]bool{}
-			var boards []string
-			for _, c := range clients {
-				for _, f := range c.Features {
-					if f.Board != "" && !seen[f.Board] {
-						seen[f.Board] = true
-						boards = append(boards, f.Board)
-					}
-				}
-			}
-			// Also add a default option
-			if len(boards) == 0 {
-				boards = append(boards, "mad")
-			}
-			sort.Strings(boards)
-			return boards
-		},
 	}
 
 	tmpl := template.Must(template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/index.html", "templates/client.html"))
@@ -197,7 +207,7 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 			"Authenticated": authenticated,
 			"ShowKeyModal":  showKeyModal,
 			"StageGroups":   groupFeaturesByStage(allFeatures),
-			"Boards":        getBoardsFromClients(clients),
+			"Boards":        boardsFromClients(clients),
 		}
 		w.Header().Set("Content-Type", "text/html")
 		if err := tmpl.ExecuteTemplate(w, "index.html", data); err != nil {
@@ -228,7 +238,7 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 					serveCreateIdea(w, r, hub, cfg, clientID)
 					return
 				}
-				// Match features/{fid}/answers or features/{fid}/start-agent
+				// Match features/{fid}/answers, features/{fid}/start-agent, or features/{fid}/move
 				if strings.HasPrefix(sub, "features/") {
 					featureParts := strings.SplitN(strings.TrimPrefix(sub, "features/"), "/", 2)
 					featureID := featureParts[0]
@@ -238,6 +248,10 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 					}
 					if len(featureParts) == 2 && featureParts[1] == "start-agent" && featureID != "" {
 						serveStartAgent(w, r, hub, cfg, clientID, featureID)
+						return
+					}
+					if len(featureParts) == 2 && featureParts[1] == "move" && featureID != "" {
+						serveMoveFeature(w, r, hub, cfg, clientID, featureID)
 						return
 					}
 				}
@@ -266,8 +280,9 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 			data := map[string]interface{}{
 				"Clients": clients,
 				"Key":     key,
+				"Boards":  boardsFromClients(clients),
 			}
-			if err := tmpl.ExecuteTemplate(w, "client_rows", data); err != nil {
+			if err := tmpl.ExecuteTemplate(w, "client_cards", data); err != nil {
 				log.Printf("template error: %v", err)
 				http.Error(w, "internal server error", 500)
 			}
@@ -756,4 +771,82 @@ func serveCreateIdea(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Conf
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+type moveFeatureData struct {
+	TargetStage string `json:"target_stage"`
+}
+
+func serveMoveFeature(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string, featureID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !checkAnyAuth(r, cfg) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1*1024*1024))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+
+	var req moveFeatureData
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	if req.TargetStage == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target_stage is required"})
+		return
+	}
+
+	state, ok := hub.GetClient(clientID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
+		return
+	}
+	if !state.Connected {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "client not connected"})
+		return
+	}
+
+	var found bool
+	for _, f := range state.Features {
+		if f.ID == featureID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "feature not found"})
+		return
+	}
+
+	validStage := false
+	for _, s := range stageOrder {
+		if s == req.TargetStage {
+			validStage = true
+			break
+		}
+	}
+	if !validStage {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid target stage"})
+		return
+	}
+
+	msg, _ := json.Marshal(map[string]interface{}{
+		"type":         "move_feature",
+		"feature_id":   featureID,
+		"target_stage": req.TargetStage,
+	})
+	if err := hub.SendToClient(clientID, msg); err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
