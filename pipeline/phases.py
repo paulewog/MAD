@@ -280,12 +280,10 @@ def run_plan_review(
     else:
         feedback_section = ""
     
-    prompt = template.format(
-        title=feature.title,
-        description=feature.get_section("Description") or "(none)",
-        plan=feature.plan,
-        feedback_section=feedback_section,
-    )
+    prompt = template.replace("{title}", feature.title)
+    prompt = prompt.replace("{description}", feature.get_section("Description") or "(none)")
+    prompt = prompt.replace("{plan}", feature.plan or "(none)")
+    prompt = prompt.replace("{feedback_section}", feedback_section)
 
     if status is not None:
         status.phase = "reviewing-plan"
@@ -388,15 +386,13 @@ def run_implementing(
     feature.save()
 
     template = _load_prompt("implement.md")
-    prompt = template.format(
-        title=feature.title,
-        plan=feature.plan,
-        impl_spec=feature.impl_spec,
-        test_spec=feature.test_spec,
-        feature_slug=feature.slug,
-        feature_id=feature.id,
-        phase="implementing",
-    )
+    prompt = template.replace("{title}", feature.title)
+    prompt = prompt.replace("{plan}", feature.plan or "(no plan)")
+    prompt = prompt.replace("{impl_spec}", feature.impl_spec or "(no impl spec)")
+    prompt = prompt.replace("{test_spec}", feature.test_spec or "(no test spec)")
+    prompt = prompt.replace("{feature_slug}", feature.slug)
+    prompt = prompt.replace("{feature_id}", feature.id)
+    prompt = prompt.replace("{phase}", "implementing")
     
     # Check if there's previous review feedback to include
     feedback_context = ""
@@ -435,17 +431,15 @@ def run_fix_feedback(
     feature.save()
 
     template = _load_prompt("fix-feedback.md")
-    prompt = template.format(
-        title=feature.title,
-        plan=feature.plan,
-        impl_spec=feature.impl_spec,
-        test_spec=feature.test_spec,
-        impl_notes=feature.impl_notes,
-        feedback=feedback,
-        feature_slug=feature.slug,
-        feature_id=feature.id,
-        phase="fix-feedback",
-    )
+    prompt = template.replace("{title}", feature.title)
+    prompt = prompt.replace("{plan}", feature.plan or "(no plan)")
+    prompt = prompt.replace("{impl_spec}", feature.impl_spec or "(no impl spec)")
+    prompt = prompt.replace("{test_spec}", feature.test_spec or "(no test spec)")
+    prompt = prompt.replace("{impl_notes}", feature.impl_notes or "(no impl notes)")
+    prompt = prompt.replace("{feedback}", feedback or "(no feedback)")
+    prompt = prompt.replace("{feature_slug}", feature.slug)
+    prompt = prompt.replace("{feature_id}", feature.id)
+    prompt = prompt.replace("{phase}", "fix-feedback")
 
     if status is not None:
         status.phase = "fixing feedback"
@@ -474,14 +468,12 @@ def run_writing_tests(
     feature.save()
 
     template = _load_prompt("write-tests.md")
-    prompt = template.format(
-        title=feature.title,
-        test_spec=feature.test_spec,
-        impl_notes=feature.impl_notes,
-        feature_slug=feature.slug,
-        feature_id=feature.id,
-        phase="writing-tests",
-    )
+    prompt = template.replace("{title}", feature.title)
+    prompt = prompt.replace("{test_spec}", feature.test_spec or "(no test spec)")
+    prompt = prompt.replace("{impl_notes}", feature.impl_notes or "(no impl notes)")
+    prompt = prompt.replace("{feature_slug}", feature.slug)
+    prompt = prompt.replace("{feature_id}", feature.id)
+    prompt = prompt.replace("{phase}", "writing-tests")
 
     if status is not None:
         status.phase = "writing tests"
@@ -512,12 +504,10 @@ def run_review_impl(
     feature.save()
 
     template = _load_prompt("review-impl.md")
-    prompt = template.format(
-        title=feature.title,
-        plan=feature.plan,
-        test_spec=feature.test_spec,
-        impl_notes=feature.impl_notes,
-    )
+    prompt = template.replace("{title}", feature.title)
+    prompt = prompt.replace("{plan}", feature.plan or "(no plan)")
+    prompt = prompt.replace("{test_spec}", feature.test_spec or "(no test spec)")
+    prompt = prompt.replace("{impl_notes}", feature.impl_notes or "(no impl notes)")
 
     if status is not None:
         status.phase = "review"
@@ -830,10 +820,8 @@ def update_design_doc(feature: FeatureFile, runner: AgentRunner) -> bool:
     
     # Call the AI agent to update the design doc
     template = _load_prompt("update-design.md")
-    prompt = template.format(
-        design_doc_content=design_doc_content,
-        search_term=search_term,
-    )
+    prompt = template.replace("{design_doc_content}", design_doc_content)
+    prompt = prompt.replace("{search_term}", search_term)
     
     console.print(f"[dim]Updating design doc: {design_doc_path.name}[/dim]")
     

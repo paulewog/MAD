@@ -1163,6 +1163,7 @@ class PipelineApp(App):
     #right-pane {
         width: 1fr;
         height: 100%;
+        layout: horizontal;
         padding: 0 1;
     }
 
@@ -1175,12 +1176,15 @@ class PipelineApp(App):
         height: 100%;
         overflow-y: auto;
         border-right: solid $panel;
-        padding: 0 1;
+    }
+
+    #detail-container {
+        height: auto;
     }
 
     #right-bottom {
         width: 50%;
-        height: 1fr;
+        height: 100%;
     }
 
     #right-bottom > * {
