@@ -1162,7 +1162,7 @@ class PipelineApp(App):
 
     #right-pane {
         width: 1fr;
-        height: 1fr;
+        height: 100%;
         padding: 0 1;
     }
 
