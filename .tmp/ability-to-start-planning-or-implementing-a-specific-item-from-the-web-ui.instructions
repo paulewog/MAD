@@ -1,11 +1,11 @@
 Code Path: /home/paule/MAD
 Context File: /home/paule/MAD/.mad/CONTEXT.md
 
-Implement the following feature.
+You are a senior code reviewer tasked with critically evaluating an implementation.
 
-Feature: Ability to start planning or implementing a specific item from the web ui
+## Feature: Ability to start planning or implementing a specific item from the web ui
 
-Plan:
+### Original Plan:
 ## Plan: Start Planning/Implementing from Web UI
 
 ### Overview
@@ -124,105 +124,91 @@ Add `on_start_agent` callback parameter to constructor.
 3. **Server-side validation** — The Go endpoint validates before sending the WebSocket command, providing immediate error feedback to the web UI.
 4. **Same pattern as `set_auto_mode`** — Follows the existing architecture: HTTP POST → Go validates → WebSocket command → Python callback → TUI action.
 
-Implementation Spec (tasks to complete):
-The feature "Ability to start planning or implementing a specific item from the web UI" is **already fully implemented** in the codebase. Here's what exists:
-
-**Python side:**
-- `pipeline/state.py:23-26` - `STAGE_ACTIONS` dict defines which actions are allowed per stage
-- `pipeline/tui.py:1217` - `on_start_agent` callback wired up to `_handle_start_agent`
-- `pipeline/tui.py:1271-1310` - `_handle_start_agent` validates stage, checks agent busy status, and triggers the appropriate action
-- `pipeline/server_client.py:16` - imports `STAGE_ACTIONS`
-- `pipeline/server_client.py:88-162` - `push_state()` includes `stage_actions` and per-feature `available_actions`
-- `pipeline/server_client.py:205-212` - handles incoming `start_agent` message
-
-**Go side:**
-- `server/hub.go:40` - `FeatureSummary.AvailableActions` field
-- `server/hub.go:68` - `ClientState.StageActions` field
-- `server/hub.go:268-273` - parses `stage_actions` from state update
-- `server/api.go:191-193` - routes to `serveStartAgent`
-- `server/api.go:438-528` - `serveStartAgent` validates stage and agent status, sends WebSocket message
-
-**Frontend:**
-- `server/templates/client.html:495-508` - renders action buttons based on `available_actions`
-- `server/templates/client.html:554-569` - `startAgent()` function calls the API
-
-The Go tests fail due to a **pre-existing template parsing bug** (`{{define}}` blocks placed after `</html>` tag in index.html), unrelated to this feature. The build succeeds.
-
-Test Spec (behaviors your implementation must satisfy):
+### Test Spec (requirements):
 Test specification written to `/home/paule/MAD/.tmp/ability-to-start-planning-or-implementing-a-specific-item-from-web-ui.test_spec.md`.
 
-IMPORTANT: After implementing, you MUST verify the code compiles and works:
-1. Run any build commands (npm run build, cargo build, etc.)
-2. Run the tests to make sure they pass
-3. Fix any build errors or test failures before completing
+### Implementation:
+All builds and tests pass. Here's a summary of what was done:
 
-Work through the implementation tasks systematically. After completing implementation, write a brief summary of what was done, what files were changed, and any decisions made.
+## Summary
 
+The feature "Ability to start planning or implementing a specific item from the web UI" was **already fully implemented** across all components. I verified the implementation and fixed three issues found during testing:
 
-## Previous Review Feedback (you MUST address these issues):
-- 2026-03-06T18:18Z | IDEAS | Idea created
-- 2026-03-06T18:21Z | PROMOTED | Moved from ideas to plan-inbox
-- 2026-03-06T19:01Z | PLANNING | Questions raised via claude
-- 2026-03-06T19:07Z | PLANNING | Plan generated via claude
-- 2026-03-06T19:07Z | PLAN_REVIEW | Verdict: PASS — VERDICT: PASS
-- 2026-03-06T19:07Z | PROMOTED | Plan auto-approved
-- 2026-03-06T19:09Z | MOVED | Manual move: approved -> requested-input
-- 2026-03-06T19:12Z | PLANNING | Plan generated via claude
-- 2026-03-06T19:13Z | PLAN_REVIEW | Verdict: FAIL — The stage-actions.json config adds unnecessary indirection. The TUI already has these mappings hardcoded and they rarely change. Having three sources of truth (JSON file, Go embed, JS hardcode) is worse than one hardcoded mapping per component. Either embed the mapping in each component independently (simpler) or serve it from a single API endpoint that all consumers call (cleaner), but don't create a shared file that Go and JS can't actually read at runtime anyway.
-The plan says to refactor TUI keybindings and action methods to use the shared config, but this is scope creep. The feature request is "start plan/impl from the web UI" — refactoring the TUI internals is unnecessary risk and not requested. The TUI already works; just add the WebSocket handler.
-Missing: what message format does the Python client send back to acknowledge the action was received and started (or failed)? The plan mentions "optional ack" but the server needs to return a response to the HTTP request. Does the server block waiting for the client's WebSocket ack, or does it return 200 immediately after sending the WebSocket message? This needs to be specified — it affects error handling and UX.
-The plan routes through POST /api/clients/{id}/features/{fid}/start but doesn't mention authentication beyond the existing ?key= query param. Confirm this is sufficient or note it explicitly.
-Missing: the plan doesn't describe what happens in the TUI when an agent is started remotely. Does the TUI update its display? Does it show output? The TUI has interactive elements during agent runs (progress, logs). How does a remotely-triggered run integrate with the TUI's display state if someone is also watching the TUI?
-The on_start_agent callback in step 4b calls action_run_plan_only() / action_run_implement_only(), but these are likely Textual UI methods that must run on the main thread. The WebSocket handler runs in a different async context. The plan needs to specify how to safely schedule this on the TUI's event loop (e.g., call_from_thread or post_message).
-- 2026-03-06T19:13Z | PLAN_REVIEW_FAILED | Feedback: The stage-actions.json config adds unnecessary indirection. The TUI already has these mappings hardcoded and they rarely change. Having three sources of truth (JSON file, Go embed, JS hardcode) is worse than one hardcoded mapping per component. Either embed the mapping in each component independently (simpler) or serve it from a single API endpoint that all consumers call (cleaner), but don't create a shared file that Go and JS can't actually read at runtime anyway.
-The plan says to refactor TUI keybindings and action methods to use the shared config, but this is scope creep. The feature request is "start plan/impl from the web UI" — refactoring the TUI internals is unnecessary risk and not requested. The TUI already works; just add the WebSocket handler.
-Missing: what message format does the Python client send back to acknowledge the action was received and started (or failed)? The plan mentions "optional ack" but the server needs to return a response to the HTTP request. Does the server block waiting for the client's WebSocket ack, or does it return 200 immediately after sending the WebSocket message? This needs to be specified — it affects error handling and UX.
-The plan routes through POST /api/clients/{id}/features/{fid}/start but doesn't mention authentication beyond the existing ?key= query param. Confirm this is sufficient or note it explicitly.
-Missing: the plan doesn't describe what happens in the TUI when an agent is started remotely. Does the TUI update its display? Does it show output? The TUI has interactive elements during agent runs (progress, logs). How does a remotely-triggered run integrate with the TUI's display state if someone is also watching the TUI?
-The on_start_agent callback in step 4b calls action_run_plan_only() / action_run_implement_only(), but these are likely Textual UI methods that must run on the main thread. The WebSocket handler runs in a different async context. The plan needs to specify how to safely schedule this on the TUI's event loop (e.g., call_from_thread or post_message).
-- 2026-03-06T19:15Z | PLANNING | Plan generated via claude
-- 2026-03-06T19:15Z | PLAN_REVIEW | Verdict: PASS — VERDICT: PASS
-- 2026-03-06T19:15Z | PROMOTED | Plan auto-approved
-- 2026-03-06T19:16Z | SPEC_WRITING | Starting spec generation
-- 2026-03-06T19:17Z | SPEC_WRITING | Implementation spec generated (Agent A) via claude
-- 2026-03-06T19:19Z | SPEC_WRITING | Test spec generated (Agent B) via claude
-- 2026-03-06T19:25Z | IMPLEMENTING | Implementation completed via claude
-- 2026-03-06T19:25Z | TESTING | Moved to testing phase
-- 2026-03-06T19:31Z | TESTING | Tests written via claude
-- 2026-03-06T19:36Z | REVIEW | Verdict: PASS — I'll review the implementation by examining the key files to verify they match the plan and test spec requirements.
-Let me read the test spec and also verify that there are no duplicates in STAGE_ACTIONS in tui.py:
-Based on my thorough review of the implementation against the plan and test spec, here is my assessment:
+### Files Changed
 
-VERDICT: PASS
+| File | Change |
+|------|--------|
+| `pipeline/tui.py:14` | `Config` import was already fixed by linter (was missing from `from config import get_mad_dir`) |
+| `pipeline/runner.py:12` | Added missing `from agent_status import AgentStatus` import — `AgentStatus` was used at line 138 but never imported |
+| `pipeline/test_create_idea.py:35-41` | Added `__aiter__`/`__anext__` methods to `FakeWebSocket` so it supports `async for` iteration, fixing the `test_reconnect_loop_dispatches_create_idea` test |
 
-The implementation covers ALL items in the plan:
+### Test Results
+- **Go tests**: All pass (33s)
+- **Python tests**: All 364 pass (6.5s)
 
-STAGE_ACTIONS in state.py - Present at lines 23-26
-TUI uses STAGE_ACTIONS - action_run_plan_only(), action_run_implement_only(), _auto_plan_check(), _auto_implement_check() all reference STAGE_ACTIONS from state.py (lines 2278, 2301, 2162, 2200)
-State push with available_actions - server_client.py push_state() includes both stage_actions and per-feature available_actions
-Go hub parsing - hub.go parses stage_actions and available_actions from state_update
-start-agent endpoint - api.go has serveStartAgent() with full validation
-Python client handling - server_client.py _handle_incoming() dispatches start_agent messages
-TUI callback - tui.py _handle_start_agent() validates and runs the correct pipeline
-Web UI buttons - client.html renders action buttons based on available_actions with proper styling, event.stopPropagation(), and error handling
+### Existing Implementation Verified
+- `pipeline/state.py`: `STAGE_ACTIONS` dict correctly defines allowed stages per action
+- `pipeline/server_client.py`: Pushes `stage_actions` and `available_actions` in state; handles `start_agent` incoming messages
+- `pipeline/tui.py`: `_handle_start_agent` callback validates stage/busy state and triggers the right async action via `call_from_thread`
+- `server/hub.go`: `ClientState` stores `StageActions` and per-feature `AvailableActions`
+- `server/api.go`: `serveStartAgent` endpoint validates stage, agent busy state, sends WebSocket command
+- `server/templates/client.html`: Renders action buttons from `available_actions`, calls `startAgent()` on click
 
-All 13 core behaviors from the test spec are implemented. The implementation follows the existing architecture pattern (HTTP POST → Go validates → WebSocket command → Python callback → TUI action).
+### Tests Written
 
-Minor code quality issue: There's a duplicate STAGE_ACTIONS class variable in tui.py (lines 906-919 and 921-935) - but these are for TUI keyboard shortcuts, not the web UI feature, so they don't affect this implementation's functionality.
+Let me read the test specification and context file to understand what's needed.
+Let me explore the codebase to understand the feature and existing test patterns.
+Let me look at how TUI tests are structured in the project.
+Now I'll add tests for the TUI side of the `_handle_start_agent` function. I'll add these to the existing test file.
+The LSP errors about `_ws` are pre-existing (they're just type hints that don't affect runtime). However, the issue is that `_handle_start_agent` is a method on a class. Let me rewrite the tests to properly test it as a method:
+I need to rewrite the tests to properly test `_handle_start_agent` as a method. Let me fix the test class:
+The tests fail because `call_from_thread` is mocked but doesn't invoke the callback. Let me fix the failing tests:
 
-Test status: 86 Python tests pass. Go tests have one flaky test (TestStartAgentFeatureOnDifferentClient) that fails intermittently due to websocket timing in the test infrastructure - this is a pre-existing test infrastructure issue, not a functional bug.
-- 2026-03-06T19:36Z | PROMOTED | Implementation approved
-- 2026-03-06T20:30Z | SPEC_WRITING | Starting spec generation
-- 2026-03-06T20:32Z | SPEC_WRITING | Implementation spec generated (Agent A) via kilo
-- 2026-03-06T20:35Z | SPEC_WRITING | Test spec generated (Agent B) via kilo
-- 2026-03-06T20:38Z | IMPLEMENTING | Implementation completed via kilo
-- 2026-03-06T20:38Z | TESTING | Moved to testing phase
-- 2026-03-06T20:58Z | SPEC_WRITING | Starting spec generation
-- 2026-03-06T22:35Z | SPEC_WRITING | Starting spec generation
-- 2026-03-06T22:38Z | SPEC_WRITING | Implementation spec generated (Agent A) via kilo
-- 2026-03-06T22:41Z | SPEC_WRITING | Starting spec generation
-- 2026-03-06T22:45Z | SPEC_WRITING | Implementation spec generated (Agent A) via kilo
-- 2026-03-06T22:46Z | SPEC_WRITING | Test spec generated (Agent B) via kilo
-- 2026-03-06T23:05Z | SPEC_WRITING | Starting spec generation
-- 2026-03-06T23:13Z | MOVED | Manual move: spec-writing -> implementing
-- 2026-03-07T01:11Z | IMPLEMENTING | Starting implementation
+---
+
+## Review Checklist
+
+For each item below, explicitly assess and document your findings:
+
+1. **Completeness**: Does the implementation cover ALL items in the plan? List any missing items.
+
+2. **Test Coverage**: Do tests verify ALL behaviors in the test spec? List any untested behaviors.
+
+3. **Code Quality**:
+   - Are there obvious bugs (null pointer, off-by-one, race conditions)?
+   - Is error handling adequate?
+   - Are there security concerns (injection, auth bypass)?
+   - Is there proper resource cleanup (files, connections)?
+
+4. **Edge Cases**: What happens with:
+   - Empty inputs?
+   - Very large inputs?
+   - Concurrent access?
+   - Network failures?
+   - Invalid states?
+
+5. **Architecture**:
+   - Is the code maintainable?
+   - Are dependencies explicit?
+   - Is there appropriate abstraction?
+
+---
+
+## Output Format
+
+Respond with EXACTLY this format (no other text). Use PLAIN TEXT only - no markdown formatting:
+
+**VERDICT: PASS** or **VERDICT: FAIL**
+
+If FAIL, you MUST provide specific, actionable feedback. Use plain text, no bold, no code blocks, no markdown:
+FEEDBACK: List each issue with file/function/line if possible, and what needs to be fixed.
+
+Example:
+```
+VERDICT: FAIL
+FEEDBACK:
+- Plan item "add authentication" not implemented - no login/user code found
+- Test spec requires "rate limiting" but no tests for it
+- NullPointerException in handle_submit() line 42 if input is None
+- Missing try/finally for file handle in process_data()
+```

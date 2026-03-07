@@ -32,6 +32,14 @@ class FakeWebSocket:
             return self._responses.pop(0)
         await asyncio.sleep(3600)
 
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._responses:
+            return self._responses.pop(0)
+        raise StopAsyncIteration
+
     async def close(self):
         pass
 
