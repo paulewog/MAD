@@ -4,6 +4,7 @@ Each phase function takes a FeatureFile and AgentRunner, runs the appropriate
 headless agent call, updates the feature file, and moves it to the next stage.
 """
 
+import datetime
 import logging
 import subprocess
 from pathlib import Path
@@ -638,7 +639,9 @@ def run_implementing(
     
     output = _run_phase("implementing", feature, runner, prompt, status=status,
                         start_message="Starting implementation")
-    feature.set_impl_notes(output.strip())
+    summary = _parse_json_output(output, "summary")
+    impl_notes = _strip_markdown(str(summary)) if summary else _strip_markdown(output.strip())
+    feature.set_impl_notes(impl_notes)
     feature.add_history("IMPLEMENTING", f"Implementation completed via {runner.agent.name}")
     feature.save()
 
@@ -680,8 +683,9 @@ def run_fix_feedback(
                         start_message="Starting fix feedback")
 
     existing_notes = feature.impl_notes or ""
-    fix_summary = output.strip()
-    updated = f"{existing_notes}\n\n### Fix Feedback\n\n{fix_summary}"
+    summary = _parse_json_output(output, "summary")
+    fix_summary = _strip_markdown(str(summary)) if summary else _strip_markdown(output.strip())
+    updated = f"{existing_notes}\n\nFix Feedback\n\n{fix_summary}"
     feature.set_impl_notes(updated)
     feature.add_history("FIX_FEEDBACK", f"Fixed issues per review feedback via {runner.agent.name}")
     feature.save()
@@ -700,6 +704,9 @@ def run_verify_tests(
     status: Optional[AgentStatus] = None,
 ) -> tuple[str, str]:
     """Verify tests pass for the implemented feature. Returns (verdict, feedback)."""
+    import json
+    import re
+    
     runner = runner.for_phase("testing")
     console.print(f"\n[bold blue]Verifying Tests:[/bold blue] {feature.title}")
 
@@ -716,6 +723,28 @@ def run_verify_tests(
                         start_message="Starting test verification")
 
     verdict, feedback = _parse_verdict(output)
+    
+    test_results = {}
+    try:
+        result = json.loads(output.strip())
+    except json.JSONDecodeError:
+        try:
+            json_match = re.search(r'\{[\s\S]*\}', output)
+            if json_match:
+                result = json.loads(json_match.group())
+        except (json.JSONDecodeError, AttributeError):
+            result = None
+    
+    if result and "test_results" in result:
+        test_results = result.get("test_results", {})
+    
+    if test_results:
+        feature.set_test_results({
+            "ts": datetime.datetime.now().isoformat(),
+            "verdict": verdict,
+            "results": test_results,
+            "feedback": feedback,
+        })
 
     feature.add_history("TESTING", f"Test verification: {verdict} via {runner.agent.name}")
     feature.save()
@@ -726,7 +755,8 @@ def run_verify_tests(
         feature.move_to_stage("review")
         console.print("[green]Tests verified. Feature moved to review.[/green]")
     else:
-        console.print(f"[yellow]Test verification FAILED.[/yellow]")
+        feature.move_to_stage("review")
+        console.print(f"[yellow]Test verification FAILED. Feature moved to review for inspection.[/yellow]")
 
     return verdict, feedback
 

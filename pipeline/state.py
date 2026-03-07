@@ -141,6 +141,14 @@ class FeatureFile:
         self._save()
 
     @property
+    def test_results(self) -> dict:
+        return self._data.get("test_results", {})
+
+    def set_test_results(self, value: dict) -> None:
+        self._data["test_results"] = value
+        self._save()
+
+    @property
     def plan_reviews(self) -> list:
         return self._data.get("plan_reviews", [])
 

@@ -11,6 +11,12 @@ You are a senior code reviewer tasked with critically evaluating an implementati
 ### Implementation:
 {impl_notes}
 
+### Test Results (from verification phase):
+You should have received test results from the verification phase. Analyze them carefully:
+- Which tests passed? Which failed?
+- Are failures due to implementation bugs, test bugs, or mock issues?
+- If tests failed, provide specific feedback about what needs fixing
+
 ---
 
 **IMPORTANT**: The "Implementation" section above is the implementer's self-reported summary.

@@ -11,12 +11,27 @@ Implementation Notes (what was built):
 ## Your Task
 
 1. Run the full test suite relevant to this feature
-2. Check that all tests pass
-3. Verify test coverage against the test spec above - are all required behaviors tested?
-4. If any tests fail, fix them
-5. If the test spec lists behaviors that have no tests, write tests for them
+2. Analyze the test results - do tests pass or fail?
+3. Verify test coverage against the test spec - are all required behaviors tested?
 
-Report your findings. If all tests pass and coverage is adequate, verdict is PASS.
-If there are failures you could not fix, verdict is FAIL with details.
+IMPORTANT: Do NOT attempt to fix failing tests. Your role is to:
+- RUN the tests
+- INTERPRET the results
+- Report the verdict based on what you find
+
+If tests fail, report which tests failed and why. Do not try to fix the test code or implementation.
+If tests pass and coverage is adequate, verdict is PASS.
+If tests fail, verdict is FAIL with details about what failed.
+
+Report your findings in this JSON format:
+{
+  "verdict": "PASS" or "FAIL",
+  "test_results": {
+    "passed": <number>,
+    "failed": <number>,
+    "errors": <number>
+  },
+  "feedback": "Details about test results, failures, or coverage gaps"
+}
 
 {checkpoint_instructions}

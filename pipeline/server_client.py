@@ -151,6 +151,7 @@ class ServerClient:
                     "impl_notes": f.impl_notes[:1000] if f.impl_notes else "",
                     "plan_reviews": f.plan_reviews,
                     "impl_reviews": f.impl_reviews,
+                    "test_results": f.test_results,
                     "checkpoint": _get_checkpoint_info(f),
                 })
                 # Collect log entries from the feature

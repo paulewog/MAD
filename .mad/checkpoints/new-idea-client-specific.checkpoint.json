@@ -1,0 +1,15 @@
+{
+  "feature_slug": "new-idea-client-specific",
+  "feature_id": "12d337db",
+  "phase": "verifying-tests",
+  "last_checkpoint": "2026-03-07T14:40:00Z",
+  "completed_steps": [
+    "Searched codebase for relevant tests",
+    "Ran Go test suite (server package)",
+    "Analyzed test results against test spec",
+    "Identified missing test coverage for board filtering feature"
+  ],
+  "next_step": "Write output JSON and marker file",
+  "notes": "The Go tests pass (with some flakiness in concurrent tests). However, there are NO specific tests that verify the board filtering behavior described in the test spec (behaviors 1.1-1.5 and edge cases). The existing client page tests do not verify the board dropdown contents.",
+  "files_modified": []
+}

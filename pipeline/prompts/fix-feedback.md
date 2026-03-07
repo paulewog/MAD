@@ -35,3 +35,7 @@ If the feedback mentions test gaps, add or fix tests.
 If the feedback mentions implementation bugs, fix the implementation code.
 
 {checkpoint_instructions}
+
+Your output JSON must have:
+- "summary": A brief plain-text summary of what was fixed and how
+- "files_changed": A list of file paths that were created or modified

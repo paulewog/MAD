@@ -1,0 +1,256 @@
+{
+  "id": "7f7e0c4e",
+  "board": "mad",
+  "title": "bug-approving-idea-from-webui-doesn't-work",
+  "created": "2026-03-07T18:36Z",
+  "description": "Approving an idea from the webui doesn't actually work.",
+  "plan": "## Root Cause\n\nThe web UI's 'Approve Idea' button calls `moveFeature()` which POSTs to `/api/clients/{id}/features/{fid}/move`. The Go server sends a `move_feature` WebSocket message to the TUI client. In `server_client.py`, `_handle_incoming()` dispatches this to `_on_move_requested()` synchronously (line 261). In `tui.py`, `_on_move_requested()` (line 1630) uses `self.call_from_thread(_do_move)` to schedule the actual move.\n\n**The deadlock:** `call_from_thread` is designed for worker threads to safely call into the Textual main event loop. But `_on_move_requested` is called from `_handle_incoming`, which runs inside the Textual async event loop (via the `reconnect_loop` \u2192 `async for message in self._ws` chain). Calling `call_from_thread` from the event loop itself blocks the event loop waiting for itself to process the callback \u2014 a classic deadlock.\n\nThe same bug affects `_handle_start_agent` (line 1573), which also uses `call_from_thread`.\n\nThe working handlers (`_handle_create_idea` at line 1614, `_handle_server_answers` at line 1537) are `async def` methods that are `await`ed directly from `_handle_incoming` \u2014 no `call_from_thread`, no deadlock.\n\n## Fix\n\n### 1. Fix `_on_move_requested` in `tui.py` (line 1630-1655)\n\nConvert from sync+call_from_thread to async, matching the pattern of `_handle_create_idea` (call UI methods directly from the async method):\n\n**Before:**\n```python\ndef _on_move_requested(self, feature_id: str, target_stage: str) -> None:\n    def _do_move():\n        try:\n            feature = FeatureFile.find(feature_id)\n            ...\n            feature.move_to_stage(target_stage)\n            self._refresh_board(self.active_board)\n            if self._server_client and self._server_client.connected:\n                features = self._load_features(self.active_board)\n                asyncio.create_task(self._server_client.push_state(...))\n        except Exception as e:\n            logger.warning(f\"move_feature: failed to move feature: {e}\")\n    self.call_from_thread(_do_move)\n```\n\n**After:**\n```python\nasync def _on_move_requested(self, feature_id: str, target_stage: str) -> None:\n    try:\n        feature = FeatureFile.find(feature_id)\n        if not feature:\n            logger.warning(f\"move_feature: feature {feature_id} not found\")\n            return\n        if target_stage not in STAGES:\n            logger.warning(f\"move_feature: invalid target stage {target_stage}\")\n            return\n        logger.info(f\"Moving feature {feature_id} to {target_stage} via web UI\")\n        feature.add_history(target_stage.upper(), f\"Moved via web UI\")\n        feature.move_to_stage(target_stage)\n        self._refresh_board(self.active_board)\n        if self._server_client and self._server_client.connected:\n            features = self._load_features(self.active_board)\n            asyncio.create_task(self._server_client.push_state(\n                features, self._plan_agent_status, self._implement_agent_status,\n                auto_plan_enabled=self.auto_plan_enabled,\n                auto_impl_enabled=self.auto_implement_enabled,\n            ))\n    except Exception as e:\n        logger.warning(f\"move_feature: failed to move feature: {e}\")\n```\n\n### 2. Fix `_handle_start_agent` in `tui.py` (line 1573-1612)\n\nConvert from sync+call_from_thread to async, calling UI methods directly (same pattern as `_handle_create_idea`):\n\n**Before:**\n```python\ndef _handle_start_agent(self, feature_id: str, action: str) -> None:\n    ...\n    def _do_start():\n        self.selected_feature = feature\n        self._show_log()\n        if action == \"plan\":\n            ...\n            self._run_plan_async(feature)\n        else:\n            ...\n            self._run_implement_async(feature)\n    self.call_from_thread(_do_start)\n```\n\n**After:**\n```python\nasync def _handle_start_agent(self, feature_id: str, action: str) -> None:\n    ...\n    self.selected_feature = feature\n    self._show_log()\n    if action == \"plan\":\n        self._log_line(f\"=== Running PLAN (via web UI) for: {feature.title} ===\")\n        self._log_line(f\"Stage: {feature.current_stage}\")\n        self._log_line(\"\")\n        self._plan_running = True\n        self._run_plan_async(feature)\n    else:\n        self._log_line(f\"=== Running IMPLEMENT (via web UI) for: {feature.title} ===\")\n        self._log_line(f\"Stage: {feature.current_stage}\")\n        self._log_line(\"\")\n        self._implement_running = True\n        self._run_implement_async(feature)\n```\n\n### 3. Update `server_client.py` callback handling (lines 238-263)\n\nUpdate `_handle_incoming` to `await` both callbacks since they are now async:\n\n- Line 243: Change `self._on_start_agent(feature_id, action)` to `await self._on_start_agent(feature_id, action)`\n- Line 261: Change `self._on_move_requested(feature_id, target_stage)` to `await self._on_move_requested(feature_id, target_stage)`\n\nAlso update the type hints in `__init__`:\n- `on_start_agent`: Change from `Optional[Callable[[str, str], None]]` to `Optional[Callable[[str, str], Awaitable[None]]]`\n- `on_move_requested`: Change from `Optional[Callable[[str, str], None]]` to `Optional[Callable[[str, str], Awaitable[None]]]`\n\n### 4. No changes needed elsewhere\n\n- The Go server (`api.go`) correctly sends the `move_feature` WebSocket message \u2014 no changes needed.\n- The web UI JS (`client.html`) correctly calls the API \u2014 no changes needed.\n- `_handle_create_idea` and `_handle_server_answers` already use the correct async pattern.\n- `_handle_set_auto_mode` is synchronous but only sets simple attributes and doesn't call `call_from_thread`, so it works fine.\n\n## Files to modify\n\n1. `pipeline/tui.py` \u2014 Convert `_on_move_requested` and `_handle_start_agent` to async, remove `call_from_thread`\n2. `pipeline/server_client.py` \u2014 `await` the two callbacks and update type hints\n\n## Testing\n\n1. Start the pipeline TUI with server connection enabled\n2. Open the web UI and navigate to a board with ideas\n3. Click 'Approve Idea' on an idea card\n4. Verify the idea moves to plan-inbox (both in TUI and web UI)\n5. Verify 'Start Planning' / 'Start Implementing' buttons also work from web UI\n6. Verify no deadlock or hang occurs",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "history": [
+    {
+      "ts": "2026-03-07T18:36Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-07T18:39Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-07T19:30Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T19:38Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T19:38Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T19:39Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-07T19:39Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: The plan has a significant gap in Step 4: it references fixing _handle_start_agent but provides no actual code implementation, unlike Step 1 which provides full code. Additionally, there are two other issues: (1) Backward compatibility: changing callback type from Callable[[str, str], None] to Callable[[str, str], Awaitable[None]] will break existing code that passes synchronous callbacks - the plan doesn't address how to handle this migration. (2) Minor inconsistency: the provided code in Step 1 awaits push_state directly (lines 42-46), but the original _on_move_requested uses asyncio.create_task() which fire-and-forgets - this changes behavior and should be explicitly noted. Step 4 should provide the full refactored code for _handle_start_agent similar to Step 1."
+    },
+    {
+      "ts": "2026-03-07T19:39Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T19:44Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T19:44Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T19:47Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-07T19:47Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: The plan has a critical gap: it doesn't account for backward compatibility with existing tests that use synchronous callbacks. There are 30+ test cases in test_server_client.py, test_move_feature.py, and test_start_agent_e2e.py that pass sync callbacks to on_start_agent and on_move_requested. Adding 'await' to the callback dispatch in server_client.py would break all these tests. The plan should either: (1) update all test files to use async callbacks, OR (2) add backward compatibility in _handle_incoming to detect if callback is async using asyncio.iscoroutinefunction() and handle both cases. Option 2 is recommended to maintain backward compatibility."
+    },
+    {
+      "ts": "2026-03-07T19:47Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T19:50Z",
+      "stage": "PLANNING",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)"
+    },
+    {
+      "ts": "2026-03-07T19:50Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T19:50Z",
+      "stage": "PLANNING",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)"
+    },
+    {
+      "ts": "2026-03-07T19:51Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T19:51Z",
+      "stage": "PLANNING",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)"
+    },
+    {
+      "ts": "2026-03-07T19:52Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T19:53Z",
+      "stage": "PLANNING",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)"
+    },
+    {
+      "ts": "2026-03-07T19:53Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T19:54Z",
+      "stage": "PLANNING",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)"
+    },
+    {
+      "ts": "2026-03-07T19:55Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T19:55Z",
+      "stage": "PLANNING",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)"
+    },
+    {
+      "ts": "2026-03-07T19:56Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T19:56Z",
+      "stage": "PLANNING",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)"
+    },
+    {
+      "ts": "2026-03-07T19:57Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T19:57Z",
+      "stage": "PLANNING",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)"
+    },
+    {
+      "ts": "2026-03-07T19:58Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T19:58Z",
+      "stage": "PLANNING",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)"
+    },
+    {
+      "ts": "2026-03-07T19:59Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T19:59Z",
+      "stage": "PLANNING",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)"
+    },
+    {
+      "ts": "2026-03-07T20:00Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T20:00Z",
+      "stage": "PLANNING",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)"
+    },
+    {
+      "ts": "2026-03-07T22:28Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T22:31Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T22:31Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T22:34Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-07T22:34Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: The plan correctly identifies the deadlock root cause and the server_client.py fix is sound. However, the plan incorrectly suggests using self.call_later(_do_start) in tui.py - this method does not exist in Textual. The correct alternatives are: (1) call the UI methods directly from the async method (like _handle_create_idea does), or (2) use asyncio.create_task(_do_start()) to schedule as a fire-and-forget task. Please update the tui.py fix to use one of these correct approaches."
+    },
+    {
+      "ts": "2026-03-07T22:34Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T22:36Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T22:36Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T22:38Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-07T22:38Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-07T19:39Z",
+      "verdict": "FAIL",
+      "feedback": "The plan has a significant gap in Step 4: it references fixing _handle_start_agent but provides no actual code implementation, unlike Step 1 which provides full code. Additionally, there are two other issues: (1) Backward compatibility: changing callback type from Callable[[str, str], None] to Callable[[str, str], Awaitable[None]] will break existing code that passes synchronous callbacks - the plan doesn't address how to handle this migration. (2) Minor inconsistency: the provided code in Step 1 awaits push_state directly (lines 42-46), but the original _on_move_requested uses asyncio.create_task() which fire-and-forgets - this changes behavior and should be explicitly noted. Step 4 should provide the full refactored code for _handle_start_agent similar to Step 1."
+    },
+    {
+      "ts": "2026-03-07T19:47Z",
+      "verdict": "FAIL",
+      "feedback": "The plan has a critical gap: it doesn't account for backward compatibility with existing tests that use synchronous callbacks. There are 30+ test cases in test_server_client.py, test_move_feature.py, and test_start_agent_e2e.py that pass sync callbacks to on_start_agent and on_move_requested. Adding 'await' to the callback dispatch in server_client.py would break all these tests. The plan should either: (1) update all test files to use async callbacks, OR (2) add backward compatibility in _handle_incoming to detect if callback is async using asyncio.iscoroutinefunction() and handle both cases. Option 2 is recommended to maintain backward compatibility."
+    },
+    {
+      "ts": "2026-03-07T22:34Z",
+      "verdict": "FAIL",
+      "feedback": "The plan correctly identifies the deadlock root cause and the server_client.py fix is sound. However, the plan incorrectly suggests using self.call_later(_do_start) in tui.py - this method does not exist in Textual. The correct alternatives are: (1) call the UI methods directly from the async method (like _handle_create_idea does), or (2) use asyncio.create_task(_do_start()) to schedule as a fire-and-forget task. Please update the tui.py fix to use one of these correct approaches."
+    },
+    {
+      "ts": "2026-03-07T22:38Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ]
+}

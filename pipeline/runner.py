@@ -2,6 +2,7 @@
 
 import json
 import os
+import signal
 import select
 import subprocess
 import time
@@ -320,6 +321,7 @@ When you have finished all work:
                 stderr=subprocess.PIPE,
                 text=True,
                 env=env,
+                start_new_session=True,
             )
 
             if status is not None:
@@ -366,11 +368,17 @@ When you have finished all work:
                 # Check if user requested kill from TUI
                 if status is not None and status.kill_requested:
                     logger.warning(f"[runner] Kill requested by user. Terminating agent.")
-                    process.terminate()
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except OSError:
+                        pass
                     try:
                         process.wait(timeout=5)
                     except subprocess.TimeoutExpired:
-                        process.kill()
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except OSError:
+                            pass
                         process.wait()
                     if status is not None:
                         status.lines.append("[runner] Agent killed by user")
@@ -396,11 +404,17 @@ When you have finished all work:
                         
                         # Kill the process after 15 minutes of no activity
                         logger.warning(f"[runner] Killing agent after {int(elapsed)}s of no activity. Feature: {feature_slug}")
-                        process.terminate()
+                        try:
+                            os.killpg(process.pid, signal.SIGTERM)
+                        except OSError:
+                            pass
                         try:
                             process.wait(timeout=5)
                         except subprocess.TimeoutExpired:
-                            process.kill()
+                            try:
+                                os.killpg(process.pid, signal.SIGKILL)
+                            except OSError:
+                                pass
                             process.wait()
                         if status is not None:
                             status.lines.append(f"[runner] Agent killed after {int(elapsed)}s of no activity")

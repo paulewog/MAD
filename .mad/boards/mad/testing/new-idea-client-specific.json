@@ -1,0 +1,96 @@
+{
+  "id": "12d337db",
+  "board": "mad",
+  "title": "new-idea-client-specific",
+  "created": "2026-03-07T18:36Z",
+  "description": "When creating a new idea from a MAD webui client page, we shouldn't show boards that are for other clients; it should be filtered to just the client you are actually looking at.",
+  "plan": "## Filter Board Dropdown to Current Client on Client Page\n\n### Problem\nWhen creating a new idea from a client page (`/clients/{clientID}`), the board dropdown shows boards from ALL connected clients. It should only show boards relevant to the current client being viewed.\n\n### Root Cause\nIn `server/api.go` line 697, the client page template data passes:\n```go\n\"Boards\": boardsFromClients(hub.ListClients()),\n```\nThis calls `boardsFromClients` with ALL clients, collecting boards from every client's features. It should instead only use the current client's features.\n\n### Solution\n\n**File: `server/api.go` (line 697)**\n\nChange:\n```go\n\"Boards\": boardsFromClients(hub.ListClients()),\n```\nTo:\n```go\n\"Boards\": boardsFromClients([]ClientState{state}),\n```\n\nThe `state` variable (the current client's `ClientState`) is already available in scope at this point (fetched earlier via `hub.GetClient(clientID)`). By wrapping it in a single-element slice, we reuse the existing `boardsFromClients` function but limit board discovery to only the current client's features.\n\nThe fallback in `boardsFromClients` (defaulting to `\"mad\"` if no boards found) will still work correctly for clients with no features.\n\n### Files Modified\n- `server/api.go` \u2014 1 line change (line 697)\n\n### No Template Changes Needed\nThe `client.html` template already uses `{{range .Boards}}` to populate the dropdown, so it will automatically show only the filtered boards.\n\n### No Dashboard Change Needed\nThe main dashboard (`index.html`) should continue to show all boards from all clients, since the user hasn't selected a specific client yet on that page. That code path (around line 223) remains unchanged.\n\n### Testing\n1. Start the server with multiple clients connected, each managing different boards\n2. Navigate to a specific client page\n3. Click \"+ New Idea\" button\n4. Verify the board dropdown only shows boards that the current client has features in\n5. Verify the dashboard \"Create New Idea\" modal still shows all boards from all clients\n6. Verify that a client with no features still shows \"mad\" as a fallback board option",
+  "impl_spec": "## Implementation Spec: Filter Board Dropdown to Current Client\n\n### Task 1: Change boardsFromClients call on client page (single task)\n\n**File:** `server/api.go`, line 697\n\n**Approach:** Replace `boardsFromClients(hub.ListClients())` with `boardsFromClients([]ClientState{state})`. The `state` variable is already in scope \u2014 it was fetched via `hub.GetClient(clientID)` earlier in the same handler function. Wrapping it in a single-element `[]ClientState` slice satisfies the existing function signature while limiting board discovery to only the current client's features.\n\n**Change:**\n```go\n// Line 697 - Before:\n\"Boards\": boardsFromClients(hub.ListClients()),\n// Line 697 - After:\n\"Boards\": boardsFromClients([]ClientState{state}),\n```\n\n**Dependencies:** None. This is the only task \u2014 a single line change.\n\n### No Other Tasks Required\n\n- The `boardsFromClients` function already handles the empty-features case by defaulting to `[\"mad\"]`.\n- The `client.html` template already uses `{{range .Boards}}` and needs no changes.\n- The dashboard (`index.html`) path remains unchanged and continues showing all boards from all clients.\n- No new functions, types, tests, or dependencies are needed.",
+  "test_spec": "# Test Specification: Filter Board Dropdown to Current Client on Client Page\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Client page shows only boards from the current client\n- **Setup:** Two or more clients connected, each with features on different boards (e.g., Client A has features on board \"alpha\", Client B has features on board \"beta\").\n- **Action:** Navigate to Client A's page (`/clients/{clientA_ID}`).\n- **Expected:** The board dropdown in the \"New Idea\" form only contains \"alpha\". It must NOT contain \"beta\" or boards from any other client.\n- **Success criteria:** The `Boards` template variable passed to `client.html` contains only boards extracted from the current client's features.\n\n### 1.2 Dashboard continues to show all boards from all clients\n- **Setup:** Same multi-client setup as above.\n- **Action:** Navigate to the main dashboard (`/`).\n- **Expected:** The board dropdown contains boards from ALL connected clients (e.g., both \"alpha\" and \"beta\").\n- **Success criteria:** The dashboard code path (line ~223 in api.go) still calls `boardsFromClients(clients)` with the full client list and renders all boards.\n\n### 1.3 Fallback to \"mad\" when client has no features\n- **Setup:** A client connected with zero features (empty features list).\n- **Action:** Navigate to that client's page.\n- **Expected:** The board dropdown shows exactly one entry: \"mad\".\n- **Success criteria:** The `boardsFromClients` fallback logic triggers correctly when passed a single-element slice containing a client with no features.\n\n### 1.4 Client with features on multiple boards shows all its own boards\n- **Setup:** A single client with features spanning multiple boards (e.g., \"board-x\" and \"board-y\").\n- **Action:** Navigate to that client's page.\n- **Expected:** The dropdown shows both \"board-x\" and \"board-y\", sorted alphabetically.\n- **Success criteria:** All distinct boards from the current client's features are present and sorted.\n\n### 1.5 Boards are deduplicated for a single client\n- **Setup:** A client with multiple features on the same board.\n- **Action:** Navigate to that client's page.\n- **Expected:** The board appears only once in the dropdown (no duplicates).\n- **Success criteria:** The `seen` map deduplication in `boardsFromClients` works correctly with a single-client slice.\n\n## 2. Edge Cases\n\n### 2.1 Client with all features having empty board strings\n- **Setup:** A client whose features all have `Board: \"\"`.\n- **Expected:** Falls back to [\"mad\"] since no non-empty boards are found.\n\n### 2.2 Single client connected to the server\n- **Setup:** Only one client is connected.\n- **Action:** Navigate to that client's page and also the dashboard.\n- **Expected:** Both pages show the same boards (since there's only one client, filtering makes no difference).\n\n### 2.3 Client page for a non-existent client ID\n- **Setup:** Navigate to `/clients/nonexistent-id`.\n- **Expected:** Returns 404 error. No board dropdown is rendered. (This is existing behavior and should not be broken by the change.)\n\n### 2.4 Boards are sorted alphabetically\n- **Setup:** A client with features on boards \"zebra\", \"alpha\", \"middle\".\n- **Expected:** Dropdown shows [\"alpha\", \"middle\", \"zebra\"] in that order.\n\n### 2.5 HTMX client_cards partial still shows all boards\n- **Setup:** The HTMX partial endpoint (around line 296) that renders `client_cards` also calls `boardsFromClients(clients)` with all clients.\n- **Expected:** This endpoint continues to pass all clients' boards, not just one client's boards. (This code path should be unaffected by the change.)\n\n## 3. What Constitutes Failure\n\n- **FAIL:** Client page board dropdown includes boards from other clients that the current client has no features in.\n- **FAIL:** Dashboard board dropdown stops showing boards from some clients after the change.\n- **FAIL:** Client with no features shows an empty dropdown instead of the \"mad\" fallback.\n- **FAIL:** Board list contains duplicates.\n- **FAIL:** Board list is not sorted alphabetically.\n- **FAIL:** The change modifies the behavior of any code path other than the client page (line 697).\n- **FAIL:** Navigating to a valid client page returns an error or crashes due to the type change.\n\n## 4. Out of Scope\n\n- **UI/visual testing:** Do not test dropdown styling, positioning, or visual rendering.\n- **JavaScript behavior:** Do not test client-side dropdown interactions or form submission.\n- **Performance:** Do not benchmark the board filtering with large numbers of clients or features.\n- **Authentication:** Auth behavior is unchanged and not part of this feature.\n- **Template rendering correctness:** The `client.html` template is not modified; only the data passed to it changes.\n- **WebSocket/real-time updates:** Board list updates during live client connections are not in scope.\n- **Other template partials:** Testing `index.html` or `client_cards` rendering beyond verifying they still receive all-client boards is out of scope.",
+  "impl_notes": "{\n  \"summary\": \"Implemented the board dropdown filtering feature for client pages. Changed server/api.go line 697 from boardsFromClients(hub.ListClients()) to boardsFromClients([]ClientState{*state}) to only show boards from the current client being viewed, rather than boards from all connected clients. The code compiles successfully and the change is isolated to the client page handler only.\",\n  \"files_changed\": [\"server/api.go\"]\n}",
+  "history": [
+    {
+      "ts": "2026-03-07T18:36Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-07T18:39Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-07T19:26Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T19:29Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T19:29Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T19:30Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-07T19:30Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-07T22:28Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-07T22:28Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-07T22:29Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-07T22:31Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-07T22:31Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-07T22:33Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via kilo"
+    },
+    {
+      "ts": "2026-03-07T22:33Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-07T22:33Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-07T19:30Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ]
+}

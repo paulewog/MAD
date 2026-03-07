@@ -1,0 +1,92 @@
+{
+  "id": "8b9da8be",
+  "board": "mad",
+  "title": "Bug - webui has truncated plan information",
+  "created": "2026-03-07T19:35Z",
+  "description": "The webui for MAD appears to have truncated information in its items. The plan, for example, seems to be truncated, either by the UI itself or some other way.",
+  "plan": "## Bug Fix: WebUI Has Truncated Plan Information\n\n### Root Cause\n\nThe truncation happens in `pipeline/server_client.py` lines 148-151 in the `push_state` method. Four fields are explicitly truncated to 1000 characters:\n\n```python\n\"plan\": f.plan[:1000] if f.plan else \"\",\n\"impl_spec\": f.impl_spec[:1000] if f.impl_spec else \"\",\n\"test_spec\": f.test_spec[:1000] if f.test_spec else \"\",\n\"impl_notes\": f.impl_notes[:1000] if f.impl_notes else \"\",\n```\n\nAdditionally, there is an HTML escaping concern in `server/templates/client.html` lines 817-822. Several data attributes insert raw template values without JSON encoding:\n\n```html\ndata-description=\"{{.Description}}\"\ndata-plan=\"{{.Plan}}\"\ndata-impl-spec=\"{{.ImplSpec}}\"\ndata-test-spec=\"{{.TestSpec}}\"\ndata-impl-notes=\"{{.ImplNotes}}\"\n```\n\nWhile Go's `html/template` auto-escapes HTML entities in attributes, this produces HTML-entity-encoded content (e.g., `&#34;` for quotes, `&amp;` for ampersands). When the JavaScript reads these attributes back via `getAttribute()`, the browser decodes HTML entities, but this can still cause issues with multiline content and edge cases. The `data-history` and `data-test-results` attributes already use `toJSON` for safe encoding, which produces clean JSON strings that JavaScript can reliably parse.\n\n### Fix Plan\n\n#### Step 1: Remove truncation in Python client (pipeline/server_client.py)\n\nChange lines 148-151 from:\n```python\n\"plan\": f.plan[:1000] if f.plan else \"\",\n\"impl_spec\": f.impl_spec[:1000] if f.impl_spec else \"\",\n\"test_spec\": f.test_spec[:1000] if f.test_spec else \"\",\n\"impl_notes\": f.impl_notes[:1000] if f.impl_notes else \"\",\n```\nTo:\n```python\n\"plan\": f.plan or \"\",\n\"impl_spec\": f.impl_spec or \"\",\n\"test_spec\": f.test_spec or \"\",\n\"impl_notes\": f.impl_notes or \"\",\n```\n\n#### Step 2: Use toJSON for string data attributes in client.html (HTML escaping fix)\n\nChange lines 817-822 in `server/templates/client.html` to use `toJSON` for all string fields that may contain special characters (quotes, ampersands, newlines, angle brackets). This is critical because once truncation is removed, longer plans will contain these characters and break HTML attribute parsing:\n\n```html\ndata-description=\"{{toJSON .Description}}\"\ndata-plan=\"{{toJSON .Plan}}\"\ndata-impl-spec=\"{{toJSON .ImplSpec}}\"\ndata-test-spec=\"{{toJSON .TestSpec}}\"\ndata-impl-notes=\"{{toJSON .ImplNotes}}\"\n```\n\nThe `toJSON` function (defined in `server/api.go` line 150) calls `json.Marshal()` which properly escapes all special characters into a JSON string. This matches the pattern already used by `data-history=\"{{toJSON .History}}\"` and `data-test-results=\"{{toJSON .TestResults}}\"` on the same element.\n\n#### Step 3: Update JavaScript to JSON.parse the toJSON-encoded string attributes\n\nIn the JavaScript section of `client.html`, update the code that reads these attributes (around lines 533-540). Since `toJSON` on a string produces a JSON-encoded string (e.g., `\"hello \\\"world\\\"\"` with surrounding quotes), JavaScript needs to `JSON.parse()` to decode it:\n\n```javascript\n// Helper to safely parse JSON-encoded string attributes\nfunction getJsonAttr(el, attr) {\n    var raw = el.getAttribute(attr) || '';\n    if (!raw) return '';\n    try { return JSON.parse(raw); } catch(e) { return raw; }\n}\n\n// Plan section\nvar plan = getJsonAttr(card, 'data-plan');\n// Implementation Spec section  \nvar implSpec = getJsonAttr(card, 'data-impl-spec');\n// Test Spec section\nvar testSpec = getJsonAttr(card, 'data-test-spec');\n// Impl Notes\nvar implNotes = getJsonAttr(card, 'data-impl-notes');\n// Description\nvar description = getJsonAttr(card, 'data-description');\n```\n\nAlso update any other place where `data-description` is read (e.g., the change-tracking fingerprint around line 372-376) to use the same approach.\n\n#### Step 4: Check and update index.html if it has the same pattern\n\nCheck `server/templates/index.html` for any feature card data attributes with the same issue and apply the same `toJSON` fix there.\n\n### Files to Modify\n\n1. `pipeline/server_client.py` - Remove `[:1000]` truncation on plan, impl_spec, test_spec, impl_notes (lines 148-151)\n2. `server/templates/client.html` - Use `toJSON` for data-description, data-plan, data-impl-spec, data-test-spec, data-impl-notes attributes; update JS to JSON.parse these values\n3. `server/templates/index.html` - Apply same `toJSON` fix if it contains feature card data attributes\n\n### Testing\n\n- Verify that plans with >1000 characters display fully in the web UI\n- Verify that plans containing special characters (double quotes, single quotes, ampersands, angle brackets, newlines) render correctly without breaking HTML attributes\n- Verify that empty plans still work (empty string case)\n- Verify the existing `toJSON` fields (data-history, data-test-results) continue to work\n- Check that the WebSocket message size stays reasonable (maxMessageSize is 10MB which is plenty)",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "history": [
+    {
+      "ts": "2026-03-07T19:35Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-07T19:40Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-07T22:39Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T22:40Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T22:40Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T22:42Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-07T22:42Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: The plan needs to explicitly address HTML escaping in client.html. Lines 817-824 directly insert template values into HTML attributes without escaping (e.g., data-plan=\"{{.Plan}}\"). When the truncation is removed, longer plans containing special characters (\", ', &) will break HTML attribute parsing. The fix must include HTML escaping for these data attributes in the Go template, similar to how data-history and data-test-results use toJSON for safe encoding."
+    },
+    {
+      "ts": "2026-03-07T22:42Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T22:44Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T22:44Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T22:46Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-07T22:46Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: The plan is incomplete. Issues:\n\nMissing Python fix: Line 144 in server_client.py also truncates description to 1000 characters. This should be included in Step 1 alongside plan, impl_spec, test_spec, impl_notes.\n\nMissing template files: The plan only addresses client.html but two other templates have the same data-description issue:\n   - server/templates/index.html line 649: data-description=\"{{.Description}}\"\n   - server/templates/client_full2.html line 628: data-description=\"{{.Description}}\"\nThese also need the toJSON fix in Step 2.\n\nMissing JavaScript updates: The plan only updates JavaScript in client.html, but index.html and client_full2.html also read data-description in JavaScript:\n   - index.html lines 373 and 508\n   - client_full2.html lines 304 and 419\nThese need the same JSON.parse helper in Step 3."
+    },
+    {
+      "ts": "2026-03-07T22:46Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-07T22:42Z",
+      "verdict": "FAIL",
+      "feedback": "The plan needs to explicitly address HTML escaping in client.html. Lines 817-824 directly insert template values into HTML attributes without escaping (e.g., data-plan=\"{{.Plan}}\"). When the truncation is removed, longer plans containing special characters (\", ', &) will break HTML attribute parsing. The fix must include HTML escaping for these data attributes in the Go template, similar to how data-history and data-test-results use toJSON for safe encoding."
+    },
+    {
+      "ts": "2026-03-07T22:46Z",
+      "verdict": "FAIL",
+      "feedback": "The plan is incomplete. Issues:\n\nMissing Python fix: Line 144 in server_client.py also truncates description to 1000 characters. This should be included in Step 1 alongside plan, impl_spec, test_spec, impl_notes.\n\nMissing template files: The plan only addresses client.html but two other templates have the same data-description issue:\n   - server/templates/index.html line 649: data-description=\"{{.Description}}\"\n   - server/templates/client_full2.html line 628: data-description=\"{{.Description}}\"\nThese also need the toJSON fix in Step 2.\n\nMissing JavaScript updates: The plan only updates JavaScript in client.html, but index.html and client_full2.html also read data-description in JavaScript:\n   - index.html lines 373 and 508\n   - client_full2.html lines 304 and 419\nThese need the same JSON.parse helper in Step 3."
+    }
+  ],
+  "impl_reviews": []
+}

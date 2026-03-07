@@ -694,7 +694,7 @@ func serveClientPage(w http.ResponseWriter, r *http.Request, hub *Hub, tmpl *tem
 		"Key":           key,
 		"Authenticated": authenticated,
 		"ShowKeyModal":  showKeyModal,
-		"Boards":        boardsFromClients(hub.ListClients()),
+		"Boards":        boardsFromClients([]ClientState{*state}),
 	}
 	w.Header().Set("Content-Type", "text/html")
 	if err := tmpl.ExecuteTemplate(w, "client.html", data); err != nil {

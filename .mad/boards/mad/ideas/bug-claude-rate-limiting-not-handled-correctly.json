@@ -1,0 +1,21 @@
+{
+  "id": "b79d3dd6",
+  "board": "mad",
+  "title": "bug - claude rate limiting not handled correctly",
+  "created": "2026-03-07T19:52Z",
+  "description": "I don't think, with our JSON changes, that rate limiting from claude is handled correctly.  All it says is that \"claude exicted with code 1\" but it doesn't say there was a rate limiting stderr or stdout (and there was no stderr).  Maybe we aren't checking stdout anymore?",
+  "plan": "",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "history": [
+    {
+      "ts": "2026-03-07T19:52Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [],
+  "impl_reviews": []
+}

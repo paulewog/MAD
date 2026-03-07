@@ -210,6 +210,30 @@ def _feature_markdown(feature: FeatureFile) -> str:
         formatted = _format_json_text(feature.test_spec)
         lines += ["## Test Spec", "", "```", formatted, "```", ""]
 
+    test_results = feature.test_results
+    if test_results:
+        ts = test_results.get("ts", "")
+        verdict = test_results.get("verdict", "")
+        results = test_results.get("results", {})
+        feedback = test_results.get("feedback", "")
+        
+        lines += ["## Test Results", ""]
+        if ts:
+            lines += [f"**Timestamp:** {ts}", ""]
+        if verdict:
+            lines += [f"**Verdict:** {verdict}", ""]
+        
+        if results:
+            passed = results.get("passed", 0)
+            failed = results.get("failed", 0)
+            errors = results.get("errors", 0)
+            lines += [f"**Passed:** {passed}  **Failed:** {failed}  **Errors:** {errors}", ""]
+        
+        if feedback:
+            lines += ["**Feedback:**", feedback, ""]
+        
+        lines += ["", "Use 'tt' to toggle test results", ""]
+
     if feature.impl_notes:
         formatted = _format_json_text(feature.impl_notes)
         lines += ["## Implementation Notes", "", "```", formatted, "```", ""]
@@ -323,6 +347,32 @@ def _build_feature_detail_widgets(feature: FeatureFile) -> list:
         widgets.append(Collapsible(Static(_escape_markup(formatted)), title="Test Spec", collapsed=True))
     else:
         widgets.append(Collapsible(Static("[dim]No test spec provided[/dim]"), title="Test Spec", collapsed=True))
+    
+    # Test Results (collapsible, collapsed by default)
+    test_results = feature.test_results
+    if test_results:
+        ts = test_results.get("ts", "")
+        verdict = test_results.get("verdict", "")
+        results = test_results.get("results", {})
+        feedback = test_results.get("feedback", "")
+        
+        result_lines = []
+        if ts:
+            result_lines.append(f"Timestamp: {ts}")
+        if verdict:
+            result_lines.append(f"Verdict: {verdict}")
+        
+        if results:
+            passed = results.get("passed", 0)
+            failed = results.get("failed", 0)
+            errors = results.get("errors", 0)
+            result_lines.append(f"Passed: {passed}  Failed: {failed}  Errors: {errors}")
+        
+        if feedback:
+            result_lines.append(f"Feedback: {feedback}")
+        
+        result_text = "\n".join(result_lines)
+        widgets.append(Collapsible(Static(_escape_markup(result_text)), title="Test Results", collapsed=True))
     
     # Implementation Notes (collapsible, collapsed by default)
     if feature.impl_notes:
