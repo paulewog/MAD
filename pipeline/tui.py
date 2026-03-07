@@ -203,13 +203,16 @@ def _feature_markdown(feature: FeatureFile) -> str:
         lines += ["## Plan", "", feature.plan, ""]
 
     if feature.impl_spec:
-        lines += ["## Implementation Spec", "", "```", feature.impl_spec, "```", ""]
+        formatted = _format_json_text(feature.impl_spec)
+        lines += ["## Implementation Spec", "", "```", formatted, "```", ""]
 
     if feature.test_spec:
-        lines += ["## Test Spec", "", "```", feature.test_spec, "```", ""]
+        formatted = _format_json_text(feature.test_spec)
+        lines += ["## Test Spec", "", "```", formatted, "```", ""]
 
     if feature.impl_notes:
-        lines += ["## Implementation Notes", "", "```", feature.impl_notes, "```", ""]
+        formatted = _format_json_text(feature.impl_notes)
+        lines += ["## Implementation Notes", "", "```", formatted, "```", ""]
 
     # Show questions if any
     questions = feature.questions
@@ -242,6 +245,27 @@ def _escape_markup(text: str) -> str:
     text = text.replace("[", r"\[").replace("]", r"\]")
     text = text.replace("{", r"\{").replace("}", r"\}")
     text = re.sub(r'([%])', r'\\\1', text)
+    return text
+
+
+def _format_json_text(text) -> str:
+    """Format JSON string for display - parse and pretty-print if valid JSON.
+    
+    Handles both string and dict types.
+    """
+    import json
+    if not text:
+        return ""
+    if isinstance(text, dict):
+        return json.dumps(text, indent=2)
+    text = text.strip()
+    if not text:
+        return text
+    try:
+        parsed = json.loads(text)
+        return json.dumps(parsed, indent=2)
+    except (json.JSONDecodeError, ValueError):
+        pass
     return text
 
 def _build_feature_detail_widgets(feature: FeatureFile) -> list:
@@ -288,22 +312,40 @@ def _build_feature_detail_widgets(feature: FeatureFile) -> list:
     
     # Implementation Spec (collapsible, collapsed by default)
     if feature.impl_spec:
-        widgets.append(Collapsible(Static(_escape_markup(feature.impl_spec)), title="Implementation Spec", collapsed=True))
+        formatted = _format_json_text(feature.impl_spec)
+        widgets.append(Collapsible(Static(_escape_markup(formatted)), title="Implementation Spec", collapsed=True))
     else:
         widgets.append(Collapsible(Static("[dim]No implementation spec provided[/dim]"), title="Implementation Spec", collapsed=True))
     
     # Test Spec (collapsible, collapsed by default)
     if feature.test_spec:
-        widgets.append(Collapsible(Static(_escape_markup(feature.test_spec)), title="Test Spec", collapsed=True))
+        formatted = _format_json_text(feature.test_spec)
+        widgets.append(Collapsible(Static(_escape_markup(formatted)), title="Test Spec", collapsed=True))
     else:
         widgets.append(Collapsible(Static("[dim]No test spec provided[/dim]"), title="Test Spec", collapsed=True))
     
     # Implementation Notes (collapsible, collapsed by default)
     if feature.impl_notes:
-        widgets.append(Collapsible(Static(_escape_markup(feature.impl_notes)), title="Implementation Notes", collapsed=True))
+        formatted = _format_json_text(feature.impl_notes)
+        widgets.append(Collapsible(Static(_escape_markup(formatted)), title="Implementation Notes", collapsed=True))
     else:
         widgets.append(Collapsible(Static("[dim]No implementation notes provided[/dim]"), title="Implementation Notes", collapsed=True))
     
+    # Review History (collapsible, collapsed by default)
+    plan_reviews = feature.plan_reviews
+    impl_reviews = feature.impl_reviews
+    if plan_reviews or impl_reviews:
+        review_lines = []
+        if plan_reviews:
+            review_lines.append("Plan Reviews:")
+            for r in plan_reviews:
+                review_lines.append(f"  {r.get('ts', '')} | {r.get('verdict', '')} | {_escape_markup(r.get('feedback', '') or '')[:200]}")
+        if impl_reviews:
+            review_lines.append("Impl Reviews:")
+            for r in impl_reviews:
+                review_lines.append(f"  {r.get('ts', '')} | {r.get('verdict', '')} | {_escape_markup(r.get('feedback', '') or '')[:200]}")
+        widgets.append(Collapsible(Static("\n".join(review_lines)), title=f"Review History ({len(plan_reviews) + len(impl_reviews)})", collapsed=True))
+
     # Questions (collapsible, collapsed by default)
     questions = feature.questions
     if questions:
@@ -1402,7 +1444,7 @@ class PipelineApp(App):
     def _periodic_server_push(self) -> None:
         """Push current state to server periodically (agent status may change without feature changes)."""
         if self._server_client and self._server_client.connected:
-            features = getattr(self, "_current_features", [])
+            features = FeatureFile.list_all()
             self._push_to_server(features[:])
 
     @work(thread=False)
@@ -1444,7 +1486,7 @@ class PipelineApp(App):
         self._update_status_bar(self.active_board, self._load_features(self.active_board))
         # Push updated state back to server
         if self._server_client and self._server_client.connected:
-            features = self._load_features(self.active_board)
+            features = FeatureFile.list_all()
             self._push_to_server(features[:])
 
     def _handle_start_agent(self, feature_id: str, action: str) -> None:
@@ -1735,9 +1777,10 @@ class PipelineApp(App):
             self._refresh_kanban_widgets()
             self._update_status_bar(board, features)
 
-            # Push state to server if connected
+            # Push state to server if connected (push ALL features for aggregate view)
             if self._server_client and self._server_client.connected:
-                self._push_to_server(features[:])
+                all_features = FeatureFile.list_all()
+                self._push_to_server(all_features[:])
 
             # Always refresh selected feature from disk to show latest content
             if self.selected_feature:
@@ -2259,7 +2302,7 @@ class PipelineApp(App):
         """Run restart pipeline in background thread."""
         from phases import (
             run_pipeline, run_pipeline_from_implementing,
-            run_writing_tests, run_review_impl
+            run_verify_tests, run_review_impl
         )
         from runner import AgentRunner
         
@@ -2285,9 +2328,17 @@ class PipelineApp(App):
             elif stage == "implementing":
                 run_pipeline_from_implementing(feature, runner, status=status)
             elif stage == "testing":
+                from phases import run_fix_feedback, _get_latest_feedback
                 verdict = "FAIL"
                 for attempt in range(1, 4):
-                    run_writing_tests(feature, runner, status=status)
+                    if attempt == 1:
+                        test_verdict, test_fb = run_verify_tests(feature, runner, status=status)
+                    else:
+                        fb = _get_latest_feedback(feature)
+                        run_fix_feedback(feature, runner, fb, status=status)
+                        test_verdict, test_fb = run_verify_tests(feature, runner, status=status)
+                    if test_verdict != "PASS":
+                        continue
                     verdict, feedback = run_review_impl(feature, runner, status=status)
                     if verdict == "PASS":
                         break
@@ -2680,7 +2731,7 @@ class PipelineApp(App):
         status.running = True
         
         try:
-            from phases import run_spec_writing, run_implementing, run_writing_tests, run_review_impl, run_pipeline_from_implementing
+            from phases import run_spec_writing, run_implementing, run_verify_tests, run_review_impl, run_pipeline_from_implementing
             
             # Start from the feature's current stage
             stage = feature.current_stage
@@ -2699,8 +2750,8 @@ class PipelineApp(App):
             # After implementing, run tests
             if feature.current_stage != "review" and feature.current_stage != "final-human-approval":
                 self.app.call_from_thread(self._log_line, f"[impl] After implementing, stage: {feature.current_stage}")
-                self.app.call_from_thread(self._log_line, f"[impl] Starting writing_tests")
-                run_writing_tests(feature, runner, status=status)
+                self.app.call_from_thread(self._log_line, f"[impl] Starting verify_tests")
+                test_verdict, test_fb = run_verify_tests(feature, runner, status=status)
             
             # Run review (if in review stage or after tests)
             if feature.current_stage == "review" and feature.current_stage != "final-human-approval":

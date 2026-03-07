@@ -2,6 +2,7 @@
 
 import json
 import os
+import select
 import subprocess
 import time
 import logging
@@ -66,6 +67,29 @@ class AgentRunner:
         """Create a new runner configured for a specific phase."""
         agent_name = self._config.agent_for_phase.get(phase)
         return AgentRunner(self._config, agent_name, self._workdir)
+
+    def _build_completion_block(self, output_path: Path, marker_path: Path, schema: dict) -> str:
+        """Build the output/completion instructions block appended to every prompt."""
+        schema_desc = "\n".join(f'  - "{k}": {v}' for k, v in schema.items())
+        return f"""
+
+## Output and Completion
+
+When you have finished all work:
+
+1. Write your output as a single valid JSON object to:
+   {output_path}
+
+   Required fields:
+{schema_desc}
+
+2. Create this marker file:
+   {marker_path}
+
+   Write exactly: PHASE_COMPLETE
+
+3. Exit immediately after creating the marker file. Do not wait for input.
+"""
 
     def _prepend_context(self, prompt: str) -> str:
         """Prepend code path and context file info to prompt."""
@@ -193,6 +217,8 @@ class AgentRunner:
         prompt: str,
         workdir: Path = None,
         status: Optional[AgentStatus] = None,
+        phase_key: str = None,
+        output_schema: dict = None,
     ) -> str:
         """Run the agent headlessly with the given prompt. Returns stdout.
 
@@ -228,11 +254,20 @@ class AgentRunner:
             if checkpoint_context:
                 full_prompt += checkpoint_context
             
-            # Add output file instructions
+            # Set up output and marker paths
             output_path = tmp_dir / f"{item_name}.output.json"
-            full_prompt += f"\n\nIMPORTANT: Write your complete output as JSON to this file: {output_path}\n"
-            full_prompt += "Write ONLY valid JSON to this file. Nothing else.\n"
-            full_prompt += "After writing the file, write DONE on its own line to signal completion.\n"
+            marker_path = tmp_dir / f"{item_name}.complete"
+
+            # Delete any existing marker file before starting
+            marker_path.unlink(missing_ok=True)
+
+            if phase_key and output_schema:
+                full_prompt += self._build_completion_block(output_path, marker_path, output_schema)
+            else:
+                # Legacy fallback for phases not yet using the new system
+                full_prompt += f"\n\nIMPORTANT: Write your complete output as JSON to this file: {output_path}\n"
+                full_prompt += "Write ONLY valid JSON to this file. Nothing else.\n"
+                full_prompt += "After writing the file, write DONE on its own line to signal completion.\n"
             
             # Write instructions to .tmp/<item>.instructions file
             instructions_path = tmp_dir / f"{item_name}.instructions"
@@ -349,7 +384,11 @@ class AgentRunner:
                             status.running = False
                         break
                 
-                line = process.stdout.readline()
+                line = ""
+                if process.stdout:
+                    ready, _, _ = select.select([process.stdout], [], [], 0)
+                    if ready:
+                        line = process.stdout.readline()
                 if not line and process.poll() is not None:
                     break
                 if line:
@@ -416,7 +455,10 @@ class AgentRunner:
                 logger.warning(f"[runner] No output file found, using stdout")
             
             # Check if we got the completion marker - if so, don't check for rate limit
-            got_completion_marker = any("DONE" in line.upper() for line in output_lines)
+            if marker_path.exists() and "PHASE_COMPLETE" in marker_path.read_text():
+                got_completion_marker = True
+            else:
+                got_completion_marker = any("DONE" in line.upper() for line in output_lines)
             
             # Only check for rate limiting if we didn't get a completion marker
             if not got_completion_marker:
@@ -445,4 +487,4 @@ class AgentRunner:
                 status.running = False
             if log_file:
                 log_file.close()
-                print(f"[runner] Log file closed", file=__import__('sys').stderr)
+                logger.info("[runner] Log file closed")

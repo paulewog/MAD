@@ -46,62 +46,98 @@ console = _LogConsole()
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
+def _spec_to_string(value) -> str:
+    """Convert impl_spec/test_spec value to string for prompt substitution.
+    
+    Handles both dict (parsed JSON) and string values.
+    """
+    import json
+    if not value:
+        return ""
+    if isinstance(value, dict):
+        return json.dumps(value, indent=2)
+    return str(value)
+
+
 PHASE_CONFIG = {
     "planning": {
         "runner_phase": "planning",
         "history_tag": "PLANNING",
         "status_label": "planning",
         "template": "plan-headless.md",
-        "done_marker": "DONE",
+        "output_schema": {
+            "questions": "list[dict] | null",
+            "plan": "string | null",
+        },
     },
     "reviewing_plan": {
         "runner_phase": "reviewing_plan",
         "history_tag": "PLAN_REVIEW",
         "status_label": "reviewing-plan",
         "template": "review-plan.md",
-        "done_marker": "DONE",
+        "output_schema": {
+            "verdict": "string",
+            "feedback": "string | null",
+        },
     },
     "spec_impl": {
         "runner_phase": "spec_writing",
         "history_tag": "SPEC_WRITING",
         "status_label": "spec: implementation",
         "template": "impl-spec.md",
-        "done_marker": "DONE",
+        "output_schema": {
+            "implementation_spec": "string",
+        },
     },
     "spec_test": {
         "runner_phase": "spec_writing",
         "history_tag": "SPEC_WRITING",
         "status_label": "spec: tests",
         "template": "test-spec.md",
-        "done_marker": "TESTDONE",
+        "output_schema": {
+            "test_spec": "string",
+        },
     },
     "implementing": {
         "runner_phase": "implementing",
         "history_tag": "IMPLEMENTING",
         "status_label": "implementing",
         "template": "implement.md",
-        "done_marker": "DONE",
+        "output_schema": {
+            "summary": "string",
+            "files_changed": "list[string]",
+        },
     },
     "fix_feedback": {
         "runner_phase": "fix_feedback",
         "history_tag": "FIX_FEEDBACK",
         "status_label": "fixing feedback",
         "template": "fix-feedback.md",
-        "done_marker": "DONE",
+        "output_schema": {
+            "summary": "string",
+            "files_changed": "list[string]",
+        },
     },
-    "writing_tests": {
+    "testing": {
         "runner_phase": "testing",
         "history_tag": "TESTING",
-        "status_label": "writing tests",
-        "template": "write-tests.md",
-        "done_marker": "DONE",
+        "status_label": "verifying tests",
+        "template": "verify-tests.md",
+        "output_schema": {
+            "verdict": "string",
+            "test_results": "dict",
+            "feedback": "string | null",
+        },
     },
     "review_impl": {
         "runner_phase": "review",
         "history_tag": "REVIEW",
         "status_label": "review",
         "template": "review-impl.md",
-        "done_marker": "DONE",
+        "output_schema": {
+            "verdict": "string",
+            "feedback": "string | null",
+        },
     },
 }
 
@@ -122,8 +158,6 @@ def _build_prompt(template_name: str, replacements: dict[str, str], phase_key: O
     checkpoint_path = PROMPTS_DIR / "_checkpoint-instructions.md"
     if checkpoint_path.exists() and "{checkpoint_instructions}" in template:
         checkpoint_text = checkpoint_path.read_text()
-        if phase_key and phase_key in PHASE_CONFIG:
-            checkpoint_text = checkpoint_text.replace("{done_marker}", PHASE_CONFIG[phase_key]["done_marker"])
         template = template.replace("{checkpoint_instructions}", checkpoint_text)
     
     for key, value in replacements.items():
@@ -171,7 +205,12 @@ def _run_phase(
     logger.info(f"[{config['runner_phase']}] Running: {feature.title}")
     
     try:
-        output = runner.headless(prompt, status=status)
+        output = runner.headless(
+            prompt,
+            status=status,
+            phase_key=phase_key,
+            output_schema=config.get("output_schema"),
+        )
     except Exception as e:
         logger.error(f"[{config['runner_phase']}] headless() failed for {feature.title}: {e}")
         feature.add_history(config["history_tag"], f"FAILED: {e}")
@@ -187,32 +226,41 @@ def _run_phase(
     return output
 
 
-def _parse_json_output(output: str, field: str) -> str:
+def _parse_json_output(output: str, field: str):
     """Parse JSON output from agent and extract a specific field.
-    
+
     Args:
         output: The raw output from the agent (JSON string)
         field: The field name to extract (e.g., "implementation_spec", "test_spec")
-    
+
     Returns:
-        The extracted field value, or empty string if not found
+        The extracted field value as a parsed object (dict/list) if valid JSON,
+        or as a string if not valid JSON, or empty string if not found
     """
     import json
     import re
-    
+
     if not output or not output.strip():
         return ""
-    
+
+    # Try direct JSON parse first (output file should be pure JSON)
     try:
-        # Find JSON in output
+        result = json.loads(output.strip())
+        if field in result and result[field]:
+            return result[field]
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback: regex extraction
+    try:
         json_match = re.search(r'\{[\s\S]*\}', output)
         if json_match:
             result = json.loads(json_match.group())
             if field in result and result[field]:
-                return str(result[field])
+                return result[field]
     except (json.JSONDecodeError, AttributeError, TypeError):
         pass
-    
+
     return ""
 
 
@@ -228,18 +276,40 @@ def _parse_verdict(output: str) -> tuple[str, str]:
     verdict = "FAIL"
     feedback = output.strip()
     
+    # Try to parse JSON - direct parse first, then regex fallback
+    result = None
+    json_parsed = False
     try:
-        json_match = re.search(r'\{[\s\S]*\}', output)
-        if json_match:
-            result = json.loads(json_match.group())
-            if "verdict" in result:
-                if "PASS" in result["verdict"].upper():
-                    verdict = "PASS"
+        result = json.loads(output.strip())
+    except json.JSONDecodeError:
+        try:
+            json_match = re.search(r'\{[\s\S]*\}', output)
+            if json_match:
+                result = json.loads(json_match.group())
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    if result is not None:
+        if "verdict" in result:
+            json_parsed = True
+            if "PASS" in result["verdict"].upper():
+                verdict = "PASS"
             if "feedback" in result and result["feedback"]:
                 feedback = str(result["feedback"])
             elif "feedback" in result:
                 feedback = ""
-    except (json.JSONDecodeError, AttributeError):
+        elif "tests_pass" in result or "test_results" in result:
+            json_parsed = True
+            tests_pass = result.get("tests_pass", None)
+            test_results = result.get("test_results", {})
+            failed_count = test_results.get("failed", 0) + test_results.get("errors", 0)
+            if tests_pass is True or (test_results and failed_count == 0):
+                verdict = "PASS"
+                feedback = ""
+            else:
+                feedback = json.dumps(result, indent=2)
+
+    if not json_parsed:
         verdict_match = re.search(r"\*?\*?VERDICT\*?\*?:\s*(\w+)", output, re.IGNORECASE)
         if verdict_match:
             if "PASS" in verdict_match.group(1).upper():
@@ -328,28 +398,13 @@ def _strip_markdown(text: str) -> str:
 
 
 def _get_latest_feedback(feature: FeatureFile) -> str:
-    """Extract the most recent review feedback from feature history."""
-    if not feature.history:
-        return "No previous feedback available."
-    
-    # Find the last REVIEW entry with feedback
-    import json
-    try:
-        history = json.loads(feature.history) if isinstance(feature.history, str) else feature.history
-    except (json.JSONDecodeError, TypeError):
-        # Fallback: try to find it in the raw text
-        return feature.history if feature.history else "No previous feedback available."
-    
-    # Find the last REVIEW entry
-    for entry in reversed(history):
-        if entry.get("stage") == "REVIEW" and entry.get("note"):
-            note = entry.get("note", "")
-            # Extract feedback after "Verdict: FAIL — "
-            if "Verdict: FAIL" in note:
-                parts = note.split("Verdict: FAIL", 1)
-                if len(parts) > 1:
-                    return parts[1].strip()
-            return note
+    """Extract the most recent review feedback from dedicated review arrays."""
+    latest_impl = feature.get_latest_impl_review()
+    if latest_impl and latest_impl.get("verdict") == "FAIL":
+        return latest_impl.get("feedback", "")
+    latest_plan = feature.get_latest_plan_review()
+    if latest_plan and latest_plan.get("verdict") == "FAIL":
+        return latest_plan.get("feedback", "")
     return "No previous feedback available."
 
 
@@ -362,15 +417,10 @@ def run_planning(
     
     Returns True if plan is complete, False if human input is needed (questions).
     """
-    import sys
-    
     runner = runner.for_phase("planning")
-    # console.print(f"\n[bold blue]Planning:[/bold blue] {feature.title}")
     logger.info(f"[planning] Starting: {feature.title}")
     feature.add_history("PLANNING", "Starting planning")
     feature.save()
-    print(f"[DEBUG] Starting planning for {feature.title}", file=sys.stderr)
-    sys.stderr.flush()
 
     # Check if there are previous answers to include
     questions = feature.questions
@@ -388,13 +438,13 @@ def run_planning(
     if latest_feedback and latest_feedback != "No previous feedback available.":
         feedback_context = f"\n\n## Previous Review Feedback (you MUST address these issues):\n{latest_feedback}\n"
 
-    template = _load_prompt("plan-headless.md")
-    # Use string replace instead of .format() to avoid issues with curly braces in template
-    prompt = template.replace("{title}", feature.title)
-    prompt = prompt.replace("{description}", feature.get_section("Description") or "(no description)")
-    prompt = prompt.replace("{feature_slug}", feature.slug)
-    prompt = prompt.replace("{feature_id}", feature.id)
-    prompt = prompt.replace("{phase}", "planning")
+    prompt = _build_prompt("plan-headless.md", {
+        "{title}": feature.title,
+        "{description}": feature.get_section("Description") or "(no description)",
+        "{feature_slug}": feature.slug,
+        "{feature_id}": feature.id,
+        "{phase}": "planning",
+    }, "planning")
     
     if questions_context:
         prompt += questions_context
@@ -402,83 +452,64 @@ def run_planning(
     if feedback_context:
         prompt += feedback_context
 
-    if status is not None:
-        status.phase = "planning"
-        status.agent = runner.agent.name
-    print(f"[DEBUG] About to call runner.headless()", file=sys.stderr)
-    sys.stderr.flush()
-    output = runner.headless(prompt, status=status)
-    print(f"[DEBUG] headless returned, output length: {len(output)}", file=sys.stderr)
-    print(f"[DEBUG] output repr: {repr(output[:500])}", file=sys.stderr)
-    sys.stderr.flush()
+    output = _run_phase("planning", feature, runner, prompt, status=status,
+                        start_message="Starting planning", skip_history_start=True)
 
     # Try to parse JSON output for questions and plan
     import json
     import re
-    
-    console.print(f"[dim]Planning output length: {len(output)} chars[/dim]")
-    
-    # Extract JSON from output
-    json_match = re.search(r'\{[\s\S]*\}', output)
-    if json_match:
-        matched = json_match.group()
-        console.print(f"[dim]Matched JSON: {matched[:200]}...[/dim]")
-        try:
-            result = json.loads(matched)
-            console.print(f"[dim]Parsed JSON keys: {list(result.keys())}[/dim]")
-            
-            # Handle questions - must be a list
-            if "questions" in result and isinstance(result["questions"], list) and result["questions"]:
-                questions = result["questions"]
-                feature.set_questions(questions)
-                feature.add_history("PLANNING", f"Questions raised via {runner.agent.name}")
-                feature.save()
-                feature.move_to_stage("requested-input")
-                console.print(f"[yellow]Plan has {len(questions)} questions for human. Moving to requested-input.[/yellow]")
-                return False
-            
-            # Handle plan - must be a string
-            if "plan" in result and isinstance(result.get("plan"), str) and result["plan"]:
-                feature.set_plan(result["plan"])
-                feature.add_history("PLANNING", f"Plan generated via {runner.agent.name}")
-                feature.save()
-                feature.move_to_stage("reviewing-plan")
-                console.print("[green]Plan generated. Feature moved to reviewing-plan.[/green]")
-                return True
-            
-            console.print(f"[yellow]JSON found but no valid questions or plan. result={result}[/yellow]")
-                
-        except json.JSONDecodeError as e:
-            console.print(f"[red]JSON decode error: {e}, matched: {matched[:100]}[/red]")
-        except Exception as e:
-            console.print(f"[red]Error processing planning output: {e}[/red]")
-            raise
-    
-    # Fallback: treat entire output as plan (but not if it's just the completion marker)
+
+    # Try direct JSON parse first, then regex fallback
+    result = None
+    try:
+        result = json.loads(output.strip())
+    except json.JSONDecodeError:
+        json_match = re.search(r'\{[\s\S]*\}', output)
+        if json_match:
+            try:
+                result = json.loads(json_match.group())
+            except json.JSONDecodeError:
+                pass
+
+    if result:
+        # Handle questions - must be a list
+        if "questions" in result and isinstance(result["questions"], list) and result["questions"]:
+            questions = result["questions"]
+            feature.set_questions(questions)
+            feature.add_history("PLANNING", f"Questions raised via {runner.agent.name}")
+            feature.save()
+            feature.move_to_stage("requested-input")
+            console.print(f"[yellow]Plan has {len(questions)} questions for human. Moving to requested-input.[/yellow]")
+            return False
+
+        # Handle plan - must be a string
+        if "plan" in result and isinstance(result.get("plan"), str) and result["plan"]:
+            feature.set_plan(result["plan"])
+            feature.add_history("PLANNING", f"Plan generated via {runner.agent.name}")
+            feature.save()
+            feature.move_to_stage("reviewing-plan")
+            _git_commit(feature, "planning complete")
+            _delete_checkpoint(feature)
+            console.print("[green]Plan generated. Feature moved to reviewing-plan.[/green]")
+            return True
+
+        logger.warning(f"[planning] JSON found but no valid questions or plan for {feature.title}")
+
+    # Fallback: treat entire output as plan
     output_stripped = output.strip()
-    
-    # Remove the completion marker before using as fallback
-    output_for_fallback = output_stripped
-    for marker in ["PLAN_COMPLETE", "plan_complete"]:
-        idx = output_for_fallback.upper().find(marker)
-        if idx >= 0:
-            output_for_fallback = output_for_fallback[:idx].strip()
-    
-    # Check if we only had the completion marker (no actual content)
-    if not output_for_fallback:
-        console.print(f"[red]Agent only output completion marker without a plan! Output: {output_stripped[:100]}[/red]")
-        feature.add_history("PLANNING", f"FAILED: Agent did not produce a plan")
+    if not output_stripped:
+        feature.add_history("PLANNING", "FAILED: Agent did not produce a plan")
         feature.save()
         return False
-        
+
     console.print("[yellow]No valid JSON found, using fallback[/yellow]")
-    feature.set_plan(output_for_fallback)
+    feature.set_plan(output_stripped)
     feature.add_history("PLANNING", f"Plan generated via {runner.agent.name}")
     feature.save()
     feature.move_to_stage("reviewing-plan")
     _git_commit(feature, "planning complete")
     _delete_checkpoint(feature)
-    
+
     console.print("[green]Plan generated. Feature moved to reviewing-plan.[/green]")
     return True
 
@@ -490,36 +521,31 @@ def run_plan_review(
     status: Optional[AgentStatus] = None,
 ) -> tuple[str, str]:
     """Review the plan and return (verdict, feedback).
-    
+
     If feedback is provided from a previous failed review, use it to improve the plan.
     """
     runner = runner.for_phase("reviewing_plan")
-    console.print(f"\n[bold blue]Reviewing Plan:[/bold blue] {feature.title}")
-    logger.info(f"[plan-review] Starting: {feature.title}")
-    feature.add_history("PLAN_REVIEW", "Starting plan review")
-    feature.save()
 
-    template = _load_prompt("review-plan.md")
-    
-    if feedback:
-        feedback_section = f"## Previous Review Feedback (must address):\n{feedback}"
-    else:
-        feedback_section = ""
-    
-    prompt = template.replace("{title}", feature.title)
-    prompt = prompt.replace("{description}", feature.get_section("Description") or "(none)")
-    prompt = prompt.replace("{plan}", feature.plan or "(none)")
-    prompt = prompt.replace("{feedback_section}", feedback_section)
+    feedback_section = f"## Previous Review Feedback (must address):\n{feedback}" if feedback else ""
 
-    if status is not None:
-        status.phase = "reviewing-plan"
-        status.agent = runner.agent.name
-    output = runner.headless(prompt, status=status)
+    prompt = _build_prompt("review-plan.md", {
+        "{title}": feature.title,
+        "{description}": feature.get_section("Description") or "(none)",
+        "{plan}": feature.plan or "(none)",
+        "{feedback_section}": feedback_section,
+    }, "reviewing_plan")
+
+    output = _run_phase("reviewing_plan", feature, runner, prompt, status=status,
+                        start_message="Starting plan review")
 
     verdict, review_feedback = _parse_verdict(output)
-    
-    feature.add_history("PLAN_REVIEW", f"Verdict: {verdict} — {review_feedback}")
-    
+
+    feature.add_plan_review(verdict, review_feedback)
+    feature.add_history("PLAN_REVIEW", f"Verdict: {verdict}")
+    feature.save()
+    _git_commit(feature, "plan review complete")
+    _delete_checkpoint(feature)
+
     return verdict, review_feedback
 
 
@@ -574,6 +600,7 @@ def run_spec_writing(
     feature.save()
 
     feature.move_to_stage("implementing")
+    _git_commit(feature, "spec writing complete")
     _delete_checkpoint(feature)
     console.print("[green]Specs generated. Feature moved to implementing.[/green]")
 
@@ -591,8 +618,8 @@ def run_implementing(
     prompt = _build_prompt("implement.md", {
         "{title}": feature.title,
         "{plan}": feature.plan or "(no plan)",
-        "{impl_spec}": feature.impl_spec or "(no impl spec)",
-        "{test_spec}": feature.test_spec or "(no test spec)",
+        "{impl_spec}": _spec_to_string(feature.impl_spec) or "(no impl spec)",
+        "{test_spec}": _spec_to_string(feature.test_spec) or "(no test spec)",
         "{feature_slug}": feature.slug,
         "{feature_id}": feature.id,
         "{phase}": "implementing",
@@ -619,19 +646,23 @@ def run_implementing(
 def run_fix_feedback(
     feature: FeatureFile,
     runner: AgentRunner,
-    feedback: str,
+    feedback: str = "",
     status: Optional[AgentStatus] = None,
 ) -> None:
     """Run the fix-feedback phase - focuses on fixing issues from review feedback."""
+    if not feedback:
+        latest = feature.get_latest_impl_review()
+        if latest:
+            feedback = latest.get("feedback", "")
     runner = runner.for_phase("fix_feedback")
     console.print(f"\n[bold blue]Fixing Review Feedback:[/bold blue] {feature.title}")
 
     prompt = _build_prompt("fix-feedback.md", {
         "{title}": feature.title,
         "{plan}": feature.plan or "(no plan)",
-        "{impl_spec}": feature.impl_spec or "(no impl spec)",
-        "{test_spec}": feature.test_spec or "(no test spec)",
-        "{impl_notes}": feature.impl_notes or "(no impl notes)",
+        "{impl_spec}": _spec_to_string(feature.impl_spec) or "(no impl spec)",
+        "{test_spec}": _spec_to_string(feature.test_spec) or "(no test spec)",
+        "{impl_notes}": _spec_to_string(feature.impl_notes) or "(no impl notes)",
         "{feedback}": feedback or "(no feedback)",
         "{feature_slug}": feature.slug,
         "{feature_id}": feature.id,
@@ -641,46 +672,56 @@ def run_fix_feedback(
     output = _run_phase("fix_feedback", feature, runner, prompt, status=status,
                         start_message="Starting fix feedback")
 
-    feature.set_impl_notes(output.strip())
+    existing_notes = feature.impl_notes or ""
+    fix_summary = output.strip()
+    updated = f"{existing_notes}\n\n### Fix Feedback\n\n{fix_summary}"
+    feature.set_impl_notes(updated)
     feature.add_history("FIX_FEEDBACK", f"Fixed issues per review feedback via {runner.agent.name}")
     feature.save()
 
     feature.move_to_stage("testing")
     feature.add_history("TESTING", "Moved to testing phase after fixing feedback")
     feature.save()
+    _git_commit(feature, "fix feedback complete")
+    _delete_checkpoint(feature)
     console.print("[green]Feedback fixed. Feature moved to testing.[/green]")
 
 
-def run_writing_tests(
+def run_verify_tests(
     feature: FeatureFile,
     runner: AgentRunner,
     status: Optional[AgentStatus] = None,
-) -> None:
-    """Run the test-writing phase headlessly."""
+) -> tuple[str, str]:
+    """Verify tests pass for the implemented feature. Returns (verdict, feedback)."""
     runner = runner.for_phase("testing")
-    console.print(f"\n[bold blue]Writing Tests:[/bold blue] {feature.title}")
+    console.print(f"\n[bold blue]Verifying Tests:[/bold blue] {feature.title}")
 
-    prompt = _build_prompt("write-tests.md", {
+    prompt = _build_prompt("verify-tests.md", {
         "{title}": feature.title,
-        "{test_spec}": feature.test_spec or "(no test spec)",
-        "{impl_notes}": feature.impl_notes or "(no impl notes)",
+        "{test_spec}": _spec_to_string(feature.test_spec) or "(no test spec)",
+        "{impl_notes}": _spec_to_string(feature.impl_notes) or "(no impl notes)",
         "{feature_slug}": feature.slug,
         "{feature_id}": feature.id,
-        "{phase}": "writing-tests",
-    }, "writing_tests")
+        "{phase}": "verifying-tests",
+    }, "testing")
 
-    output = _run_phase("writing_tests", feature, runner, prompt, status=status,
-                        start_message="Starting test writing")
+    output = _run_phase("testing", feature, runner, prompt, status=status,
+                        start_message="Starting test verification")
 
-    current_notes = feature.impl_notes
-    updated = f"{current_notes}\n\n### Tests Written\n\n{output.strip()}"
-    feature.set_impl_notes(updated)
-    feature.add_history("TESTING", f"Tests written via {runner.agent.name}")
+    verdict, feedback = _parse_verdict(output)
+
+    feature.add_history("TESTING", f"Test verification: {verdict} via {runner.agent.name}")
     feature.save()
-
-    feature.move_to_stage("review")
+    _git_commit(feature, "test verification complete")
     _delete_checkpoint(feature)
-    console.print("[green]Tests written. Feature moved to review.[/green]")
+
+    if verdict == "PASS":
+        feature.move_to_stage("review")
+        console.print("[green]Tests verified. Feature moved to review.[/green]")
+    else:
+        console.print(f"[yellow]Test verification FAILED.[/yellow]")
+
+    return verdict, feedback
 
 
 def run_review_impl(
@@ -690,41 +731,32 @@ def run_review_impl(
 ) -> tuple[str, str]:
     """Run the review phase. Returns (verdict, feedback)."""
     runner = runner.for_phase("review")
-    console.print(f"\n[bold blue]Reviewing:[/bold blue] {feature.title}")
-    feature.add_history("REVIEW", "Starting review")
-    feature.save()
 
-    template = _load_prompt("review-impl.md")
-    prompt = template.replace("{title}", feature.title)
-    prompt = prompt.replace("{plan}", feature.plan or "(no plan)")
-    prompt = prompt.replace("{test_spec}", feature.test_spec or "(no test spec)")
-    prompt = prompt.replace("{impl_notes}", feature.impl_notes or "(no impl notes)")
+    prompt = _build_prompt("review-impl.md", {
+        "{title}": feature.title,
+        "{plan}": feature.plan or "(no plan)",
+        "{test_spec}": _spec_to_string(feature.test_spec) or "(no test spec)",
+        "{impl_notes}": _spec_to_string(feature.impl_notes) or "(no impl notes)",
+    }, "review_impl")
 
-    if status is not None:
-        status.phase = "review"
-        status.agent = runner.agent.name
-    output = runner.headless(prompt, status=status)
+    output = _run_phase("review_impl", feature, runner, prompt, status=status,
+                        start_message="Starting review")
 
     verdict, feedback = _parse_verdict(output)
-    
-    feature.add_history("REVIEW", f"Verdict: {verdict} — {feedback}")
 
-    console.print(f"[dim]Review verdict: {verdict}[/dim]")
-    console.print(f"[dim]Review feedback: {feedback[:100]}...[/dim]" if len(feedback) > 100 else f"[dim]Review feedback: {feedback}[/dim]")
+    feature.add_impl_review(verdict, feedback)
+    feature.add_history("REVIEW", f"Verdict: {verdict}")
 
     if verdict == "PASS":
         feature.save()
         feature.move_to_stage("final-human-approval")
+        _git_commit(feature, "review passed")
         _delete_checkpoint(feature)
         console.print(f"[green]Review PASSED. Feature moved to final-human-approval.[/green]")
     else:
-        # Clean up old feedback first, then add new feedback
-        _cleanup_impl_notes_for_retry(feature)
-        current_notes = feature.impl_notes
-        updated = f"{current_notes}\n\n### Review Feedback\n\n{feedback}"
-        feature.set_impl_notes(updated)
         feature.save()
         feature.move_to_stage("implementing")
+        _git_commit(feature, "review failed")
         _delete_checkpoint(feature)
         console.print(f"[yellow]Review FAILED. Feature moved back to implementing.[/yellow]")
 
@@ -740,7 +772,7 @@ def run_pipeline(
 
     If feature is in plan-inbox, runs planning first.
     Then runs plan review (with retries) before moving to spec writing.
-    Then runs spec_writing -> implementing -> writing_tests -> review_impl
+    Then runs spec_writing -> implementing -> verify_tests -> review_impl
     Retries review_impl up to 5 times on FAIL before giving up.
     """
     try:
@@ -777,8 +809,9 @@ def _run_pipeline_impl(
     # Phase 0b: Plan review (with retries)
     if feature.current_stage == "reviewing-plan":
         max_plan_review_attempts = 3
-        plan_feedback = None
         for attempt in range(1, max_plan_review_attempts + 1):
+            latest_plan_review = feature.get_latest_plan_review()
+            plan_feedback = latest_plan_review.get("feedback", "") if latest_plan_review else ""
             verdict, plan_feedback = run_plan_review(
                 feature, runner, feedback=plan_feedback, status=status
             )
@@ -797,11 +830,13 @@ def _run_pipeline_impl(
                 )
                 # Go back to planning with feedback
                 feature.move_to_stage("plan-inbox")
-                feature.add_history("PLAN_REVIEW", f"Feedback: {plan_feedback}")
+                feature.add_history("PLAN_REVIEW", "Sending back for re-planning")
                 feature.save()
-                run_planning(feature, runner, status=status)
-                # Move back to reviewing for next attempt
-                feature.move_to_stage("reviewing-plan")
+                plan_ok = run_planning(feature, runner, status=status)
+                if not plan_ok:
+                    # Questions raised during re-planning, cannot continue review loop
+                    return
+                # Plan produced - run_planning already moved to reviewing-plan
         else:
             # Exhausted retries
             console.print(
@@ -816,21 +851,34 @@ def _run_pipeline_impl(
     # Phase 1: Spec writing (only runs if in approved or later)
     run_spec_writing(feature, runner, status=status)
 
-    max_review_attempts = 5
+    _run_impl_test_review_loop(feature, runner, status)
+
+
+def _run_impl_test_review_loop(
+    feature: FeatureFile,
+    runner: AgentRunner,
+    status: Optional[AgentStatus] = None,
+    max_review_attempts: int = 5,
+) -> None:
+    """Shared implementation/test/review loop used by both pipeline entry points."""
     for attempt in range(1, max_review_attempts + 1):
         if attempt == 1:
-            # First attempt: full implementation
             run_implementing(feature, runner, status=status)
         else:
-            # Subsequent attempts: focus on fixing review feedback
-            # Get the latest feedback from history
             feedback = _get_latest_feedback(feature)
             run_fix_feedback(feature, runner, feedback, status=status)
 
-        # Phase 3: Writing tests
-        run_writing_tests(feature, runner, status=status)
+        # Verify tests pass
+        test_verdict, test_feedback = run_verify_tests(feature, runner, status=status)
+        if test_verdict != "PASS":
+            # Tests failed — loop back to fix
+            console.print(
+                f"[yellow]Test verification failed (attempt {attempt}/{max_review_attempts}). "
+                f"Retrying...[/yellow]"
+            )
+            continue
 
-        # Phase 4: Review
+        # Code review
         verdict, feedback = run_review_impl(feature, runner, status=status)
 
         if verdict == "PASS":
@@ -853,27 +901,6 @@ def _run_pipeline_impl(
             feature.add_history("FINAL_HUMAN_APPROVAL", "Pipeline exhausted review retries")
             feature.save()
             feature.move_to_stage("final-human-approval")
-
-
-def _cleanup_impl_notes_for_retry(feature: FeatureFile) -> None:
-    """Clean up Implementation Notes before retry - remove old accumulated feedback, keep latest.
-    
-    This keeps only the last "### Review Feedback" section so impl_notes doesn't grow forever.
-    """
-    import re
-    
-    impl_notes = feature.impl_notes
-    if not impl_notes:
-        return
-    
-    # Find ALL "### Review Feedback" sections and keep only the LAST one
-    # This prevents infinite growth while preserving the most recent feedback
-    matches = list(re.finditer(r"^### Review Feedback", impl_notes, re.MULTILINE))
-    if len(matches) > 1:
-        # Keep everything up to and including the last review feedback
-        last_match = matches[-1]
-        cleaned = impl_notes[:last_match.start()].strip()
-        feature.set_impl_notes(cleaned)
 
 
 def run_pipeline_from_implementing(
@@ -882,72 +909,20 @@ def run_pipeline_from_implementing(
     status: Optional[AgentStatus] = None,
 ) -> None:
     """Resume pipeline from implementing stage.
-    
+
     Called when a feature is in implementing (e.g., after failed review retry).
-    Runs: implementing -> writing_tests -> review_impl
-    Retries review up to 2 times on FAIL before giving up.
+    Runs: implementing -> verify_tests -> review_impl
+    Retries up to 5 times on FAIL before giving up.
     """
     try:
-        _run_pipeline_from_implementing_impl(feature, runner, status)
+        console.print(Panel(
+            f"[bold]Resuming pipeline from implementing:[/bold] {feature.title}",
+            border_style="cyan",
+        ))
+        _run_impl_test_review_loop(feature, runner, status)
     except Exception as e:
         _delete_checkpoint(feature)
         raise
-
-
-def _run_pipeline_from_implementing_impl(
-    feature: FeatureFile,
-    runner: AgentRunner,
-    status: Optional[AgentStatus] = None,
-) -> None:
-    """Internal implementation of run_pipeline_from_implementing."""
-    console.print(Panel(
-        f"[bold]Resuming pipeline from implementing:[/bold] {feature.title}",
-        border_style="cyan",
-    ))
-
-    # Clean up any old review feedback before starting
-    _cleanup_impl_notes_for_retry(feature)
-    
-    max_review_attempts = 5
-    for attempt in range(1, max_review_attempts + 1):
-        # Clean up old feedback before each retry attempt
-        if attempt > 1:
-            _cleanup_impl_notes_for_retry(feature)
-        
-        if attempt == 1:
-            # First attempt: full implementation
-            run_implementing(feature, runner, status=status)
-        else:
-            # Subsequent attempts: focus on fixing review feedback
-            feedback = _get_latest_feedback(feature)
-            run_fix_feedback(feature, runner, feedback, status=status)
-
-        # Phase 2: Writing tests
-        run_writing_tests(feature, runner, status=status)
-
-        # Phase 3: Review
-        verdict, feedback = run_review_impl(feature, runner, status=status)
-
-        if verdict == "PASS":
-            console.print(Panel(
-                f"[bold green]Pipeline complete![/bold green] Feature is in final-human-approval.",
-                border_style="green",
-            ))
-            return
-
-        if attempt < max_review_attempts:
-            console.print(
-                f"[yellow]Review attempt {attempt}/{max_review_attempts} failed. "
-                f"Fixing feedback and retrying...[/yellow]"
-            )
-        else:
-            console.print(
-                f"[red]Review failed after {max_review_attempts} attempts. "
-                f"Moving to final-human-approval for manual intervention.[/red]"
-            )
-            feature.add_history("FINAL_HUMAN_APPROVAL", "Pipeline exhausted review retries")
-            feature.save()
-            feature.move_to_stage("final-human-approval")
 
 
 def update_design_doc(feature: FeatureFile, runner: AgentRunner) -> bool:

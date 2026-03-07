@@ -37,18 +37,5 @@ Write in plain language, NOT actual test code. Focus on "what should happen" not
 
 {checkpoint_instructions}
 
-## Output Format
-
-Write your response as JSON with exactly this field:
+Your output JSON must have:
 - "test_spec": Your complete test specification as text
-
-Example:
-```json
-{
-  "test_spec": "1. Behaviors: ...\n2. Edge cases: ..."
-}
-```
-
-Write ONLY valid JSON to the output file. Nothing else.
-
-When finished, write DONE on its own line and then exit.

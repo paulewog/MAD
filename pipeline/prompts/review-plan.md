@@ -24,20 +24,6 @@ Review the plan and provide feedback. Consider:
 
 If previous feedback was provided, verify that the plan addresses those concerns.
 
-## Output Format
-
-Write your review as JSON with exactly these fields:
+Your output JSON must have:
 - "verdict": "PASS" or "FAIL"
 - "feedback": If FAIL, provide specific actionable feedback. If PASS, use null.
-
-Example:
-```json
-{
-  "verdict": "FAIL",
-  "feedback": "- Missing handling for network errors\n- Need to clarify data migration strategy"
-}
-```
-
-Write ONLY valid JSON to the output file. Nothing else.
-
-When finished, write DONE on its own line and then exit.

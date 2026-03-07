@@ -13,6 +13,10 @@ You are a senior code reviewer tasked with critically evaluating an implementati
 
 ---
 
+**IMPORTANT**: The "Implementation" section above is the implementer's self-reported summary.
+You MUST read the actual source files mentioned to verify the implementation.
+Do not trust the summary alone.
+
 ## Review Checklist
 
 For each item below, explicitly assess and document your findings:
@@ -41,20 +45,6 @@ For each item below, explicitly assess and document your findings:
 
 ---
 
-## Output Format
-
-Write your review as JSON with exactly these fields:
+Your output JSON must have:
 - "verdict": "PASS" or "FAIL"
 - "feedback": If FAIL, provide specific actionable feedback listing issues found. If PASS, use null.
-
-Example:
-```json
-{
-  "verdict": "FAIL",
-  "feedback": "- Plan item 'add authentication' not implemented - no login/user code found\n- Test spec requires 'rate limiting' but no tests for it\n- NullPointerException in handle_submit() line 42 if input is None"
-}
-```
-
-Write ONLY valid JSON to the output file. Nothing else.
-
-When finished, write DONE on its own line and then exit.

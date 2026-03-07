@@ -25,7 +25,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from config import Config
-from phases import run_pipeline, run_planning, run_pipeline_from_implementing
+from phases import run_pipeline, run_planning, run_pipeline_from_implementing, run_verify_tests
 from runner import AgentRunner
 from schedule import (
     RunRecord,
@@ -372,7 +372,7 @@ def restart_feature(feature_id: str, from_phase: str):
         pipeline restart tutorial-quest-chain --from review
     """
     from phases import (
-        run_spec_writing, run_implementing, run_writing_tests, 
+        run_spec_writing, run_implementing, run_verify_tests,
         run_review_impl, run_pipeline_from_implementing
     )
     
@@ -395,9 +395,19 @@ def restart_feature(feature_id: str, from_phase: str):
         elif from_phase == "implementing":
             run_pipeline_from_implementing(feature, runner)
         elif from_phase == "testing":
+            from phases import run_fix_feedback, _get_latest_feedback
             max_attempts = 3
             for attempt in range(1, max_attempts + 1):
-                run_writing_tests(feature, runner)
+                if attempt == 1:
+                    test_verdict, test_fb = run_verify_tests(feature, runner)
+                else:
+                    fb = _get_latest_feedback(feature)
+                    run_fix_feedback(feature, runner, fb)
+                    test_verdict, test_fb = run_verify_tests(feature, runner)
+                if test_verdict != "PASS":
+                    if attempt < max_attempts:
+                        console.print(f"[yellow]Tests failed, retry {attempt}/{max_attempts}[/yellow]")
+                    continue
                 verdict, feedback = run_review_impl(feature, runner)
                 if verdict == "PASS":
                     break
