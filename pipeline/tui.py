@@ -250,44 +250,44 @@ def _build_feature_detail_widgets(feature: FeatureFile) -> list:
     
     widgets = []
     
-    # Title (always visible)
-    widgets.append(Static(f"[b]{feature.title}[/b]", id="detail-title"))
+    # Title (always visible) - no ID to avoid duplicate errors
+    widgets.append(Static(f"[b]{feature.title}[/b]"))
     
     # Description (always visible)
     description = feature.get_section("Description")
     if description:
-        widgets.append(Static(description, id="detail-description"))
+        widgets.append(Static(description))
     
     # History (collapsible, expanded by default)
     if feature.history:
         escaped_history = feature.history.replace("[", r"\[").replace("]", r"\]")
-        widgets.append(Collapsible(Static(escaped_history), title="History", id="detail-history", collapsed=False))
+        widgets.append(Collapsible(Static(escaped_history), title="History", collapsed=False))
     else:
-        widgets.append(Collapsible(Static("[dim]No history provided[/dim]"), title="History", id="detail-history", collapsed=False))
+        widgets.append(Collapsible(Static("[dim]No history provided[/dim]"), title="History", collapsed=False))
     
     # Plan (collapsible, collapsed by default)
     if feature.plan:
-        widgets.append(Collapsible(Static(feature.plan), title="Plan", id="detail-plan", collapsed=True))
+        widgets.append(Collapsible(Static(feature.plan), title="Plan", collapsed=True))
     else:
-        widgets.append(Collapsible(Static("[dim]No plan provided[/dim]"), title="Plan", id="detail-plan", collapsed=True))
+        widgets.append(Collapsible(Static("[dim]No plan provided[/dim]"), title="Plan", collapsed=True))
     
     # Implementation Spec (collapsible, collapsed by default)
     if feature.impl_spec:
-        widgets.append(Collapsible(Static(feature.impl_spec), title="Implementation Spec", id="detail-impl-spec", collapsed=True))
+        widgets.append(Collapsible(Static(feature.impl_spec), title="Implementation Spec", collapsed=True))
     else:
-        widgets.append(Collapsible(Static("[dim]No implementation spec provided[/dim]"), title="Implementation Spec", id="detail-impl-spec", collapsed=True))
+        widgets.append(Collapsible(Static("[dim]No implementation spec provided[/dim]"), title="Implementation Spec", collapsed=True))
     
     # Test Spec (collapsible, collapsed by default)
     if feature.test_spec:
-        widgets.append(Collapsible(Static(feature.test_spec), title="Test Spec", id="detail-test-spec", collapsed=True))
+        widgets.append(Collapsible(Static(feature.test_spec), title="Test Spec", collapsed=True))
     else:
-        widgets.append(Collapsible(Static("[dim]No test spec provided[/dim]"), title="Test Spec", id="detail-test-spec", collapsed=True))
+        widgets.append(Collapsible(Static("[dim]No test spec provided[/dim]"), title="Test Spec", collapsed=True))
     
     # Implementation Notes (collapsible, collapsed by default)
     if feature.impl_notes:
-        widgets.append(Collapsible(Static(feature.impl_notes), title="Implementation Notes", id="detail-impl-notes", collapsed=True))
+        widgets.append(Collapsible(Static(feature.impl_notes), title="Implementation Notes", collapsed=True))
     else:
-        widgets.append(Collapsible(Static("[dim]No implementation notes provided[/dim]"), title="Implementation Notes", id="detail-impl-notes", collapsed=True))
+        widgets.append(Collapsible(Static("[dim]No implementation notes provided[/dim]"), title="Implementation Notes", collapsed=True))
     
     # Questions (collapsible, collapsed by default)
     questions = feature.questions
@@ -301,9 +301,9 @@ def _build_feature_detail_widgets(feature: FeatureFile) -> list:
             else:
                 questions_content.append(f"Q{i+1}: {q_text} (unanswered)")
         questions_text = "\n\n".join(questions_content)
-        widgets.append(Collapsible(Static(questions_text), title=f"Questions ({len(questions)})", id="detail-questions", collapsed=True))
+        widgets.append(Collapsible(Static(questions_text), title=f"Questions ({len(questions)})", collapsed=True))
     else:
-        widgets.append(Collapsible(Static("[dim]No questions provided[/dim]"), title="Questions", id="detail-questions", collapsed=True))
+        widgets.append(Collapsible(Static("[dim]No questions provided[/dim]"), title="Questions", collapsed=True))
     
     return widgets
 
@@ -1764,17 +1764,6 @@ class PipelineApp(App):
             return
 
         detail_container.remove_children()
-        
-        # Also remove any widgets with duplicate IDs from the app
-        # (Textual registers IDs at app level, not just container level)
-        for wid in ["detail-title", "detail-description", "detail-history", "detail-plan", 
-                    "detail-impl-spec", "detail-test-spec", "detail-impl-notes"]:
-            try:
-                old = self.query_one(f"#{wid}")
-                old.remove()
-            except NoMatches:
-                pass
-        
         widgets = _build_feature_detail_widgets(self.selected_feature)
         detail_container.mount(*widgets)
         self._update_footer()
