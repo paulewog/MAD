@@ -201,15 +201,27 @@
             margin-bottom: 0.5rem;
         }
         }
-        #dashboard-content { display: none; }
-        #dashboard-content.authenticated { display: block; }
     </style>
-    {{if .Authenticated}}
 </head>
 <body>
+    {{if .ShowKeyModal}}
+    <div class="modal-overlay" id="key-modal">
+        <div class="modal" style="max-width:400px">
+            <h3>Authentication Required</h3>
+            <p style="color:#8b949e;margin:0.5rem 0 1rem">Enter your dashboard key to access client details.</p>
+            <div id="key-error" style="color:#f85149;font-size:0.85rem;margin-bottom:0.5rem;display:none"></div>
+            <input type="password" id="key-input" placeholder="Enter key" style="width:100%;padding:0.75rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:1rem;margin-bottom:1rem">
+            <button onclick="saveKey()" style="width:100%;padding:0.75rem;background:#238636;border:none;border-radius:6px;color:#fff;font-size:1rem;cursor:pointer">Save Key</button>
+        </div>
+    </div>
+    {{end}}
+    {{if .Authenticated}}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
         <h1 style="margin-bottom:0">MAD Pipeline Dashboard</h1>
-        <button onclick="showNewIdeaModal()" style="padding:0.4rem 0.8rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-weight:600">+ New Idea</button>
+        <div style="display:flex;gap:0.5rem;align-items:center">
+            <button onclick="showNewIdeaModal()" style="padding:0.4rem 0.8rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-weight:600">+ New Idea</button>
+            <button onclick="logout()" style="padding:0.4rem 0.8rem;background:#30363d;color:#c9d1d9;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-weight:600">Logout</button>
+        </div>
     </div>
     <div class="section-label">Connected Clients</div>
     <table>
@@ -238,14 +250,6 @@
             <button class="modal-close" onclick="closeModal()">&times;</button>
             <h3 id="modal-title"></h3>
             <div id="modal-body"></div>
-        </div>
-    </div>
-    <div class="modal-overlay" id="key-modal">
-        <div class="modal" style="max-width:400px">
-            <h3>Authentication Required</h3>
-            <p style="color:#8b949e;margin:0.5rem 0 1rem">Enter your dashboard key to access client details.</p>
-            <input type="password" id="key-input" placeholder="Enter key" style="width:100%;padding:0.75rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:1rem;margin-bottom:1rem">
-            <button onclick="saveKey()" style="width:100%;padding:0.75rem;background:#238636;border:none;border-radius:6px;color:#fff;font-size:1rem;cursor:pointer">Save Key</button>
         </div>
     </div>
     <!-- New Idea Modal -->
@@ -278,6 +282,18 @@
         </div>
     </div>
     <script>
+        var key = (function() {
+            try {
+                var urlKey = new URLSearchParams(window.location.search).get('key');
+                if (urlKey) {
+                    try { localStorage.setItem('mad_key', urlKey); } catch(e) {}
+                    return urlKey;
+                }
+                return localStorage.getItem('mad_key') || '';
+            } catch(e) {
+                return new URLSearchParams(window.location.search).get('key') || '';
+            }
+        })();
         // Smart polling for board: only update cards that actually changed
         var _boardURL = '/api/board?key=' + encodeURIComponent(key || '');
         var _lastBoardHTML = '';
@@ -327,6 +343,26 @@
             }).catch(function() {});
         }
         setInterval(smartPollBoard, 5000);
+        function logout() {
+            try { localStorage.removeItem('mad_key'); } catch(e) {}
+            window.location.href = '/';
+        }
+        if (key) {
+            document.addEventListener('htmx:afterSwap', function() {
+                document.querySelectorAll('a[href^="/clients/"]').forEach(function(a) {
+                    if (!a.href.includes('key=')) a.href += '?key=' + key;
+                });
+            });
+            document.querySelectorAll('a[href^="/clients/"]').forEach(function(a) {
+                if (!a.href.includes('key=')) a.href += '?key=' + key;
+            });
+        }
+        document.body.addEventListener('htmx:responseError', function(evt) {
+            if (evt.detail.xhr.status === 401) {
+                var modal = document.getElementById('key-modal');
+                if (modal) modal.classList.add('active');
+            }
+        });
         var _clientsCache = [];
         function showNewIdeaModal() {
             document.getElementById('new-idea-modal').classList.add('active');
@@ -411,48 +447,6 @@
                 btn.textContent = 'Create Idea';
             });
         }
-        function getKey() {
-            var urlKey = new URLSearchParams(window.location.search).get('key');
-            if (urlKey) {
-                localStorage.setItem('mad_key', urlKey);
-                return urlKey;
-            }
-            return localStorage.getItem('mad_key') || '';
-        }
-        function saveKey() {
-            var input = document.getElementById('key-input');
-            var k = input.value.trim();
-            if (k) {
-                localStorage.setItem('mad_key', k);
-                document.getElementById('key-modal').classList.remove('active');
-                location.reload();
-            }
-        }
-        var key = getKey();
-        if (key) {
-            document.addEventListener('htmx:afterSwap', function() {
-                document.querySelectorAll('a[href^="/clients/"]').forEach(a => {
-                    if (!a.href.includes('key=')) a.href += '?key=' + key;
-                });
-            });
-            document.querySelectorAll('a[href^="/clients/"]').forEach(a => {
-                if (!a.href.includes('key=')) a.href += '?key=' + key;
-            });
-        }
-        document.body.addEventListener('htmx:responseError', function(evt) {
-            if (evt.detail.xhr.status === 401) {
-                document.getElementById('key-modal').classList.add('active');
-            }
-        });
-        document.getElementById('key-input').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') saveKey();
-        });
-        if (!key && document.getElementById('key-modal')) {
-            document.getElementById('key-modal').classList.add('active');
-        }
-        document.querySelectorAll('a[href^="/clients/"]').forEach(a => {
-            if (!a.href.includes('key=') && key) a.href += '?key=' + key;
-        });
         function toggleStage(btn) {
             var body = btn.nextElementSibling;
             btn.classList.toggle('collapsed');
@@ -511,10 +505,62 @@
             return div.innerHTML;
         }
     </script>
+    {{end}}
+    {{if .ShowKeyModal}}
+    <script>
+    function getKey() {
+        try {
+            var urlKey = new URLSearchParams(window.location.search).get('key');
+            if (urlKey) {
+                try { localStorage.setItem('mad_key', urlKey); } catch(e) {}
+                return urlKey;
+            }
+            return localStorage.getItem('mad_key') || '';
+        } catch(e) {
+            return new URLSearchParams(window.location.search).get('key') || '';
+        }
+    }
+    function saveKey() {
+        var input = document.getElementById('key-input');
+        var k = input.value.trim();
+        if (!k) return;
+        var errEl = document.getElementById('key-error');
+        fetch('/api/auth/validate?key=' + encodeURIComponent(k))
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.valid) {
+                    try { localStorage.setItem('mad_key', k); } catch(e) {}
+                    document.getElementById('key-modal').classList.remove('active');
+                    window.location.href = window.location.pathname + '?key=' + encodeURIComponent(k);
+                } else {
+                    errEl.textContent = 'Invalid key';
+                    errEl.style.display = 'block';
+                }
+            })
+            .catch(function() {
+                try { localStorage.setItem('mad_key', k); } catch(e) {}
+                window.location.href = window.location.pathname + '?key=' + encodeURIComponent(k);
+            });
+    }
+    function logout() {
+        try { localStorage.removeItem('mad_key'); } catch(e) {}
+        window.location.href = window.location.pathname;
+    }
+    var key = getKey();
+    if (key && !new URLSearchParams(window.location.search).get('key')) {
+        window.location.href = window.location.pathname + '?key=' + encodeURIComponent(key);
+    }
+    document.getElementById('key-input').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') saveKey();
+    });
+    if (!key && document.getElementById('key-modal')) {
+        document.getElementById('key-modal').classList.add('active');
+    }
+    </script>
+    {{end}}
     <script>if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js'); }</script>
 </body>
 </html>
-{{end}}
 {{define "client_rows"}}{{if .Clients}}{{range .Clients}}<tr>
     <td><a href="/clients/{{.ClientID}}?key={{$.Key}}">{{.ClientID}}</a></td>
     <td>{{uniqueBoards .Features}}</td>
