@@ -755,8 +755,8 @@ def run_verify_tests(
         feature.move_to_stage("review")
         console.print("[green]Tests verified. Feature moved to review.[/green]")
     else:
-        feature.move_to_stage("review")
-        console.print(f"[yellow]Test verification FAILED. Feature moved to review for inspection.[/yellow]")
+        feature.move_to_stage("implementing")
+        console.print(f"[yellow]Test verification FAILED. Feature moved back to implementing.[/yellow]")
 
     return verdict, feedback
 

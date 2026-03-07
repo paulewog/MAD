@@ -1,0 +1,147 @@
+{
+  "id": "8b9da8be",
+  "board": "mad",
+  "title": "Bug - webui has truncated plan information",
+  "created": "2026-03-07T19:35Z",
+  "description": "The webui for MAD appears to have truncated information in its items. The plan, for example, seems to be truncated, either by the UI itself or some other way.",
+  "plan": "## Bug Fix: WebUI Has Truncated Plan Information\n\nThe truncation has two root causes: (1) Python-side explicit string slicing to 1000 characters, and (2) missing HTML attribute escaping in Go templates causing special characters to break attribute parsing.\n\n### Step 1: Remove Python-side truncation in `pipeline/server_client.py`\n\n**File:** `pipeline/server_client.py`\n\nRemove the `[:1000]` slicing on lines 144-151 in the `push_state()` method:\n- `f.description[:1000]` \u2192 `f.description or \"\"`\n- `f.plan[:1000]` \u2192 `f.plan or \"\"`\n- `f.impl_spec[:1000]` \u2192 `f.impl_spec or \"\"`\n- `f.test_spec[:1000]` \u2192 `f.test_spec or \"\"`\n- `f.impl_notes[:1000]` \u2192 `f.impl_notes or \"\"`\n\nAlso remove the `[:500]` truncation on log output (line 163) and the `[:200]` truncation on `next_step` (line 37) \u2014 or if these are intentional for performance, keep them but increase to a reasonable limit.\n\n### Step 2: Add `escapeAttr` Go template function in `server/api.go`\n\n**File:** `server/api.go` (around line 150 where `toJSON` is defined)\n\nAdd a new template function `escapeAttr` that properly escapes string values for safe embedding in HTML data attributes. This function must handle:\n- `\"` \u2192 `&quot;`\n- `&` \u2192 `&amp;`\n- `<` \u2192 `&lt;`\n- `>` \u2192 `&gt;`\n- `'` \u2192 `&#39;`\n- Newlines \u2192 `&#10;` (to preserve them in attributes)\n\nImplementation:\n```go\n\"escapeAttr\": func(s string) template.HTMLAttr {\n    r := strings.NewReplacer(\n        `&`, `&amp;`,\n        `\"`, `&quot;`,\n        `'`, `&#39;`,\n        `<`, `&lt;`,\n        `>`, `&gt;`,\n        \"\\n\", `&#10;`,\n        \"\\r\", `&#13;`,\n    )\n    return template.HTMLAttr(r.Replace(s))\n},\n```\n\nNote: Returning `template.HTMLAttr` tells Go's template engine this value is pre-escaped and safe for use in attributes. Import `html/template` if not already imported.\n\n**IMPORTANT:** Do NOT use `toJSON` for string fields. `toJSON` on a string like `\"hello\"` produces `'\"hello\"'` (with literal quotes), which creates malformed HTML attributes like `data-description=\"\"hello\"\"`. `toJSON` is only correct for slices/arrays (History, TestResults). For plain string fields, use `escapeAttr`.\n\n### Step 3: Update HTML templates to use `escapeAttr`\n\n**Files to update:**\n- `server/templates/client.html` (lines 817-822)\n- `server/templates/index.html` (line 649)\n- `server/templates/client_full2.html` (line 628)\n\nFor each template, change the data attribute rendering for string fields:\n\n**Before:**\n```\ndata-description=\"{{.Description}}\"\ndata-plan=\"{{.Plan}}\"\ndata-impl-spec=\"{{.ImplSpec}}\"\ndata-test-spec=\"{{.TestSpec}}\"\ndata-impl-notes=\"{{.ImplNotes}}\"\n```\n\n**After:**\n```\ndata-description=\"{{escapeAttr .Description}}\"\ndata-plan=\"{{escapeAttr .Plan}}\"\ndata-impl-spec=\"{{escapeAttr .ImplSpec}}\"\ndata-test-spec=\"{{escapeAttr .TestSpec}}\"\ndata-impl-notes=\"{{escapeAttr .ImplNotes}}\"\n```\n\nLeave `toJSON` in place for array/slice fields like `data-history=\"{{toJSON .History}}\"` and `data-test-results=\"{{toJSON .TestResults}}\"` \u2014 these are correct.\n\n### Step 4: No JavaScript changes needed\n\nThe JavaScript `getAttribute()` calls will automatically decode HTML entities from data attributes, returning the original unescaped text. The existing `escapeHtml()` function used before inserting into the DOM is already correct and should remain.\n\n### Step 5: Test the fix\n\n1. Create a test feature with a long plan (>1000 chars) containing special characters: quotes, angle brackets, ampersands, and newlines\n2. Verify the full text appears in the webui without truncation\n3. Verify HTML rendering is not broken by special characters in the data\n4. Check all three template files render correctly\n\n### Files Modified (Summary)\n- `pipeline/server_client.py` \u2014 Remove `[:1000]` truncations\n- `server/api.go` \u2014 Add `escapeAttr` template function\n- `server/templates/client.html` \u2014 Use `escapeAttr` for string data attributes\n- `server/templates/index.html` \u2014 Use `escapeAttr` for string data attributes\n- `server/templates/client_full2.html` \u2014 Use `escapeAttr` for string data attributes",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "history": [
+    {
+      "ts": "2026-03-07T19:35Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-07T19:40Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-07T22:39Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T22:40Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T22:40Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T22:42Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-07T22:42Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: The plan needs to explicitly address HTML escaping in client.html. Lines 817-824 directly insert template values into HTML attributes without escaping (e.g., data-plan=\"{{.Plan}}\"). When the truncation is removed, longer plans containing special characters (\", ', &) will break HTML attribute parsing. The fix must include HTML escaping for these data attributes in the Go template, similar to how data-history and data-test-results use toJSON for safe encoding."
+    },
+    {
+      "ts": "2026-03-07T22:42Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T22:44Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T22:44Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T22:46Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-07T22:46Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: The plan is incomplete. Issues:\n\nMissing Python fix: Line 144 in server_client.py also truncates description to 1000 characters. This should be included in Step 1 alongside plan, impl_spec, test_spec, impl_notes.\n\nMissing template files: The plan only addresses client.html but two other templates have the same data-description issue:\n   - server/templates/index.html line 649: data-description=\"{{.Description}}\"\n   - server/templates/client_full2.html line 628: data-description=\"{{.Description}}\"\nThese also need the toJSON fix in Step 2.\n\nMissing JavaScript updates: The plan only updates JavaScript in client.html, but index.html and client_full2.html also read data-description in JavaScript:\n   - index.html lines 373 and 508\n   - client_full2.html lines 304 and 419\nThese need the same JSON.parse helper in Step 3."
+    },
+    {
+      "ts": "2026-03-07T22:46Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T22:49Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T22:49Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T22:52Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-07T22:52Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: The plan incorrectly assumes toJSON can be used for string values in HTML data attributes. When toJSON is applied to a string like 'hello', it produces '\"hello\"' (with quotes). In HTML: data-description=\"\"hello\"\" - this creates nested/malformed quotes that break HTML attribute parsing. toJSON only works for slices/arrays (like History), not for plain strings (Description, Plan, ImplSpec, TestSpec, ImplNotes). The plan needs to add a new Go template function (e.g., escapeAttr) that properly escapes HTML special characters for attribute values, then use that instead of toJSON. The JavaScript can then read the raw attribute value directly. The Python-side truncation fix (Step 1) is correct."
+    },
+    {
+      "ts": "2026-03-07T22:52Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T22:55Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T22:55Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T22:56Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-07T22:56Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-07T22:42Z",
+      "verdict": "FAIL",
+      "feedback": "The plan needs to explicitly address HTML escaping in client.html. Lines 817-824 directly insert template values into HTML attributes without escaping (e.g., data-plan=\"{{.Plan}}\"). When the truncation is removed, longer plans containing special characters (\", ', &) will break HTML attribute parsing. The fix must include HTML escaping for these data attributes in the Go template, similar to how data-history and data-test-results use toJSON for safe encoding."
+    },
+    {
+      "ts": "2026-03-07T22:46Z",
+      "verdict": "FAIL",
+      "feedback": "The plan is incomplete. Issues:\n\nMissing Python fix: Line 144 in server_client.py also truncates description to 1000 characters. This should be included in Step 1 alongside plan, impl_spec, test_spec, impl_notes.\n\nMissing template files: The plan only addresses client.html but two other templates have the same data-description issue:\n   - server/templates/index.html line 649: data-description=\"{{.Description}}\"\n   - server/templates/client_full2.html line 628: data-description=\"{{.Description}}\"\nThese also need the toJSON fix in Step 2.\n\nMissing JavaScript updates: The plan only updates JavaScript in client.html, but index.html and client_full2.html also read data-description in JavaScript:\n   - index.html lines 373 and 508\n   - client_full2.html lines 304 and 419\nThese need the same JSON.parse helper in Step 3."
+    },
+    {
+      "ts": "2026-03-07T22:52Z",
+      "verdict": "FAIL",
+      "feedback": "The plan incorrectly assumes toJSON can be used for string values in HTML data attributes. When toJSON is applied to a string like 'hello', it produces '\"hello\"' (with quotes). In HTML: data-description=\"\"hello\"\" - this creates nested/malformed quotes that break HTML attribute parsing. toJSON only works for slices/arrays (like History), not for plain strings (Description, Plan, ImplSpec, TestSpec, ImplNotes). The plan needs to add a new Go template function (e.g., escapeAttr) that properly escapes HTML special characters for attribute values, then use that instead of toJSON. The JavaScript can then read the raw attribute value directly. The Python-side truncation fix (Step 1) is correct."
+    },
+    {
+      "ts": "2026-03-07T22:56Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ],
+  "impl_reviews": []
+}
