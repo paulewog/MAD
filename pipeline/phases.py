@@ -13,12 +13,13 @@ from rich.console import Console
 from rich.panel import Panel
 
 from agent_status import AgentStatus
-from config import Config
+from config import Config, get_mad_dir
 from runner import AgentRunner
 from state import FeatureFile
 
-# Set up logging
-_log_dir = Path(__file__).parent.parent / ".mad" / "logs"
+# Set up logging - use code_path if set, otherwise use mad_dir from cwd
+_config = Config()
+_log_dir = (_config.code_path / ".mad" / "logs" if _config.code_path else get_mad_dir() / "logs")
 _log_dir.mkdir(parents=True, exist_ok=True)
 _log_file = _log_dir / "pipeline.log"
 
