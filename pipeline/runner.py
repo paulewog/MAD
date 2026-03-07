@@ -225,7 +225,7 @@ class AgentRunner:
             start_time = time.time()
             
             # Debug logging
-            logger.info(f"Starting {self.agent.name} with cmd: {cmd}")
+            logger.info(f"Starting {self.agent.name} in cwd={cwd} with cmd: {cmd}")
             
             # Set up file logging for debugging - always create log for kilo
             log_file = None
@@ -248,8 +248,11 @@ class AgentRunner:
                         status.lines.append(f"[runner] Log failed: {e}")
                     log_file = None
             
+            # Flag to track if we've warned about stuck agent
+            warned_about_stuck = False
+            
             while True:
-                # No hard timeout - just monitor log activity and warn if stuck
+                # Monitor log activity - warn if stuck
                 elapsed = time.time() - start_time
                 
                 # Check log file for activity (if we have a log file)
@@ -258,9 +261,13 @@ class AgentRunner:
                     log_mtime = log_path.stat().st_mtime
                     if log_mtime > last_log_time:
                         last_log_time = log_mtime
-                    elif elapsed > log_watch_interval and elapsed % 60 < 1:
-                        # Every minute after 5 min of no log activity, warn but don't kill
-                        logger.warning(f"[runner] No log activity for {log_watch_interval}s. Agent may be stuck. Feature: {feature_slug}")
+                    elif elapsed > log_watch_interval:
+                        # Log immediately on first occurrence, then every 30 seconds
+                        if not warned_about_stuck:
+                            logger.warning(f"[runner] No log activity for {int(elapsed)}s. Agent may be stuck. Feature: {feature_slug}, cwd: {cwd}")
+                            warned_about_stuck = True
+                        elif int(elapsed) % 30 == 0:
+                            logger.warning(f"[runner] No log activity for {int(elapsed)}s. Agent may be stuck. Feature: {feature_slug}, cwd: {cwd}")
                 
                 line = process.stdout.readline()
                 if not line and process.poll() is not None:
