@@ -2613,10 +2613,14 @@ class PipelineApp(App):
         
         try:
             from phases import run_planning, run_plan_review
-            # Run planning loop
-            while feature.current_stage in ("plan-inbox", "requested-input"):
+            # Run planning loop (max 3 retries)
+            max_retries = 3
+            retry_count = 0
+            while feature.current_stage in ("plan-inbox", "requested-input") and retry_count < max_retries:
                 plan_complete = run_planning(feature, runner, status=status)
+                retry_count += 1
                 if not plan_complete:
+                    self.app.call_from_thread(self._log_line, f"[plan] Planning failed (attempt {retry_count})")
                     break
                 if feature.current_stage != "reviewing-plan":
                     break

@@ -246,14 +246,23 @@ def run_planning(
     
     # Fallback: treat entire output as plan (but not if it's just the completion marker)
     output_stripped = output.strip()
-    if output_stripped.upper() in ("PLAN_COMPLETE", "PLAN_COMPLETE\n",):
-        console.print(f"[red]Agent only output PLAN_COMPLETE without a plan! Output: {output_stripped[:100]}[/red]")
+    
+    # Remove the completion marker before using as fallback
+    output_for_fallback = output_stripped
+    for marker in ["PLAN_COMPLETE", "plan_complete"]:
+        idx = output_for_fallback.upper().find(marker)
+        if idx >= 0:
+            output_for_fallback = output_for_fallback[:idx].strip()
+    
+    # Check if we only had the completion marker (no actual content)
+    if not output_for_fallback:
+        console.print(f"[red]Agent only output completion marker without a plan! Output: {output_stripped[:100]}[/red]")
         feature.add_history("PLANNING", f"FAILED: Agent did not produce a plan")
         feature.save()
         return False
         
     console.print("[yellow]No valid JSON found, using fallback[/yellow]")
-    feature.set_plan(output_stripped)
+    feature.set_plan(output_for_fallback)
     feature.add_history("PLANNING", f"Plan generated via {runner.agent.name}")
     feature.save()
     feature.move_to_stage("reviewing-plan")
