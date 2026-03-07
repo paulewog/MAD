@@ -1172,16 +1172,10 @@ class PipelineApp(App):
 
     #detail-view {
         width: 50%;
-        height: 1fr;
+        height: 100%;
         overflow-y: auto;
         border-right: solid $panel;
         padding: 0 1;
-    }
-
-    /* Make collapsible content scrollable */
-    #detail-view > .collapsible {
-        overflow-y: auto;
-        max-height: 30vh;
     }
 
     #right-bottom {
