@@ -1,0 +1,37 @@
+{
+  "id": "7940d2c5",
+  "board": "testboard",
+  "title": "Test Feature",
+  "created": "2026-03-07T18:47Z",
+  "description": "Description",
+  "plan": "",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "fixed",
+  "history": [
+    {
+      "ts": "2026-03-07T18:47Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-07T18:47Z",
+      "stage": "FIX_FEEDBACK",
+      "note": "Fixed issues per review feedback via <MagicMock name='mock.for_phase().agent.name' id='135707993595280'>"
+    },
+    {
+      "ts": "2026-03-07T18:47Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase after fixing feedback"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-07T18:47Z",
+      "verdict": "FAIL",
+      "feedback": "Bug in login function"
+    }
+  ]
+}

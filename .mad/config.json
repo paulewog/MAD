@@ -29,11 +29,11 @@
   },
   "agent_for_phase": {
     "planning": "claude",
-    "spec_writing": "default",
-    "implementing": "default",
-    "fix_feedback": "default",
-    "testing": "default",
-    "review": "kilo",
-    "reviewing_plan": "default"
+    "spec_writing": "claude",
+    "implementing": "kilo",
+    "fix_feedback": "kilo",
+    "testing": "kilo",
+    "review": "claude",
+    "reviewing_plan": "kilo"
   }
 }

@@ -162,6 +162,19 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 			}
 			return strings.Join(boards, ", ")
 		},
+		"sort": func(slice interface{}, field string) interface{} {
+			// Sort clients by ClientID field
+			clients, ok := slice.([]ClientState)
+			if !ok {
+				return slice
+			}
+			sorted := make([]ClientState, len(clients))
+			copy(sorted, clients)
+			sort.Slice(sorted, func(i, j int) bool {
+				return sorted[i].ClientID < sorted[j].ClientID
+			})
+			return sorted
+		},
 	}
 
 	tmpl := template.Must(template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/index.html", "templates/client.html"))
@@ -315,13 +328,16 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 			return
 		}
 		clients := hub.ListClients()
+		log.Printf("/api/board: got %d clients", len(clients))
 		var allFeatures []FeatureSummary
 		for _, c := range clients {
+			log.Printf("  client %s: %d features", c.ClientID, len(c.Features))
 			for _, f := range c.Features {
 				f.ClientID = c.ClientID
 				allFeatures = append(allFeatures, f)
 			}
 		}
+		log.Printf("/api/board: total %d features across all clients", len(allFeatures))
 		w.Header().Set("Content-Type", "text/html")
 		data := map[string]interface{}{
 			"StageGroups": groupFeaturesByStage(allFeatures),
@@ -678,6 +694,7 @@ func serveClientPage(w http.ResponseWriter, r *http.Request, hub *Hub, tmpl *tem
 		"Key":           key,
 		"Authenticated": authenticated,
 		"ShowKeyModal":  showKeyModal,
+		"Boards":        boardsFromClients(hub.ListClients()),
 	}
 	w.Header().Set("Content-Type", "text/html")
 	if err := tmpl.ExecuteTemplate(w, "client.html", data); err != nil {

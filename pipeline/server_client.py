@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Awaitable, Callable, List, Optional
 
 try:
     import websockets
@@ -14,6 +14,7 @@ try:
 except ImportError:
     HAS_WEBSOCKETS = False
 
+from config import Config
 from state import STAGE_ACTIONS
 
 logger = logging.getLogger(__name__)
@@ -22,12 +23,8 @@ logger = logging.getLogger(__name__)
 def _get_checkpoint_info(feature) -> Optional[dict]:
     """Read checkpoint file for a feature and return info, or None if not found."""
     try:
-        config_path = Path(__file__).parent.parent / ".mad" / "config.json"
-        if not config_path.exists():
-            return None
-        with open(config_path) as f:
-            config = json.load(f)
-        mad_dir = Path(config.get("mad_dir", ".mad"))
+        config = Config()
+        mad_dir = config.mad_dir
         checkpoint_path = mad_dir / "checkpoints" / f"{feature.slug}.checkpoint.json"
         if not checkpoint_path.exists():
             return None
@@ -51,7 +48,7 @@ class ServerClient:
                  on_answers_received=None,
                  on_set_auto_mode: Optional[Callable[[str, bool], None]] = None,
                  on_start_agent: Optional[Callable[[str, str], None]] = None,
-                 on_idea_created: Optional[Callable[[str, str, str], None]] = None,
+                 on_idea_created: Optional[Callable[[str, str, str], Awaitable[None]]] = None,
                  on_move_requested: Optional[Callable[[str, str], None]] = None):
         self._url = url
         self._api_key = api_key
@@ -152,6 +149,8 @@ class ServerClient:
                     "impl_spec": f.impl_spec[:1000] if f.impl_spec else "",
                     "test_spec": f.test_spec[:1000] if f.test_spec else "",
                     "impl_notes": f.impl_notes[:1000] if f.impl_notes else "",
+                    "plan_reviews": f.plan_reviews,
+                    "impl_reviews": f.impl_reviews,
                     "checkpoint": _get_checkpoint_info(f),
                 })
                 # Collect log entries from the feature
@@ -249,7 +248,7 @@ class ServerClient:
             description = data.get("description", "")
             if self._on_idea_created and title and board:
                 try:
-                    self._on_idea_created(title, board, description)
+                    await self._on_idea_created(title, board, description)
                 except Exception as e:
                     logger.warning(f"Error handling create_idea: {e}")
         elif msg_type == "move_feature":

@@ -17,20 +17,25 @@ from config import Config, get_mad_dir
 from runner import AgentRunner
 from state import FeatureFile
 
-# Set up logging - use code_path if set, otherwise use mad_dir from cwd
-_config = Config()
-_log_dir = (_config.code_path / ".mad" / "logs" if _config.code_path else get_mad_dir() / "logs")
-_log_dir.mkdir(parents=True, exist_ok=True)
-_log_file = _log_dir / "pipeline.log"
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    handlers=[
-        logging.FileHandler(_log_file),
-    ]
-)
 logger = logging.getLogger("pipeline")
+_logging_initialized = False
+
+
+def _ensure_logging():
+    global _logging_initialized
+    if _logging_initialized:
+        return
+    _logging_initialized = True
+    try:
+        config = Config()
+        log_dir = (config.code_path / ".mad" / "logs" if config.code_path else get_mad_dir() / "logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(log_dir / "pipeline.log")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+    except Exception:
+        pass
 
 # Redirect console.print to logger to avoid cluttering terminal
 class _LogConsole:
@@ -191,8 +196,9 @@ def _run_phase(
     Raises:
         RuntimeError: If runner.headless() returns empty output
     """
+    _ensure_logging()
     config = PHASE_CONFIG[phase_key]
-    
+
     if not skip_history_start:
         msg = start_message or f"Starting {config['history_tag'].lower().replace('_', ' ')}"
         feature.add_history(config["history_tag"], msg)

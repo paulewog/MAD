@@ -1,0 +1,22 @@
+{
+  "feature_slug": "kill-hung-agent",
+  "feature_id": "1fc994a0",
+  "phase": "planning",
+  "last_checkpoint": "2026-03-07T19:05:00Z",
+  "completed_steps": [
+    "Read and analyzed codebase: runner.py, tui.py, agent_status.py, phases.py, state.py, pipeline.py",
+    "Identified existing stale detection (15-min auto-kill in runner.py)",
+    "Identified AgentStatus dataclass fields and how they're used",
+    "Identified AgentStatusWidget rendering logic",
+    "Identified how plan/implement async workers manage process lifecycle",
+    "Generated complete plan addressing all review feedback",
+    "Addressed guard condition for no-agent-running case",
+    "Clarified restart phase determination from feature current stage",
+    "Changed key bindings to k/ctrl+k for terminal compatibility",
+    "Added thread safety note about GIL",
+    "Added status reset in finally block for normal exit cleanup"
+  ],
+  "next_step": "Plan complete - ready for review",
+  "notes": "Plan addresses all 5 review feedback points from previous FAIL verdict. Uses k for kill, ctrl+k for restart. Guard conditions check _plan_running/_implement_running before acting. Restart reloads feature from disk to check current_stage. Finally block resets all status fields.",
+  "files_modified": [".tmp/kill-hung-agent.output.json"]
+}

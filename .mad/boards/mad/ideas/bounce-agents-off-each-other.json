@@ -1,0 +1,21 @@
+{
+  "id": "24c5a1c8",
+  "board": "mad",
+  "title": "bounce-agents-off-each-other",
+  "created": "2026-03-07T19:12Z",
+  "description": "Kilo-via-MiniMax 2.5 and Claude can go back and forth and find different things.  I would like to experiment with having them \"talk to each other\" where they argue a bit as part of refinement.  I think I somewhat can do this by simply having the plan reviewer be AgentA and the planner be AgentB.  Any other ideas for how we might be able to implement this better?",
+  "plan": "",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "history": [
+    {
+      "ts": "2026-03-07T19:12Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [],
+  "impl_reviews": []
+}

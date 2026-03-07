@@ -43,6 +43,7 @@ type FeatureSummary struct {
 	ImplSpec         string           `json:"impl_spec,omitempty"`
 	TestSpec         string           `json:"test_spec,omitempty"`
 	ImplNotes        string           `json:"impl_notes,omitempty"`
+	Checkpoint       interface{}      `json:"checkpoint,omitempty"`
 }
 
 type LogEntry struct {

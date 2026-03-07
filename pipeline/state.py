@@ -15,11 +15,6 @@ STAGES = [
     "implementing", "testing", "review", "final-human-approval", "done", "rejected",
 ]
 
-PIPELINE_STAGES = [
-    "plan-inbox", "reviewing-plan", "requested-input", "approved", "reviewing-plan", "spec-writing",
-    "implementing", "testing", "review", "final-human-approval",
-]
-
 STAGE_ACTIONS = {
     "plan": ["plan-inbox", "reviewing-plan", "requested-input", "approved"],
     "implement": ["approved", "spec-writing"],
@@ -117,18 +112,18 @@ class FeatureFile:
         self._save()
 
     @property
-    def impl_spec(self) -> str:
+    def impl_spec(self):
         return self._data.get("impl_spec", "")
 
-    def set_impl_spec(self, value: str) -> None:
+    def set_impl_spec(self, value) -> None:
         self._data["impl_spec"] = value
         self._save()
 
     @property
-    def test_spec(self) -> str:
+    def test_spec(self):
         return self._data.get("test_spec", "")
 
-    def set_test_spec(self, value: str) -> None:
+    def set_test_spec(self, value) -> None:
         self._data["test_spec"] = value
         self._save()
 
@@ -139,6 +134,44 @@ class FeatureFile:
     def set_impl_notes(self, value: str) -> None:
         self._data["impl_notes"] = value
         self._save()
+
+    @property
+    def plan_reviews(self) -> list:
+        return self._data.get("plan_reviews", [])
+
+    @property
+    def impl_reviews(self) -> list:
+        return self._data.get("impl_reviews", [])
+
+    def add_plan_review(self, verdict: str, feedback: str) -> None:
+        normalized = "PASS" if verdict and verdict.upper() == "PASS" else "FAIL"
+        if "plan_reviews" not in self._data:
+            self._data["plan_reviews"] = []
+        self._data["plan_reviews"].append({
+            "ts": _now_iso(),
+            "verdict": normalized,
+            "feedback": feedback if feedback else "",
+        })
+        self._save()
+
+    def add_impl_review(self, verdict: str, feedback: str) -> None:
+        normalized = "PASS" if verdict and verdict.upper() == "PASS" else "FAIL"
+        if "impl_reviews" not in self._data:
+            self._data["impl_reviews"] = []
+        self._data["impl_reviews"].append({
+            "ts": _now_iso(),
+            "verdict": normalized,
+            "feedback": feedback if feedback else "",
+        })
+        self._save()
+
+    def get_latest_plan_review(self) -> dict | None:
+        reviews = self._data.get("plan_reviews", [])
+        return reviews[-1] if reviews else None
+
+    def get_latest_impl_review(self) -> dict | None:
+        reviews = self._data.get("impl_reviews", [])
+        return reviews[-1] if reviews else None
 
     @property
     def questions(self) -> list:
@@ -304,6 +337,8 @@ class FeatureFile:
                 {"ts": _now_iso(), "stage": "IDEAS", "note": "Idea created"}
             ],
             "pipeline_log": [],
+            "plan_reviews": [],
+            "impl_reviews": [],
         }
 
         with open(path, "w") as f:

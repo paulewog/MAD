@@ -1,0 +1,21 @@
+{
+  "id": "275635b8",
+  "board": "mad",
+  "title": "move agent definitions to MAD built-in",
+  "created": "2026-03-07T19:13Z",
+  "description": "Agent definitions - how to run kilo or claude - really is not a per-MAD-instance thing, it's global based on how the agents work.  We should move it out of the local config.json and move it directly into python code.  Also, I would like to support picking a model to use, eventually, in the local MAD config.json, probably for each stage.  That will require adjusting how the agents get called and also adjusting config.json to support it (and the TUI settings area)",
+  "plan": "",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "history": [
+    {
+      "ts": "2026-03-07T19:13Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [],
+  "impl_reviews": []
+}

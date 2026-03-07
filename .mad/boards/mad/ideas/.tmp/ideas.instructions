@@ -1,12 +1,12 @@
 Code Path: /home/paule/MAD
 Context File: /home/paule/MAD/.mad/CONTEXT.md
 
-**Feature Iteration: consolidate-phase-execution**
+**Feature Iteration: kill-hung-agent**
 
-The feature file is at: `consolidate-phase-execution.json`
+The feature file is at: `kill-hung-agent.json`
 
 **Current Description:**
-I think we need to consolidate our phase execution so we can use similar, non-repeated code (such as instructions for how to get the output from the agents) in one spot rather than one per phase/output.
+Need a way to kill a hung agent (ideally, restart it) that has not done anything.  Ideally, we have some sort of indicator in the agent field in the TUI that shows the last time it logged something so we can tell.
 
 **Current Plan:**
 (no plan yet)

@@ -154,8 +154,13 @@ class Config:
         return self._path.parent
 
     def _load(self) -> dict:
-        with open(self._path) as f:
-            return json.load(f)
+        try:
+            with open(self._path) as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid config at {self._path}: {e}")
+        except FileNotFoundError:
+            raise ValueError(f"Config file not found: {self._path}")
 
     def _save(self) -> None:
         with open(self._path, "w") as f:

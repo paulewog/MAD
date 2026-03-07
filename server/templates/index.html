@@ -124,7 +124,7 @@
             align-items: center;
             padding: 0.6rem 0.75rem;
             background: #1c2128;
-            border: none;
+            border: 1px solid #30363d;
             color: #8b949e;
             font-family: inherit;
             font-size: 0.8rem;
@@ -133,6 +133,10 @@
             letter-spacing: 0.05em;
             cursor: pointer;
             text-align: left;
+        }
+        .stage-toggle:focus {
+            outline: 2px solid #58a6ff;
+            outline-offset: -2px;
         }
         .stage-toggle:hover { background: #21262d; }
         .stage-toggle .arrow {
@@ -355,6 +359,13 @@
                         curCount.textContent = newCount.textContent;
                         curCount.className = newCount.className;
                     }
+                    // Preserve collapsed state of the toggle button
+                    var curBtn = curSec.querySelector('.stage-toggle');
+                    var newBtn = newSec.querySelector('.stage-toggle');
+                    var wasCollapsed = curBtn.classList.contains('collapsed');
+                    curBtn.className = newBtn.className;
+                    if (wasCollapsed) curBtn.classList.add('collapsed');
+                    // Handle body visibility
                     var curBody = curSec.querySelector('.stage-body');
                     var newBody = newSec.querySelector('.stage-body');
                     function cardHash(c) {
@@ -597,7 +608,7 @@
     <script>if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js'); }</script>
 </body>
 </html>
-{{define "client_cards"}}{{if .Clients}}<div class="client-grid">{{range .Clients}}<div class="client-card">
+{{define "client_cards"}}{{if .Clients}}<div class="client-grid">{{range sort .Clients "ClientID"}}<div class="client-card">
     <div class="client-card-header">
         <a href="/clients/{{.ClientID}}?key={{$.Key}}">{{.ClientID}}</a>
         <span class="client-card-status {{if .Connected}}connected{{else}}disconnected{{end}}">
@@ -624,7 +635,7 @@
     <td>{{if .Connected}}<span class="status-dot status-active"></span>Connected{{else}}<span class="status-dot status-stale"></span>Disconnected{{end}}</td>
 </tr>{{end}}{{else}}<tr><td colspan="7" class="empty-state">No clients connected</td></tr>{{end}}{{end}}
 {{define "board_fragment"}}{{range .StageGroups}}<div class="stage-section">
-    <button class="stage-toggle{{if not .Features}} collapsed{{end}}" onclick="toggleStage(this)">
+    <button type="button" class="stage-toggle{{if not .Features}} collapsed{{end}}" onclick="toggleStage(this)">
         <span>{{stageLabel .Stage}} <span class="stage-count{{if .Features}} has-items{{end}}">{{len .Features}}</span></span>
         <span class="arrow">&#9660;</span>
     </button>

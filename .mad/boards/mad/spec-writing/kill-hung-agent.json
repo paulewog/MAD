@@ -1,0 +1,99 @@
+{
+  "id": "1fc994a0",
+  "board": "mad",
+  "title": "kill-hung-agent",
+  "created": "2026-03-07T17:34Z",
+  "description": "Need a way to kill or restart a hung auto-run agent (plan or implement) that has stopped producing output. The TUI should show a stale indicator when an agent hasn't logged anything for 2-3 minutes, so the user can tell at a glance. The user should be able to kill the agent (terminate without restarting) or restart it (terminate and immediately re-launch the same phase) from the TUI.",
+  "plan": "# Kill Hung Agent \u2014 Implementation Plan\n\nThis plan adds the ability to detect stale agents, kill them, and optionally restart them from the TUI.\n\n## Overview\n\n### Goals\n1. **Stale indicator**: Show a visual warning when an agent hasn't produced output for 2-3 minutes\n2. **Kill agent**: User can terminate a hung agent without restarting it\n3. **Restart agent**: User can terminate and immediately re-launch the same phase\n\n---\n\n## 1. Extend AgentStatus (pipeline/state.py or pipeline/agent_status.py)\n\nAdd the following fields to the `AgentStatus` dataclass:\n\n- `pid: Optional[int] = None` \u2014 PID of the running subprocess, set when process starts\n- `last_activity_at: Optional[float] = None` \u2014 timestamp of last log output line, updated on each line read\n- `kill_requested: bool = False` \u2014 signal from TUI thread to runner thread to terminate the process\n- `restart_requested: bool = False` \u2014 signal to terminate AND re-launch the same phase\n\n### Thread Safety Note\nAccessing these fields from the main TUI thread while the worker thread modifies them is safe under CPython's GIL for simple attribute reads/writes of Python objects. No additional locking is required for bool/int/float fields, but the plan uses atomic-style single-assignment patterns for clarity.\n\n---\n\n## 2. Update runner.py \u2014 PID Tracking, Kill Signal, Status Reset\n\n### 2a. Track PID\nAfter `subprocess.Popen()` (around line 275), set:\n```python\nif status is not None:\n    status.pid = process.pid\n```\n\n### 2b. Check kill_requested in the monitoring loop\nIn the existing `while True` loop that monitors log activity (lines 289-351), add a check at the top of each iteration:\n```python\nif status is not None and status.kill_requested:\n    logger.warning(f\"[runner] Kill requested by user. Terminating agent.\")\n    process.terminate()\n    try:\n        process.wait(timeout=5)\n    except subprocess.TimeoutExpired:\n        process.kill()\n        process.wait()\n    status.lines.append(\"[runner] Agent killed by user\")\n    status.running = False\n    break\n```\n\n### 2c. Update last_activity_at\nWhenever a new line of output is read from the agent process, update:\n```python\nif status is not None:\n    status.last_activity_at = time.time()\n```\nThis should be placed in the output reading section where `status.lines.append()` is called.\n\n### 2d. Status Reset in finally block\nIn the `finally` block of `headless()`, ensure ALL status fields are properly reset:\n```python\nfinally:\n    if status is not None:\n        status.running = False\n        status.pid = None\n        status.last_activity_at = None\n        status.kill_requested = False\n        status.restart_requested = False\n```\nThis ensures the TUI never shows stale state after a normal exit, crash, or kill.\n\n---\n\n## 3. Update tui.py \u2014 Stale Indicator\n\n### 3a. Stale Detection in AgentStatusDisplay\nIn the `AgentStatusDisplay` widget's render/compose method (around lines 989-1042), add stale detection:\n\n```python\nSTALE_THRESHOLD = 150  # 2.5 minutes in seconds\n\nif status.running and status.last_activity_at:\n    idle_time = time.time() - status.last_activity_at\n    if idle_time > STALE_THRESHOLD:\n        # Show stale indicator with idle duration\n        idle_mins = int(idle_time // 60)\n        idle_secs = int(idle_time % 60)\n        stale_label = f\" [STALE {idle_mins}m{idle_secs}s]\"\n        # Render in yellow/orange color\n```\n\nThe stale indicator should appear as `[STALE 3m12s]` in yellow/warning color next to the elapsed time in the agent status bar.\n\n### 3b. Periodic Refresh\nThe TUI already has a 10-second periodic check (`_auto_run_check`). Add a separate 10-second timer to refresh the agent status display so the stale indicator updates regularly:\n```python\ndef on_mount(self):\n    self.set_interval(10, self._refresh_agent_status)\n```\n\n---\n\n## 4. Update tui.py \u2014 Kill and Restart Key Bindings\n\n### 4a. Add Bindings\nAdd to the `BINDINGS` list:\n```python\nBinding(\"k\", \"kill_agent\", \"Kill Agent\", show=False),\nBinding(\"ctrl+k\", \"restart_agent\", \"Restart Agent\", show=False),\n```\nThese use `show=False` because they will be shown conditionally in the dynamic footer.\n\n### 4b. Guard Condition \u2014 Check if Agent is Running\nBoth `action_kill_agent()` and `action_restart_agent()` MUST first check if any agent is actually running:\n\n```python\ndef action_kill_agent(self):\n    if not self._plan_running and not self._implement_running:\n        self.notify(\"No agent is running\", severity=\"warning\")\n        return\n    # Determine which agent to kill based on context\n    # If both are running, kill the one related to the currently selected feature\n    # If only one is running, kill that one\n    if self._plan_running and self._plan_status:\n        self._plan_status.kill_requested = True\n        self.notify(f\"Killing plan agent for {self._plan_status.phase}\")\n    elif self._implement_running and self._implement_status:\n        self._implement_status.kill_requested = True\n        self.notify(f\"Killing implement agent for {self._implement_status.phase}\")\n```\n\n### 4c. Restart \u2014 Check Feature's Current Stage\nThe restart action MUST check the feature's current stage to determine which phase to run, NOT rely on the original phase that was running. This handles the case where the feature's stage was modified externally during execution:\n\n```python\ndef action_restart_agent(self):\n    if not self._plan_running and not self._implement_running:\n        self.notify(\"No agent is running\", severity=\"warning\")\n        return\n    \n    # Determine which agent to restart\n    if self._plan_running and self._plan_status:\n        self._plan_status.kill_requested = True\n        self._plan_status.restart_requested = True\n        feature_slug = self._plan_status.phase  # or however the feature is tracked\n    elif self._implement_running and self._implement_status:\n        self._implement_status.kill_requested = True\n        self._implement_status.restart_requested = True\n        feature_slug = self._implement_status.phase\n    \n    self.notify(f\"Restarting agent...\")\n```\n\nIn the worker thread (the `@work` methods for plan/implement), after the kill completes, check `restart_requested`. If true, reload the feature file from disk to get its current stage, then determine the correct phase to run based on `feature.current_stage`:\n\n```python\n# After agent exits (in the @work method)\nif status.restart_requested:\n    feature = FeatureFile.load(feature_path)  # Reload from disk\n    stage = feature.current_stage\n    # Determine phase from current stage:\n    # plan-inbox/reviewing-plan -> planning phase\n    # approved/spec-writing -> spec phase  \n    # implementing/testing -> implement phase\n    # Then re-launch the appropriate phase\n```\n\n### 4d. Dynamic Footer Hints\nUpdate `get_contextual_bindings()` to show kill/restart bindings only when an agent is running:\n\n```python\nif self._plan_running or self._implement_running:\n    bindings.append((\"k\", \"Kill Agent\"))\n    bindings.append((\"ctrl+k\", \"Restart\"))\n```\n\nThese should appear alongside existing contextual bindings.\n\n---\n\n## 5. Feature History Logging\n\nWhen an agent is killed, add a history entry to the feature:\n```python\nfeature.add_history(\"KILLED\", f\"Agent terminated by user after {elapsed_str}\")\n```\n\nWhen restarted:\n```python\nfeature.add_history(\"RESTARTED\", f\"Agent restarted by user (was in {phase} for {elapsed_str})\")\n```\n\n---\n\n## Implementation Order\n\n1. **AgentStatus fields** \u2014 Add `pid`, `last_activity_at`, `kill_requested`, `restart_requested` to the dataclass\n2. **runner.py changes** \u2014 PID tracking, kill signal check in loop, last_activity_at updates, finally block cleanup\n3. **Stale indicator** \u2014 Add idle time calculation and visual indicator to AgentStatusDisplay\n4. **Kill binding** \u2014 Add `k` binding with guard condition, signal kill_requested\n5. **Restart binding** \u2014 Add `ctrl+k` binding with guard condition, signal both flags, re-launch logic in worker\n6. **Footer hints** \u2014 Show kill/restart only when agent is running\n7. **History logging** \u2014 Add KILLED/RESTARTED entries\n\n## Files Modified\n\n- `pipeline/agent_status.py` (or wherever AgentStatus is defined) \u2014 new fields\n- `pipeline/runner.py` \u2014 PID tracking, kill signal check, activity tracking, finally block cleanup\n- `pipeline/tui.py` \u2014 stale indicator, kill/restart bindings, guard conditions, footer hints, restart logic\n- `pipeline/state.py` \u2014 history entries for kill/restart\n\n## Edge Cases Handled\n\n- **No agent running**: Guard condition shows notification instead of attempting kill\n- **Both agents running**: Kill the one related to the selected feature, or the plan agent by default\n- **Stage changed externally**: Restart reloads feature from disk to determine correct phase\n- **Process won't terminate**: `terminate()` first, then `kill()` after 5s timeout (existing pattern)\n- **Thread safety**: Simple field assignments are GIL-safe; single-assignment patterns used for clarity\n- **Normal exit cleanup**: finally block resets all status fields including last_activity_at and running\n- **Terminal compatibility**: Uses `k` (lowercase) and `ctrl+k` which work reliably across all terminals",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "history": [
+    {
+      "ts": "2026-03-07T17:34Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-07T18:33Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-07T18:33Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T18:35Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T18:35Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T18:37Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL \u2014 Missing guard condition: The kill action should check if any agent is actually running before attempting to kill. If both _plan_running and _implement_running are False, show a notification 'No agent is running'.\nRestart phase determination unclear: The plan says to re-launch 'the same phase', but if the feature's stage changed during execution (e.g., due to external modification), using the original phase may cause issues. Should clarify that restart should check the feature's current stage to determine which phase to run.\nKey binding clarification: 'Shift+K' may not work reliably in all terminals. Recommend using 'ctrl+k' for restart and 'k' for kill, both as stage-specific actions that only appear when an agent is running.\nThread safety note: The plan should mention that accessing status.pid from the main thread while the worker thread may be modifying it is safe due to Python's GIL, but for clarity consider adding a lock or using atomic operations if needed.\nStatus reset on normal exit: The plan sets status.pid but should also reset status.last_activity_at and status.running in the finally block of runner.py, not rely solely on the TUI to do this."
+    },
+    {
+      "ts": "2026-03-07T18:37Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Missing guard condition: The kill action should check if any agent is actually running before attempting to kill. If both _plan_running and _implement_running are False, show a notification 'No agent is running'.\nRestart phase determination unclear: The plan says to re-launch 'the same phase', but if the feature's stage changed during execution (e.g., due to external modification), using the original phase may cause issues. Should clarify that restart should check the feature's current stage to determine which phase to run.\nKey binding clarification: 'Shift+K' may not work reliably in all terminals. Recommend using 'ctrl+k' for restart and 'k' for kill, both as stage-specific actions that only appear when an agent is running.\nThread safety note: The plan should mention that accessing status.pid from the main thread while the worker thread may be modifying it is safe due to Python's GIL, but for clarity consider adding a lock or using atomic operations if needed.\nStatus reset on normal exit: The plan sets status.pid but should also reset status.last_activity_at and status.running in the finally block of runner.py, not rely solely on the TUI to do this."
+    },
+    {
+      "ts": "2026-03-07T18:37Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T18:40Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T18:40Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T18:41Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS \u2014 "
+    },
+    {
+      "ts": "2026-03-07T18:41Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-07T18:48Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-07T18:48Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-07T18:50Z",
+      "stage": "SPEC_WRITING",
+      "note": "FAILED: claude exited with code -2.\nstderr: (no stderr)"
+    },
+    {
+      "ts": "2026-03-07T19:15Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-07T19:15Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    }
+  ],
+  "pipeline_log": []
+}

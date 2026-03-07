@@ -16,21 +16,25 @@ from config import AgentConfig, Config, read_context_file, get_mad_dir
 
 console = Console()
 
-# Set up file logging - use code_path if set, otherwise use mad_dir from cwd
-_config = Config()
-_log_dir = (_config.code_path / ".mad" / "logs" if _config.code_path else get_mad_dir() / "logs")
-_log_dir.mkdir(parents=True, exist_ok=True)
-_log_file = _log_dir / "runner.log"
-
-logging.basicConfig(
-    level=logging.INFO,  # Changed from DEBUG
-    format="%(asctime)s %(levelname)s %(message)s",
-    handlers=[
-        logging.FileHandler(_log_file),
-        logging.StreamHandler()
-    ]
-)
 logger = logging.getLogger("runner")
+_logging_initialized = False
+
+
+def _ensure_logging():
+    global _logging_initialized
+    if _logging_initialized:
+        return
+    _logging_initialized = True
+    try:
+        config = Config()
+        log_dir = (config.code_path / ".mad" / "logs" if config.code_path else get_mad_dir() / "logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(log_dir / "runner.log")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+    except Exception:
+        pass
 
 
 class RateLimitError(Exception):
@@ -171,6 +175,7 @@ When you have finished all work:
 
         If initial_message is given, write it to .tmp/<item>.instructions and use --prompt.
         """
+        _ensure_logging()
         workdir = Path(workdir).expanduser().resolve()
         workdir.mkdir(parents=True, exist_ok=True)
 
@@ -228,6 +233,7 @@ When you have finished all work:
         
         Instructions are written to .tmp/<item>.instructions file and read via --prompt.
         """
+        _ensure_logging()
         log_file = None
         try:
             workdir = workdir or self._workdir

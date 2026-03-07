@@ -233,7 +233,10 @@
             </div>
             <div style="margin-bottom:1rem">
                 <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Board *</label>
-                <input type="text" id="new-idea-board" placeholder="e.g., default" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
+                <select id="new-idea-board" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
+                    <option value="">Select a board...</option>
+                    {{range .Boards}}<option value="{{.}}">{{.}}</option>{{end}}
+                </select>
             </div>
             <div style="margin-bottom:1rem">
                 <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Description</label>

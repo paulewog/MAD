@@ -1,0 +1,24 @@
+{
+  "id": "7f7e0c4e",
+  "board": "mad",
+  "title": "bug-approving-idea-from-webui-doesn't-work",
+  "created": "2026-03-07T18:36Z",
+  "description": "Approving an idea from the webui doesn't actually work.",
+  "plan": "",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "history": [
+    {
+      "ts": "2026-03-07T18:36Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-07T18:39Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    }
+  ],
+  "pipeline_log": []
+}
