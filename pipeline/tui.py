@@ -55,6 +55,7 @@ from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     Checkbox,
+    Collapsible,
     Header,
     Input,
     Label,
@@ -232,6 +233,79 @@ def _feature_markdown(feature: FeatureFile) -> str:
         lines += ["## Pipeline Log", "", feature.pipeline_log, ""]
 
     return "\n".join(lines)
+
+
+def _build_feature_detail_widgets(feature: FeatureFile) -> list:
+    """Build collapsible widgets for feature detail view.
+    
+    Returns a list of widgets: Static for always-visible content, 
+    and Collapsible for collapsible sections.
+    
+    Sections:
+    - Always visible: Title, Description
+    - Collapsible (expanded by default): History
+    - Collapsible (collapsed by default): Plan, Impl Spec, Test Spec, Impl Notes, Questions
+    """
+    from textual.widgets import Collapsible, Static
+    
+    widgets = []
+    
+    # Title (always visible)
+    widgets.append(Static(f"[b]{feature.title}[/b]", id="detail-title"))
+    
+    # Description (always visible)
+    description = feature.get_section("Description")
+    if description:
+        widgets.append(Static(description, id="detail-description"))
+    
+    # History (collapsible, expanded by default)
+    if feature.history:
+        escaped_history = feature.history.replace("[", r"\[").replace("]", r"\]")
+        widgets.append(Collapsible(Static(escaped_history), title="History", id="detail-history", collapsed=False))
+    else:
+        widgets.append(Collapsible(Static("[dim]No history provided[/dim]"), title="History", id="detail-history", collapsed=False))
+    
+    # Plan (collapsible, collapsed by default)
+    if feature.plan:
+        widgets.append(Collapsible(Static(feature.plan), title="Plan", id="detail-plan", collapsed=True))
+    else:
+        widgets.append(Collapsible(Static("[dim]No plan provided[/dim]"), title="Plan", id="detail-plan", collapsed=True))
+    
+    # Implementation Spec (collapsible, collapsed by default)
+    if feature.impl_spec:
+        widgets.append(Collapsible(Static(feature.impl_spec), title="Implementation Spec", id="detail-impl-spec", collapsed=True))
+    else:
+        widgets.append(Collapsible(Static("[dim]No implementation spec provided[/dim]"), title="Implementation Spec", id="detail-impl-spec", collapsed=True))
+    
+    # Test Spec (collapsible, collapsed by default)
+    if feature.test_spec:
+        widgets.append(Collapsible(Static(feature.test_spec), title="Test Spec", id="detail-test-spec", collapsed=True))
+    else:
+        widgets.append(Collapsible(Static("[dim]No test spec provided[/dim]"), title="Test Spec", id="detail-test-spec", collapsed=True))
+    
+    # Implementation Notes (collapsible, collapsed by default)
+    if feature.impl_notes:
+        widgets.append(Collapsible(Static(feature.impl_notes), title="Implementation Notes", id="detail-impl-notes", collapsed=True))
+    else:
+        widgets.append(Collapsible(Static("[dim]No implementation notes provided[/dim]"), title="Implementation Notes", id="detail-impl-notes", collapsed=True))
+    
+    # Questions (collapsible, collapsed by default)
+    questions = feature.questions
+    if questions:
+        questions_content = []
+        for i, q in enumerate(questions):
+            q_text = q.get("question", "")
+            a_text = q.get("answer", "")
+            if a_text:
+                questions_content.append(f"Q{i+1}: {q_text}\n  A: {a_text}")
+            else:
+                questions_content.append(f"Q{i+1}: {q_text} (unanswered)")
+        questions_text = "\n\n".join(questions_content)
+        widgets.append(Collapsible(Static(questions_text), title=f"Questions ({len(questions)})", id="detail-questions", collapsed=True))
+    else:
+        widgets.append(Collapsible(Static("[dim]No questions provided[/dim]"), title="Questions", id="detail-questions", collapsed=True))
+    
+    return widgets
 
 
 # ---------------------------------------------------------------------------
@@ -1254,9 +1328,7 @@ class PipelineApp(App):
                 yield Static("Loading...", id="kanban-placeholder")
             with Horizontal(id="right-pane"):
                 with VerticalScroll(id="detail-view"):
-                    yield Markdown(
-                        "*Select a feature to view details*", id="detail-markdown"
-                    )
+                    yield Vertical(id="detail-container")
                 with Vertical(id="right-bottom"):
                     with Vertical(id="log-section"):
                         yield Static("=== LOG ===", classes="panel-header")
@@ -1315,6 +1387,7 @@ class PipelineApp(App):
                 on_set_auto_mode=self._handle_set_auto_mode,
                 on_start_agent=self._handle_start_agent,
                 on_idea_created=self._handle_create_idea,
+                on_move_requested=self._on_move_requested,
             )
             self._connect_server()
             self.set_interval(5.0, self._periodic_server_push)
@@ -1426,6 +1499,33 @@ class PipelineApp(App):
             except Exception as e:
                 logger.warning(f"create_idea: failed to create idea: {e}")
         self.call_from_thread(_do_create)
+
+    def _on_move_requested(self, feature_id: str, target_stage: str) -> None:
+        """Handle move_feature message from the server (web UI moved a feature to a new stage)."""
+        def _do_move():
+            try:
+                feature = FeatureFile.find(feature_id)
+                if not feature:
+                    logger.warning(f"move_feature: feature {feature_id} not found")
+                    return
+                if target_stage not in STAGES:
+                    logger.warning(f"move_feature: invalid target stage {target_stage}")
+                    return
+                logger.info(f"Moving feature {feature_id} to {target_stage} via web UI")
+                feature.add_history(target_stage.upper(), f"Moved via web UI")
+                feature.move_to_stage(target_stage)
+                self._refresh_board(self.active_board)
+                # Push updated state back to server
+                if self._server_client and self._server_client.connected:
+                    features = self._load_features(self.active_board)
+                    asyncio.create_task(self._server_client.push_state(
+                        features, self._plan_agent_status, self._implement_agent_status,
+                        auto_plan_enabled=self.auto_plan_enabled,
+                        auto_impl_enabled=self.auto_implement_enabled,
+                    ))
+            except Exception as e:
+                logger.warning(f"move_feature: failed to move feature: {e}")
+        self.call_from_thread(_do_move)
 
     async def _on_server_connected(self) -> None:
         """Push full board state immediately after connecting to server."""
@@ -1651,19 +1751,32 @@ class PipelineApp(App):
     # ------------------------------------------------------------------
 
     def _update_detail_view(self) -> None:
-        """Update the right pane Markdown to show the selected feature."""
+        """Update the right pane to show the selected feature with collapsible sections."""
         try:
-            detail = self.query_one("#detail-markdown", Markdown)
+            detail_container = self.query_one("#detail-container", Vertical)
         except NoMatches:
             return
 
         if not self.selected_feature:
-            detail.update("*Select a feature to view details*")
+            detail_container.remove_children()
+            detail_container.mount(Static("*Select a feature to view details*"))
             self._update_footer()
             return
 
-        md_text = _feature_markdown(self.selected_feature)
-        detail.update(md_text)
+        detail_container.remove_children()
+        
+        # Also remove any widgets with duplicate IDs from the app
+        # (Textual registers IDs at app level, not just container level)
+        for wid in ["detail-title", "detail-description", "detail-history", "detail-plan", 
+                    "detail-impl-spec", "detail-test-spec", "detail-impl-notes"]:
+            try:
+                old = self.query_one(f"#{wid}")
+                old.remove()
+            except NoMatches:
+                pass
+        
+        widgets = _build_feature_detail_widgets(self.selected_feature)
+        detail_container.mount(*widgets)
         self._update_footer()
 
     def _update_footer(self) -> None:
@@ -1751,7 +1864,7 @@ class PipelineApp(App):
         """Toggle focus between left and right panes."""
         try:
             left = self.query_one("#left-pane")
-            right_detail = self.query_one("#detail-markdown")
+            right_detail = self.query_one("#detail-container")
         except NoMatches:
             return
 
