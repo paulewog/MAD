@@ -5912,3 +5912,197 @@ Plan:
 2026-03-06 23:26:13,837 INFO [bold blue]Spec Writing:[/bold blue] AI Agent Checkpoint System
 2026-03-06 23:26:13,837 INFO [spec-writing] Starting: AI Agent Checkpoint System
 2026-03-06 23:26:13,839 INFO Agent A: Generating implementation spec...
+2026-03-06 23:40:27,332 INFO Connected to server as 'wsl-mad-cwd'
+2026-03-06 23:40:37,074 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:40:37,074 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:40:37,074 INFO [auto-impl] Checking boards: ['mad']
+2026-03-06 23:40:37,074 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-06 23:40:37,074 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-06 23:40:37,075 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-06 23:40:37,075 INFO [auto-impl] Board 'mad', stage 'spec-writing': 1 features
+2026-03-06 23:40:37,075 INFO [auto-impl] Starting: AI Agent Checkpoint System (spec-writing)
+2026-03-06 23:40:37,107 INFO [bold blue]Spec Writing:[/bold blue] AI Agent Checkpoint System
+2026-03-06 23:40:37,107 INFO [spec-writing] Starting: AI Agent Checkpoint System
+2026-03-06 23:40:37,109 INFO Agent A: Generating implementation spec...
+2026-03-06 23:40:37,110 INFO [runner] Wrote instructions for 'ai-agent-checkpoint-system': 13976 chars
+2026-03-06 23:40:37,110 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+You are an implementer breaking down a feature plan into concrete coding tasks.
+
+Feature: AI Agent Checkpoint System
+
+Plan:
+# ...
+2026-03-06 23:40:37,111 INFO Starting kilo in cwd=/home/paule/MAD with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/ai-agent-checkpoint-system.instructions and follow the instructions exactly.']
+2026-03-06 23:40:37,111 INFO status.feature_slug = 'ai-agent-checkpoint-system'
+2026-03-06 23:40:37,112 INFO Logging to: /home/paule/MAD/logs/kilo-ai-agent-checkpoint-system-1772869237.log
+2026-03-06 23:40:47,079 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:40:47,079 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:40:47,079 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:40:57,057 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:40:57,058 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:40:57,058 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:41:07,057 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:41:07,058 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:41:07,058 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:41:16,088 INFO Agent B: Generating test spec...
+2026-03-06 23:41:16,089 INFO [runner] Wrote instructions for 'ai-agent-checkpoint-system': 14405 chars
+2026-03-06 23:41:16,089 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+You are a QA engineer writing a test specification from a feature plan.
+
+## Feature: AI Agent Checkpoint System
+
+### Plan:
+# A...
+2026-03-06 23:41:16,090 INFO Starting kilo in cwd=/home/paule/MAD with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/ai-agent-checkpoint-system.instructions and follow the instructions exactly.']
+2026-03-06 23:41:16,090 INFO status.feature_slug = 'ai-agent-checkpoint-system'
+2026-03-06 23:41:16,090 INFO Logging to: /home/paule/MAD/logs/kilo-ai-agent-checkpoint-system-1772869276.log
+2026-03-06 23:41:17,072 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:41:17,073 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:41:17,073 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:41:27,055 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:41:27,055 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:41:27,055 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:41:37,056 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:41:37,057 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:41:37,057 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:41:47,054 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:41:47,054 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:41:47,054 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:41:57,052 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:41:57,052 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:41:57,052 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:42:07,052 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:42:07,052 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:42:07,052 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:42:17,050 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:42:17,050 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:42:17,050 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:42:27,047 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:42:27,047 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:42:27,048 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:42:37,047 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:42:37,048 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:42:37,048 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:42:47,049 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:42:47,049 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:42:47,049 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:42:57,046 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:42:57,047 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:42:57,048 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:43:07,040 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:43:07,040 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:43:07,040 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:43:17,040 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:43:17,040 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:43:17,040 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:43:21,693 INFO Specs generated. Feature moved to implementing.
+2026-03-06 23:43:21,700 INFO [bold blue]Implementing:[/bold blue] AI Agent Checkpoint System
+2026-03-06 23:43:21,701 INFO [implementing] Starting: AI Agent Checkpoint System
+2026-03-06 23:43:21,702 INFO [runner] Wrote instructions for 'ai-agent-checkpoint-system': 22883 chars
+2026-03-06 23:43:21,702 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+Implement the following feature.
+
+Feature: AI Agent Checkpoint System
+
+Plan:
+# AI Agent Checkpoint System
+
+## Overview
+Agents ...
+2026-03-06 23:43:21,702 INFO Starting kilo in cwd=/home/paule/MAD with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/ai-agent-checkpoint-system.instructions and follow the instructions exactly.']
+2026-03-06 23:43:21,702 INFO status.feature_slug = 'ai-agent-checkpoint-system'
+2026-03-06 23:43:21,703 INFO Logging to: /home/paule/MAD/logs/kilo-ai-agent-checkpoint-system-1772869401.log
+2026-03-06 23:43:27,054 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:43:27,055 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:43:27,055 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:43:37,042 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:43:37,042 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:43:37,042 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:43:47,036 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:43:47,037 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:43:47,037 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:43:57,033 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:43:57,034 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:43:57,034 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:44:07,033 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:44:07,034 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:44:07,034 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:44:17,033 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:44:17,033 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:44:17,033 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:44:27,033 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:44:27,033 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:44:27,033 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:44:37,030 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:44:37,031 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:44:37,031 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:44:47,029 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:44:47,030 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:44:47,030 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:44:57,030 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:44:57,030 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:44:57,030 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:45:07,029 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:45:07,030 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:45:07,032 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:45:17,031 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:45:17,032 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:45:17,032 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:45:27,024 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:45:27,025 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:45:27,025 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:45:37,029 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:45:37,030 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:45:37,030 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:45:47,026 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:45:47,026 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:45:47,026 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:45:57,022 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:45:57,023 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:45:57,023 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:46:03,888 WARNING [git] Commit failed: Command '['git', 'add', '-A', '.mad/boards/', '.mad/logs/']' returned non-zero exit status 1.
+2026-03-06 23:46:03,889 INFO Implementation done. Feature moved to testing.
+2026-03-06 23:46:03,896 INFO [bold blue]Writing Tests:[/bold blue] AI Agent Checkpoint System
+2026-03-06 23:46:03,898 INFO [runner] Wrote instructions for 'ai-agent-checkpoint-system': 2935 chars
+2026-03-06 23:46:03,898 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+Write tests for the following implemented feature.
+
+Feature: AI Agent Checkpoint System
+
+Test Spec (behaviors to verify):
+TEST...
+2026-03-06 23:46:03,899 INFO Starting kilo in cwd=/home/paule/MAD with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/ai-agent-checkpoint-system.instructions and follow the instructions exactly.']
+2026-03-06 23:46:03,899 INFO status.feature_slug = 'ai-agent-checkpoint-system'
+2026-03-06 23:46:03,899 INFO Logging to: /home/paule/MAD/logs/kilo-ai-agent-checkpoint-system-1772869563.log
+2026-03-06 23:46:07,034 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:46:07,034 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:46:07,034 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:46:17,022 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:46:17,023 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:46:17,023 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:46:27,020 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:46:27,021 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:46:27,021 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:46:37,016 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:46:37,016 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:46:37,016 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:46:47,016 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:46:47,017 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:46:47,017 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:46:57,015 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:46:57,015 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:46:57,015 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:47:07,014 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:47:07,015 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:47:07,015 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:47:17,015 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:47:17,015 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:47:17,015 INFO [auto-impl] Skipping - implementation already in progress

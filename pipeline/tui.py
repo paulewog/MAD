@@ -1149,45 +1149,34 @@ class PipelineApp(App):
         height: 1fr;
     }
 
-    #left-pane {
+    #items-pane {
         width: 34;
         min-width: 24;
         border-right: solid $panel;
         overflow-y: auto;
     }
 
-    #left-pane:focus-within {
+    #items-pane:focus-within {
         border-right: solid $accent;
     }
 
-    #right-pane {
-        width: 1fr;
-        height: 100%;
-        layout: horizontal;
-        padding: 0 1;
-    }
-
-    #right-pane:focus-within {
-        border-left: solid $accent;
-    }
-
-    #detail-view {
-        width: 50%;
+    #details-pane {
+        width: 33;
         height: 100%;
         overflow-y: auto;
         border-right: solid $panel;
     }
 
-    #detail-container {
+    #details-container {
         height: auto;
     }
 
-    #right-bottom {
-        width: 50%;
+    #logs-agents-pane {
+        width: 33;
         height: 100%;
     }
 
-    #right-bottom > * {
+    #logs-agents-pane > * {
         height: 1fr;
     }
 
@@ -1328,29 +1317,28 @@ class PipelineApp(App):
 
         # Kanban layout - shown for board tabs, hidden for settings
         with Horizontal(id="main-layout"):
-            with VerticalScroll(id="left-pane"):
+            with VerticalScroll(id="items-pane"):
                 yield Static("Loading...", id="kanban-placeholder")
-            with Horizontal(id="right-pane"):
-                with VerticalScroll(id="detail-view"):
-                    yield Vertical(id="detail-container")
-                with Vertical(id="right-bottom"):
-                    with Vertical(id="log-section"):
-                        yield Static("=== LOG ===", classes="panel-header")
-                        yield Log(id="log-view", auto_scroll=True)
-                    with Vertical(id="plan-section"):
-                        yield Static("=== PLAN ===", classes="panel-header")
-                        yield AgentStatusWidget(
-                            plan_status=self._plan_agent_status,
-                            implement_status=None,
-                            id="plan-status"
-                        )
-                    with Vertical(id="impl-section"):
-                        yield Static("=== IMPL ===", classes="panel-header")
-                        yield AgentStatusWidget(
-                            plan_status=None,
-                            implement_status=self._implement_agent_status,
-                            id="impl-status"
-                        )
+            with VerticalScroll(id="details-pane"):
+                yield Vertical(id="details-container")
+            with Vertical(id="logs-agents-pane"):
+                with Vertical(id="log-section"):
+                    yield Static("=== LOG ===", classes="panel-header")
+                    yield Log(id="log-view", auto_scroll=True)
+                with Vertical(id="plan-section"):
+                    yield Static("=== PLAN ===", classes="panel-header")
+                    yield AgentStatusWidget(
+                        plan_status=self._plan_agent_status,
+                        implement_status=None,
+                        id="plan-status"
+                    )
+                with Vertical(id="impl-section"):
+                    yield Static("=== IMPL ===", classes="panel-header")
+                    yield AgentStatusWidget(
+                        plan_status=None,
+                        implement_status=self._implement_agent_status,
+                        id="impl-status"
+                    )
 
         # Settings view - hidden by default
         with Vertical(id="settings-view"):
@@ -1643,12 +1631,12 @@ class PipelineApp(App):
                 by_stage[stage].append(f)
 
         try:
-            left_pane = self.query_one("#left-pane", VerticalScroll)
+            items_pane = self.query_one("#items-pane", VerticalScroll)
         except NoMatches:
             return
 
         # Remove all current children
-        left_pane.remove_children()
+        items_pane.remove_children()
 
         # Build new widgets
         selected_slug = self.selected_feature.slug if self.selected_feature else None
@@ -1657,14 +1645,14 @@ class PipelineApp(App):
         for stage in STAGE_DISPLAY_ORDER:
             stage_features = by_stage.get(stage, [])
             count = len(stage_features)
-            left_pane.mount(StageHeader(stage, count))
+            items_pane.mount(StageHeader(stage, count))
 
             if count > 0:
                 for f in stage_features:
                     is_sel = (
                         f.slug == selected_slug and f.board == selected_board
                     )
-                    left_pane.mount(FeatureItem(f, is_selected=is_sel))
+                    items_pane.mount(FeatureItem(f, is_selected=is_sel))
 
     def _update_status_bar(
         self, board: str, features: list[FeatureFile]
@@ -1757,19 +1745,19 @@ class PipelineApp(App):
     def _update_detail_view(self) -> None:
         """Update the right pane to show the selected feature with collapsible sections."""
         try:
-            detail_container = self.query_one("#detail-container", Vertical)
+            details_container = self.query_one("#details-container", Vertical)
         except NoMatches:
             return
 
         if not self.selected_feature:
-            detail_container.remove_children()
-            detail_container.mount(Static("*Select a feature to view details*"))
+            details_container.remove_children()
+            details_container.mount(Static("*Select a feature to view details*"))
             self._update_footer()
             return
 
-        detail_container.remove_children()
+        details_container.remove_children()
         widgets = _build_feature_detail_widgets(self.selected_feature)
-        detail_container.mount(*widgets)
+        details_container.mount(*widgets)
         self._update_footer()
 
     def _update_footer(self) -> None:
@@ -1856,8 +1844,8 @@ class PipelineApp(App):
     def action_toggle_focus(self) -> None:
         """Toggle focus between left and right panes."""
         try:
-            left = self.query_one("#left-pane")
-            right_detail = self.query_one("#detail-container")
+            left = self.query_one("#items-pane")
+            right_detail = self.query_one("#details-container")
         except NoMatches:
             return
 
@@ -1873,8 +1861,8 @@ class PipelineApp(App):
     def action_focus_previous(self) -> None:
         """Move focus to the previous item (stage header or feature)."""
         try:
-            left_pane = self.query_one("#left-pane")
-            left_pane.focus()
+            items_pane = self.query_one("#items-pane")
+            items_pane.focus()
         except Exception:
             pass
         
@@ -1903,8 +1891,8 @@ class PipelineApp(App):
     def action_focus_next(self) -> None:
         """Move focus to the next item (stage header or feature)."""
         try:
-            left_pane = self.query_one("#left-pane")
-            left_pane.focus()
+            items_pane = self.query_one("#items-pane")
+            items_pane.focus()
         except Exception:
             pass
         
