@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -3497,5 +3498,961 @@ func TestStartAgentFeatureNullStage(t *testing.T) {
 
 	if resp.StatusCode != 400 {
 		t.Errorf("status = %d, want 400 for feature with null stage", resp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// WebUI Key Prompt Tests
+// ---------------------------------------------------------------------------
+
+func TestDashboardKeyModalShownWhenNotAuthenticated(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "secret-key"
+	_, ts := startTestServerT(t, cfg)
+
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("dashboard status = %d, want 200", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), "key-modal") {
+		t.Error("key-modal should be present in HTML when not authenticated")
+	}
+
+	if !strings.Contains(string(body), "Authentication Required") {
+		t.Error("modal should contain 'Authentication Required' text")
+	}
+}
+
+func TestDashboardKeyModalNotShownWhenNoKeyConfigured(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = ""
+	_, ts := startTestServerT(t, cfg)
+
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(body), "Authentication Required") {
+		t.Error("authentication modal should NOT be shown when no dashboard key configured")
+	}
+}
+
+func TestDashboardKeyModalNotShownWhenAuthenticated(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "secret-key"
+	_, ts := startTestServerT(t, cfg)
+
+	resp, err := http.Get(ts.URL + "/?key=secret-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(body), "Authentication Required") {
+		t.Error("modal content should NOT be present when authenticated with correct key")
+	}
+}
+
+func TestDashboardDataNotLeakedToUnauthenticated(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "secret-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "leak-test-client")
+	defer conn.Close()
+	waitForClient(hub, "leak-test-client", 2*time.Second)
+
+	conn.WriteJSON(map[string]interface{}{
+		"type": "state_update",
+		"features": []map[string]string{
+			{"title": "Secret Feature", "stage": "ideas", "board": "b", "id": "secret"},
+		},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(body), "Secret Feature") {
+		t.Error("unauthenticated user should NOT see client data")
+	}
+
+	if strings.Contains(string(body), "leak-test-client") {
+		t.Error("unauthenticated user should NOT see client ID")
+	}
+}
+
+func TestDashboardDataVisibleWhenAuthenticated(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "secret-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "auth-client")
+	defer conn.Close()
+	waitForClient(hub, "auth-client", 2*time.Second)
+
+	conn.WriteJSON(map[string]interface{}{
+		"type": "state_update",
+		"features": []map[string]string{
+			{"title": "Visible Feature", "stage": "ideas", "board": "b", "id": "visible"},
+		},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	resp, err := http.Get(ts.URL + "/?key=secret-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), "auth-client") {
+		t.Error("authenticated user should see client ID")
+	}
+}
+
+func TestDashboardKeyValidationRejectsWrongKey(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "secret-key"
+	_, ts := startTestServerT(t, cfg)
+
+	resp, err := http.Get(ts.URL + "/?key=wrong-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), "key-modal") {
+		t.Error("wrong key should NOT authenticate - modal should be shown")
+	}
+}
+
+func TestDashboardKeyEmptyKeyShowsModal(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "secret-key"
+	_, ts := startTestServerT(t, cfg)
+
+	resp, err := http.Get(ts.URL + "/?key=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), "key-modal") {
+		t.Error("empty key should NOT authenticate - modal should be shown")
+	}
+}
+
+func TestDashboardKeyWhitespaceOnlyRejected(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "secret-key"
+	_, ts := startTestServerT(t, cfg)
+
+	resp, err := http.Get(ts.URL + "/?key=%20%20%20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), "key-modal") {
+		t.Error("whitespace-only key should NOT authenticate - modal should be shown")
+	}
+}
+
+func TestAPIClientsReturnsUnauthorizedForUnauthenticated(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "secret-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "api-leak-client")
+	defer conn.Close()
+	waitForClient(hub, "api-leak-client", 2*time.Second)
+
+	conn.WriteJSON(map[string]interface{}{
+		"type": "state_update",
+		"features": []map[string]string{
+			{"title": "API Secret", "stage": "ideas", "board": "b", "id": "api-secret"},
+		},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	req, _ := http.NewRequest("GET", ts.URL+"/api/clients", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 401 {
+		t.Errorf("unauthenticated API request status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestAPIClientsReturnsDataForDashboardAuthenticated(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "dash-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "dash-api-client")
+	defer conn.Close()
+	waitForClient(hub, "dash-api-client", 2*time.Second)
+
+	conn.WriteJSON(map[string]interface{}{
+		"type": "state_update",
+		"features": []map[string]string{
+			{"title": "Dash Feature", "stage": "ideas", "board": "b", "id": "dash-f1"},
+		},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	req, _ := http.NewRequest("GET", ts.URL+"/api/clients?key=dash-key", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("authenticated API request status = %d, want 200", resp.StatusCode)
+	}
+
+	var clients []ClientState
+	json.NewDecoder(resp.Body).Decode(&clients)
+	if len(clients) != 1 {
+		t.Errorf("expected 1 client, got %d", len(clients))
+	}
+}
+
+func TestHTMXEndpointRequiresDashboardAuth(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "hx-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "htmx-client")
+	defer conn.Close()
+	waitForClient(hub, "htmx-client", 2*time.Second)
+
+	conn.WriteJSON(map[string]interface{}{
+		"type": "state_update",
+		"features": []map[string]string{
+			{"title": "HTMX Feature", "stage": "ideas", "board": "b", "id": "hx-f1"},
+		},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	req, _ := http.NewRequest("GET", ts.URL+"/api/clients", nil)
+	req.Header.Set("HX-Request", "true")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 401 {
+		t.Errorf("HTMX request without key status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestClientPageRequiresDashboardAuth(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "client-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "client-page-test")
+	defer conn.Close()
+	waitForClient(hub, "client-page-test", 2*time.Second)
+
+	resp, err := http.Get(ts.URL + "/clients/client-page-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("client page status = %d, want 200", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), "key-modal") {
+		t.Error("unauthenticated client page should show key modal")
+	}
+}
+
+func TestClientPageShowsDataWhenAuthenticated(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "client-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "auth-client-page")
+	defer conn.Close()
+	waitForClient(hub, "auth-client-page", 2*time.Second)
+
+	conn.WriteJSON(map[string]interface{}{
+		"type": "state_update",
+		"features": []map[string]string{
+			{"title": "Client Page Feature", "stage": "ideas", "board": "b", "id": "cp-f1"},
+		},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	resp, err := http.Get(ts.URL + "/clients/auth-client-page?key=client-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), "auth-client-page") {
+		t.Error("authenticated client page should show client ID")
+	}
+}
+
+func TestConcurrentDashboardRequestsWithKey(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "concurrent-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "concurrent-dash-client")
+	defer conn.Close()
+	waitForClient(hub, "concurrent-dash-client", 2*time.Second)
+
+	conn.WriteJSON(map[string]interface{}{
+		"type": "state_update",
+		"features": []map[string]string{
+			{"title": "Concurrent Feature", "stage": "ideas", "board": "b", "id": "con-f1"},
+		},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	var wg sync.WaitGroup
+	errors := make(chan error, 20)
+
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := http.Get(ts.URL + "/?key=concurrent-key")
+			if err != nil {
+				errors <- err
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != 200 {
+				errors <- fmt.Errorf("status %d", resp.StatusCode)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errors)
+
+	for err := range errors {
+		t.Errorf("concurrent dashboard request error: %v", err)
+	}
+}
+
+func TestDashboardKeyWithSpecialCharacters(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "key!@#$%^&*()"
+	_, ts := startTestServerT(t, cfg)
+
+	encodedKey := "key%21%40%23%24%25%5E%26%2A%28%29"
+	resp, err := http.Get(ts.URL + "/?key=" + encodedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(body), "Authentication Required") {
+		t.Error("key with special characters should authenticate when valid")
+	}
+}
+
+func TestDashboardKeyMaxLength(t *testing.T) {
+	cfg := testConfig("")
+	longKey := strings.Repeat("a", 10000)
+	cfg.DashboardKey = longKey
+	_, ts := startTestServerT(t, cfg)
+
+	resp, err := http.Get(ts.URL + "/?key=" + longKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(body), "Authentication Required") {
+		t.Error("long key should authenticate when valid")
+	}
+}
+
+func TestDashboardNoKeyWithConnectedClients(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = ""
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "no-key-client")
+	defer conn.Close()
+	waitForClient(hub, "no-key-client", 2*time.Second)
+
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bodyStr := string(body)
+	t.Logf("Response length: %d", len(bodyStr))
+	t.Logf("Contains 'no-key-client': %v", strings.Contains(bodyStr, "no-key-client"))
+	t.Logf("Contains 'MAD Pipeline': %v", strings.Contains(bodyStr, "MAD Pipeline"))
+
+	if !strings.Contains(bodyStr, "no-key-client") {
+		t.Error("no dashboard key configured - clients should be visible")
+	}
+}
+
+func TestAPIEndpointDashboardKeyWorksForIdeas(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "ideas-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	features := []map[string]interface{}{
+		{"title": "F1", "stage": "ideas", "board": "b", "id": "ideas-f1"},
+	}
+	conn := registerClientWithFeatures(t, hub, ts, "", "ideas-client", features)
+	defer conn.Close()
+
+	resp := apiPostWithDashboardKey(t, ts, "/api/clients/ideas-client/ideas", "ideas-key", map[string]interface{}{
+		"title":       "New Idea",
+		"board":       "default",
+		"description": "Test idea",
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("ideas API with dashboard key status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestAPIEndpointDashboardKeyWrongKeyRejected(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "correct-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	features := []map[string]interface{}{
+		{"title": "F1", "stage": "ideas", "board": "b", "id": "wrongkey-f1"},
+	}
+	conn := registerClientWithFeatures(t, hub, ts, "", "wrongkey-client", features)
+	defer conn.Close()
+
+	resp := apiPostWithDashboardKey(t, ts, "/api/clients/wrongkey-client/ideas", "wrong-key", map[string]interface{}{
+		"title": "New Idea",
+		"board": "default",
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 401 {
+		t.Errorf("wrong dashboard key status = %d, want 401", resp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Validate Endpoint Tests
+// ---------------------------------------------------------------------------
+
+func TestValidateEndpointCorrectKey(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "secret123"
+	_, ts := startTestServerT(t, cfg)
+
+	resp, err := http.Get(ts.URL + "/api/auth/validate?key=secret123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("validate status = %d, want 200", resp.StatusCode)
+	}
+	var result map[string]bool
+	json.NewDecoder(resp.Body).Decode(&result)
+	if !result["valid"] {
+		t.Error("expected valid=true for correct key")
+	}
+}
+
+func TestValidateEndpointWrongKey(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "secret123"
+	_, ts := startTestServerT(t, cfg)
+
+	resp, err := http.Get(ts.URL + "/api/auth/validate?key=wrongkey")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 401 {
+		t.Errorf("validate status = %d, want 401", resp.StatusCode)
+	}
+	var result map[string]bool
+	json.NewDecoder(resp.Body).Decode(&result)
+	if result["valid"] {
+		t.Error("expected valid=false for wrong key")
+	}
+}
+
+func TestValidateEndpointNoKeyConfigured(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = ""
+	_, ts := startTestServerT(t, cfg)
+
+	resp, err := http.Get(ts.URL + "/api/auth/validate?key=anything")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("validate status = %d, want 200", resp.StatusCode)
+	}
+	var result map[string]bool
+	json.NewDecoder(resp.Body).Decode(&result)
+	if !result["valid"] {
+		t.Error("expected valid=true when no dashboard key configured")
+	}
+}
+
+func TestValidateEndpointMissingKeyParam(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "secret123"
+	_, ts := startTestServerT(t, cfg)
+
+	resp, err := http.Get(ts.URL + "/api/auth/validate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 401 {
+		t.Errorf("validate status = %d, want 401", resp.StatusCode)
+	}
+	var result map[string]bool
+	json.NewDecoder(resp.Body).Decode(&result)
+	if result["valid"] {
+		t.Error("expected valid=false when key param missing")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Client Page Auth Tests (HTMX fragments)
+// ---------------------------------------------------------------------------
+
+func TestClientFeaturesFragmentRequiresAuth(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "frag-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	features := []map[string]interface{}{
+		{"title": "Secret Feature", "stage": "ideas", "board": "b", "id": "frag-f1"},
+	}
+	conn := registerClientWithFeatures(t, hub, ts, "", "frag-client", features)
+	defer conn.Close()
+
+	resp, err := http.Get(ts.URL + "/clients/frag-client/features")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 401 {
+		t.Errorf("features fragment without key status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestClientFeaturesFragmentWorksWithKey(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "frag-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	features := []map[string]interface{}{
+		{"title": "Visible Feature", "stage": "ideas", "board": "b", "id": "frag-f2"},
+	}
+	conn := registerClientWithFeatures(t, hub, ts, "", "frag-client2", features)
+	defer conn.Close()
+
+	resp, err := http.Get(ts.URL + "/clients/frag-client2/features?key=frag-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("features fragment with key status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestClientLogsFragmentRequiresAuth(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "frag-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "log-frag-client")
+	defer conn.Close()
+	waitForClient(hub, "log-frag-client", 2*time.Second)
+
+	resp, err := http.Get(ts.URL + "/clients/log-frag-client/logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 401 {
+		t.Errorf("logs fragment without key status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestClientPageNoDataLeakWhenUnauthenticated(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "leak-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	features := []map[string]interface{}{
+		{"title": "Super Secret Feature", "stage": "ideas", "board": "b", "id": "leak-f1"},
+	}
+	conn := registerClientWithFeatures(t, hub, ts, "", "leak-client", features)
+	defer conn.Close()
+
+	resp, err := http.Get(ts.URL + "/clients/leak-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(body), "Super Secret Feature") {
+		t.Error("unauthenticated client page should NOT contain feature data")
+	}
+}
+
+func TestDashboardHasLogoutButton(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "logout-key"
+	_, ts := startTestServerT(t, cfg)
+
+	resp, err := http.Get(ts.URL + "/?key=logout-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), "logout()") {
+		t.Error("authenticated dashboard should have logout button")
+	}
+}
+
+func TestDashboardValidHTML(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "html-key"
+	_, ts := startTestServerT(t, cfg)
+
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, "<body>") {
+		t.Error("unauthenticated page should contain <body> tag")
+	}
+	if !strings.Contains(bodyStr, "</body>") {
+		t.Error("unauthenticated page should contain </body> tag")
+	}
+}
+
+func TestAPIBoardRequiresDashboardAuth(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "board-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "board-client")
+	defer conn.Close()
+	waitForClient(hub, "board-client", 2*time.Second)
+
+	conn.WriteJSON(map[string]interface{}{
+		"type": "state_update",
+		"features": []map[string]string{
+			{"title": "Board Feature", "stage": "ideas", "board": "b", "id": "board-f1"},
+		},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	resp, err := http.Get(ts.URL + "/api/board")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 401 {
+		t.Errorf("/api/board without key status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestAPIBoardWorksWithDashboardKey(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "board-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "board-client2")
+	defer conn.Close()
+	waitForClient(hub, "board-client2", 2*time.Second)
+
+	conn.WriteJSON(map[string]interface{}{
+		"type": "state_update",
+		"features": []map[string]string{
+			{"title": "Visible Board Feature", "stage": "ideas", "board": "b", "id": "board-f2"},
+		},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	resp, err := http.Get(ts.URL + "/api/board?key=board-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("/api/board with key status = %d, want 200", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "Visible Board Feature") {
+		t.Error("/api/board should return feature data when authenticated")
+	}
+}
+
+func TestClientPageHasLogoutButtonWhenAuthenticated(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "client-logout-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "logout-client")
+	defer conn.Close()
+	waitForClient(hub, "logout-client", 2*time.Second)
+
+	resp, err := http.Get(ts.URL + "/clients/logout-client?key=client-logout-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), "logout()") {
+		t.Error("authenticated client page should have logout button")
+	}
+}
+
+func TestClientPageReturns404ForNonexistentWithKey(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "nonexist-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "existing-client")
+	defer conn.Close()
+	waitForClient(hub, "existing-client", 2*time.Second)
+
+	resp, err := http.Get(ts.URL + "/clients/nonexistent?key=nonexist-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 404 {
+		t.Errorf("nonexistent client with key: status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestAPIEndpointAutoModeWithDashboardKey(t *testing.T) {
+	cfg := testConfig("api-secret")
+	cfg.DashboardKey = "auto-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "api-secret", "auto-client")
+	defer conn.Close()
+	waitForClient(hub, "auto-client", 2*time.Second)
+
+	resp := apiPostWithDashboardKey(t, ts, "/api/clients/auto-client/auto-mode", "auto-key", map[string]interface{}{
+		"mode": "plan", "enabled": true,
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("auto-mode with dashboard key status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestAPIEndpointStartAgentWithDashboardKey(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "agent-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	stageActions := map[string][]string{"plan": {"plan-inbox"}}
+	features := []map[string]interface{}{
+		{"title": "F1", "stage": "plan-inbox", "board": "b", "id": "agent-f1"},
+	}
+	planAgent := map[string]interface{}{"running": false, "phase": "", "feature": "", "agent": ""}
+	conn := registerClientWithFeaturesAndStageActions(t, hub, ts, "", "agent-client", features, stageActions, planAgent, nil)
+	defer conn.Close()
+
+	resp := apiPostWithDashboardKey(t, ts, "/api/clients/agent-client/features/agent-f1/start-agent", "agent-key", map[string]interface{}{
+		"action": "plan",
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("start-agent with dashboard key status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestDashboardKeyInClientLinks(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "link-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "link-client")
+	defer conn.Close()
+	waitForClient(hub, "link-client", 2*time.Second)
+
+	resp, err := http.Get(ts.URL + "/?key=link-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), "/clients/link-client?key=link-key") {
+		t.Error("client links should include key parameter")
+	}
+}
+
+func TestDashboardBackToDashboardLinkHasKey(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "back-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "back-client")
+	defer conn.Close()
+	waitForClient(hub, "back-client", 2*time.Second)
+
+	resp, err := http.Get(ts.URL + "/clients/back-client?key=back-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), "/?key=back-key") {
+		t.Error("back to dashboard link should include key parameter")
 	}
 }

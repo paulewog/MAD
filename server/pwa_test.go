@@ -650,11 +650,15 @@ func TestDashboardRequiresAuthButAssetsDoNot(t *testing.T) {
 	}
 	_, ts := startTestServerT(t, cfg)
 
-	// Dashboard should require auth
+	// Dashboard returns 200 but shows key modal when not authenticated
 	resp, _ := http.Get(ts.URL + "/")
+	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode == 200 {
-		t.Error("/ should require auth when DashboardKey is set")
+	if resp.StatusCode != 200 {
+		t.Errorf("/ should return 200 with key modal, got %d", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "key-modal") {
+		t.Error("/ should show key modal when DashboardKey is set and not authenticated")
 	}
 
 	// But manifest should not

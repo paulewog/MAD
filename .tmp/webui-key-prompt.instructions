@@ -1,11 +1,11 @@
 Code Path: /home/paule/MAD
 Context File: /home/paule/MAD/.mad/CONTEXT.md
 
-You are an implementer breaking down a feature plan into concrete coding tasks.
+You are a senior code reviewer tasked with critically evaluating an implementation.
 
-Feature: webui key prompt
+## Feature: webui key prompt
 
-Plan:
+### Original Plan:
 I'll explore the codebase to understand the current implementation and create a comprehensive plan that addresses all the issues raised in the review feedback.
 Now let me check the template structure in index.html:
 Now I have a complete understanding of the codebase. Let me create a comprehensive plan that addresses all the issues identified in the review feedback.
@@ -17,6 +17,104 @@ Now I have a complete understanding of the codebase. Let me create a comprehensi
 }
 ```
 
-Write a detailed implementation spec — a list of specific coding tasks.
-For each task: what to create or modify, the approach, and dependencies on other tasks.
-Be concrete. No preamble.
+### Test Spec (requirements):
+Test spec written to `.mad/WEBUI_KEY_PROMPT_TEST_SPEC.md`. It covers:
+
+- **33 behaviors** across 9 categories: dashboard auth, client page auth, validation endpoint, error feedback, logout, HTMX protection, API protection, key propagation, and localStorage handling
+- **10 edge cases** covering special key values, state transitions, concurrency, and template rendering
+- **8 failure criteria** split into critical (security) and functional categories
+- **12 out-of-scope items** explicitly excluded
+
+Key findings from the code review that informed the spec:
+- The current `index.html` has a critical HTML structure bug where `</head><body>` is inside `{{if .Authenticated}}`, making the modal render in `<head>` (invisible)
+- Client HTMX fragment endpoints (`/clients/{id}/features`, `/clients/{id}/logs`) currently don't enforce auth
+- The plan's validation endpoint (`/api/auth/validate`) doesn't exist yet and needs to be created
+
+### Implementation:
+## Summary
+
+The WebUI key authentication feature is **fully implemented and all tests pass**. Here's what's in place:
+
+**Files modified:**
+- `server/api.go` — Auth checks on dashboard, client page, HTMX fragments, `/api/auth/validate` endpoint, `checkAnyAuth` helper
+- `server/templates/index.html` — Key modal outside auth block, logout button, `saveKey()` with validation, localStorage try/catch, key propagation in links
+- `server/templates/client.html` — Same auth modal, logout button, key propagation
+- `server/server_test.go` — 30+ tests covering all 33 spec behaviors
+
+**Key design decisions:**
+1. Modal HTML renders outside `{{if .Authenticated}}` block — fixing the critical blank-page bug
+2. Server returns empty data (not hidden data) when unauthenticated — no data leakage
+3. `/api/auth/validate` endpoint validates key before saving to localStorage
+4. `checkAnyAuth` accepts either API key or dashboard key on all API endpoints
+5. HTMX fragment endpoints (`/clients/{id}/features`, `/clients/{id}/logs`) return 401 when unauthenticated
+
+### Tests Written
+
+Let me read the test spec and understand the existing testing patterns.
+Let me read the relevant implementation files to understand the feature better:
+Let me check the implementation to see what's already in place:
+Let me look at the templates to understand what the feature should do and verify what behaviors need testing:
+Now I'll add the missing tests. Let me first check where to add them and what additional tests are needed:
+Let me look at an existing test that works with auto-mode to see the request format:
+Let me also check the start-agent endpoint format:
+All tests pass. I've added 8 new test functions covering behaviors from the test spec:
+
+1. **TestAPIBoardRequiresDashboardAuth** - Verifies `/api/board` returns 401 without key
+2. **TestAPIBoardWorksWithDashboardKey** - Verifies `/api/board` works with valid key
+3. **TestClientPageHasLogoutButtonWhenAuthenticated** - Verifies logout button on client page
+4. **TestClientPageReturns404ForNonexistentWithKey** - Verifies 404 for nonexistent client
+5. **TestAPIEndpointAutoModeWithDashboardKey** - Verifies auto-mode endpoint works with dashboard key
+6. **TestAPIEndpointStartAgentWithDashboardKey** - Verifies start-agent endpoint works with dashboard key
+7. **TestDashboardKeyInClientLinks** - Verifies client links include key parameter
+8. **TestDashboardBackToDashboardLinkHasKey** - Verifies back link includes key
+
+The remaining behaviors in the spec (B12-B13, B15, B29-B33) involve client-side JavaScript behavior (modal error feedback, localStorage handling, HTMX URL propagation) which cannot be tested in Go unit tests.
+
+---
+
+## Review Checklist
+
+For each item below, explicitly assess and document your findings:
+
+1. **Completeness**: Does the implementation cover ALL items in the plan? List any missing items.
+
+2. **Test Coverage**: Do tests verify ALL behaviors in the test spec? List any untested behaviors.
+
+3. **Code Quality**:
+   - Are there obvious bugs (null pointer, off-by-one, race conditions)?
+   - Is error handling adequate?
+   - Are there security concerns (injection, auth bypass)?
+   - Is there proper resource cleanup (files, connections)?
+
+4. **Edge Cases**: What happens with:
+   - Empty inputs?
+   - Very large inputs?
+   - Concurrent access?
+   - Network failures?
+   - Invalid states?
+
+5. **Architecture**:
+   - Is the code maintainable?
+   - Are dependencies explicit?
+   - Is there appropriate abstraction?
+
+---
+
+## Output Format
+
+Respond with EXACTLY this format (no other text). Use PLAIN TEXT only - no markdown formatting:
+
+**VERDICT: PASS** or **VERDICT: FAIL**
+
+If FAIL, you MUST provide specific, actionable feedback. Use plain text, no bold, no code blocks, no markdown:
+FEEDBACK: List each issue with file/function/line if possible, and what needs to be fixed.
+
+Example:
+```
+VERDICT: FAIL
+FEEDBACK:
+- Plan item "add authentication" not implemented - no login/user code found
+- Test spec requires "rate limiting" but no tests for it
+- NullPointerException in handle_submit() line 42 if input is None
+- Missing try/finally for file handle in process_data()
+```

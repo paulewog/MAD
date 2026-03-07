@@ -9,13 +9,13 @@ from typing import Optional
 
 from rich.console import Console
 
-from agent_status import AgentStatus
-from config import AgentConfig, Config, read_context_file
+from config import AgentConfig, Config, read_context_file, get_mad_dir
 
 console = Console()
 
-# Set up file logging - less verbose
-_log_dir = Path(__file__).parent.parent / ".mad" / "logs"
+# Set up file logging - use code_path if set, otherwise use mad_dir from cwd
+_config = Config()
+_log_dir = (_config.code_path / ".mad" / "logs" if _config.code_path else get_mad_dir() / "logs")
 _log_dir.mkdir(parents=True, exist_ok=True)
 _log_file = _log_dir / "runner.log"
 
@@ -217,6 +217,12 @@ class AgentRunner:
             output_lines = []
             is_json_format = "--format" in cmd and "json" in cmd
             
+            # Monitor log activity - warn if no activity for 5 minutes
+            log_watch_interval = 5 * 60
+            last_log_time = time.time()
+            
+            start_time = time.time()
+            
             # Debug logging
             logger.info(f"Starting {self.agent.name} with cmd: {cmd}")
             
@@ -242,6 +248,19 @@ class AgentRunner:
                     log_file = None
             
             while True:
+                # No hard timeout - just monitor log activity and warn if stuck
+                elapsed = time.time() - start_time
+                
+                # Check log file for activity (if we have a log file)
+                if log_file:
+                    log_file.flush()
+                    log_mtime = log_path.stat().st_mtime
+                    if log_mtime > last_log_time:
+                        last_log_time = log_mtime
+                    elif elapsed > log_watch_interval and elapsed % 60 < 1:
+                        # Every minute after 5 min of no log activity, warn but don't kill
+                        logger.warning(f"[runner] No log activity for {log_watch_interval}s. Agent may be stuck. Feature: {feature_slug}")
+                
                 line = process.stdout.readline()
                 if not line and process.poll() is not None:
                     break

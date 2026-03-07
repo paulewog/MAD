@@ -178,6 +178,11 @@
       "ts": "2026-03-06T23:13Z",
       "stage": "MOVED",
       "note": "Manual move: spec-writing -> implementing"
+    },
+    {
+      "ts": "2026-03-07T01:11Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
     }
   ],
   "pipeline_log": [],

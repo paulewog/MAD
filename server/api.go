@@ -60,6 +60,24 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// checkAnyAuth returns true if the request is authenticated by either API key or dashboard key.
+// Used for endpoints that can be accessed by both API clients and dashboard users.
+func checkAnyAuth(r *http.Request, cfg *Config) bool {
+	// If neither key is configured, allow all
+	if cfg.APIKey == "" && cfg.DashboardKey == "" {
+		return true
+	}
+	// Check API key (only if configured)
+	if cfg.APIKey != "" && checkAPIAuth(r, cfg.APIKey) {
+		return true
+	}
+	// Check dashboard key (only if configured)
+	if cfg.DashboardKey != "" && checkDashboardAuth(r, cfg.DashboardKey) {
+		return true
+	}
+	return false
+}
+
 func checkAPIAuth(r *http.Request, apiKey string) bool {
 	if apiKey == "" {
 		return true
@@ -136,20 +154,29 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 			return
 		}
 		key := r.URL.Query().Get("key")
-		authenticated := key != "" && (cfg.DashboardKey == "" || key == cfg.DashboardKey)
-		clients := hub.ListClients()
-		// Aggregate all features across all clients, stamping client ID
+		authenticated := cfg.DashboardKey == "" || (key != "" && key == cfg.DashboardKey)
+
+		showKeyModal := !authenticated && cfg.DashboardKey != ""
+
+		var clients []ClientState
 		var allFeatures []FeatureSummary
-		for _, c := range clients {
-			for _, f := range c.Features {
-				f.ClientID = c.ClientID
-				allFeatures = append(allFeatures, f)
+
+		if authenticated {
+			clients = hub.ListClients()
+			// Aggregate all features across all clients, stamping client ID
+			for _, c := range clients {
+				for _, f := range c.Features {
+					f.ClientID = c.ClientID
+					allFeatures = append(allFeatures, f)
+				}
 			}
 		}
+
 		data := map[string]interface{}{
 			"Clients":       clients,
 			"Key":           key,
 			"Authenticated": authenticated,
+			"ShowKeyModal":  showKeyModal,
 			"StageGroups":   groupFeaturesByStage(allFeatures),
 		}
 		w.Header().Set("Content-Type", "text/html")
@@ -199,7 +226,13 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 			return
 		}
 
-		if !checkAPIAuth(r, cfg.APIKey) {
+		// If HTMX request, require dashboard auth
+		if r.Header.Get("HX-Request") != "" {
+			if !checkDashboardAuth(r, cfg.DashboardKey) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		} else if !checkAnyAuth(r, cfg) {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}
@@ -225,6 +258,20 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 	}
 	mux.HandleFunc("/api/clients", apiClientsHandler)
 	mux.HandleFunc("/api/clients/", apiClientsHandler)
+
+	// Key validation endpoint
+	mux.HandleFunc("/api/auth/validate", func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("key")
+		if cfg.DashboardKey == "" {
+			writeJSON(w, http.StatusOK, map[string]bool{"valid": true})
+			return
+		}
+		if key != "" && key == cfg.DashboardKey {
+			writeJSON(w, http.StatusOK, map[string]bool{"valid": true})
+			return
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]bool{"valid": false})
+	})
 
 	// HTMX fragment: board view (all features grouped by stage)
 	mux.HandleFunc("/api/board", func(w http.ResponseWriter, r *http.Request) {
@@ -324,7 +371,7 @@ func serveSubmitAnswers(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *C
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if !checkDashboardAuth(r, cfg.DashboardKey) && !checkAPIAuth(r, cfg.APIKey) {
+	if !checkAnyAuth(r, cfg) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
@@ -390,7 +437,7 @@ func serveAutoMode(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if !checkDashboardAuth(r, cfg.DashboardKey) && !checkAPIAuth(r, cfg.APIKey) {
+	if !checkAnyAuth(r, cfg) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
@@ -441,7 +488,7 @@ func serveStartAgent(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Conf
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if !checkDashboardAuth(r, cfg.DashboardKey) && !checkAPIAuth(r, cfg.APIKey) {
+	if !checkAnyAuth(r, cfg) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
@@ -545,9 +592,20 @@ func serveClientPage(w http.ResponseWriter, r *http.Request, hub *Hub, tmpl *tem
 	}
 
 	key := r.URL.Query().Get("key")
+	authenticated := cfg.DashboardKey == "" || (key != "" && key == cfg.DashboardKey)
+
+	showKeyModal := !authenticated && cfg.DashboardKey != ""
+
+	if !authenticated && cfg.DashboardKey != "" {
+		state = &ClientState{}
+	}
 
 	// Check for sub-resource (HTMX fragment endpoints)
 	if len(parts) == 2 {
+		if !authenticated && cfg.DashboardKey != "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html")
 		switch parts[1] {
 		case "features":
@@ -572,17 +630,19 @@ func serveClientPage(w http.ResponseWriter, r *http.Request, hub *Hub, tmpl *tem
 	}
 
 	data := map[string]interface{}{
-		"ClientID":    state.ClientID,
-		"Features":    state.Features,
-		"StageGroups": groupFeaturesByStage(state.Features),
-		"Logs":        state.Logs,
-		"LastSeen":    state.LastSeen,
-		"Connected":   state.Connected,
-		"PlanAgent":   state.PlanAgent,
-		"ImplAgent":   state.ImplAgent,
-		"AutoPlan":    state.AutoPlan,
-		"AutoImpl":    state.AutoImpl,
-		"Key":         key,
+		"ClientID":      state.ClientID,
+		"Features":      state.Features,
+		"StageGroups":   groupFeaturesByStage(state.Features),
+		"Logs":          state.Logs,
+		"LastSeen":      state.LastSeen,
+		"Connected":     state.Connected,
+		"PlanAgent":     state.PlanAgent,
+		"ImplAgent":     state.ImplAgent,
+		"AutoPlan":      state.AutoPlan,
+		"AutoImpl":      state.AutoImpl,
+		"Key":           key,
+		"Authenticated": authenticated,
+		"ShowKeyModal":  showKeyModal,
 	}
 	w.Header().Set("Content-Type", "text/html")
 	if err := tmpl.ExecuteTemplate(w, "client.html", data); err != nil {
@@ -592,7 +652,7 @@ func serveClientPage(w http.ResponseWriter, r *http.Request, hub *Hub, tmpl *tem
 }
 
 func serveClientJSON(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string) {
-	if !checkAPIAuth(r, cfg.APIKey) && !checkDashboardAuth(r, cfg.DashboardKey) {
+	if !checkAnyAuth(r, cfg) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
@@ -628,7 +688,7 @@ func serveCreateIdea(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Conf
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if !checkDashboardAuth(r, cfg.DashboardKey) && !checkAPIAuth(r, cfg.APIKey) {
+	if !checkAnyAuth(r, cfg) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}

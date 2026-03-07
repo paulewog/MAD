@@ -11,10 +11,14 @@ import time
 from pathlib import Path
 from typing import Optional
 
-# Set up pipeline log file
-_pipeline_log_dir = Path(__file__).parent.parent / ".mad" / "logs"
-_pipeline_log_dir.mkdir(parents=True, exist_ok=True)
-_pipeline_log_file = _pipeline_log_dir / "pipeline.log"
+# Import config early for logging setup
+from config import Config, get_mad_dir
+
+# Set up pipeline log file - use code_path if set, otherwise use mad_dir from cwd
+_config = Config()
+_log_dir = (_config.code_path / ".mad" / "logs" if _config.code_path else get_mad_dir() / "logs")
+_log_dir.mkdir(parents=True, exist_ok=True)
+_pipeline_log_file = _log_dir / "pipeline.log"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,7 +36,6 @@ app_logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent))
 
 from agent_status import AgentStatus
-from config import Config
 from config import (
     view_context_file,
     edit_context_file,
@@ -2289,8 +2292,9 @@ class PipelineApp(App):
         for board in self._config.boards:
             candidates = []
             stage_counts = {}
-            # Don't include "requested-input" - that's for waiting on human answers
-            plan_stages = [s for s in STAGE_ACTIONS["plan"] if s != "requested-input"]
+            # Only include plan-inbox and reviewing-plan for auto-plan
+            # Don't include "requested-input" (waiting for answers) or "approved" (ready for impl)
+            plan_stages = ["plan-inbox", "reviewing-plan"]
             for s in plan_stages:
                 found = FeatureFile.list_all(board=board, stage=s)
                 candidates.extend(found)
@@ -2552,7 +2556,7 @@ class PipelineApp(App):
 
     @work(thread=True, exclusive=True, group="implement")
     def _run_implement_async(self, feature: FeatureFile) -> None:
-        """Run implementation phase in background thread."""
+        """Run implementation phase in background thread, starting from current stage."""
         self.running = True
         self._implement_running = True
         runner = AgentRunner(self._config)
@@ -2566,22 +2570,48 @@ class PipelineApp(App):
         status.running = True
         
         try:
-            from phases import run_spec_writing, run_implementing, run_writing_tests, run_review_impl
-            self.app.call_from_thread(self._log_line, f"[impl] Starting spec_writing for {feature.title}")
-            run_spec_writing(feature, runner, status=status)
-            self.app.call_from_thread(self._log_line, f"[impl] Starting implementing (current stage: {feature.current_stage})")
-            run_implementing(feature, runner, status=status)
-            self.app.call_from_thread(self._log_line, f"[impl] After implementing, stage: {feature.current_stage}")
-            self.app.call_from_thread(self._log_line, f"[impl] Starting writing_tests")
-            run_writing_tests(feature, runner, status=status)
-            self.app.call_from_thread(self._log_line, f"[impl] Starting review_impl")
-            verdict, _ = run_review_impl(feature, runner, status=status)
-            self.app.call_from_thread(self._log_line, f"[impl] Review verdict: {verdict}")
-            if verdict == "PASS":
-                feature.move_to_stage("final-human-approval")
-                feature.add_history("PROMOTED", "Implementation approved")
-                feature.save()
-                self.app.call_from_thread(self._log_line, f"[impl] Moved to final-human-approval")
+            from phases import run_spec_writing, run_implementing, run_writing_tests, run_review_impl, run_pipeline_from_implementing
+            
+            # Start from the feature's current stage
+            stage = feature.current_stage
+            self.app.call_from_thread(self._log_line, f"[impl] Starting from stage: {stage} for {feature.title}")
+            
+            if stage == "spec-writing" or stage == "approved":
+                # Start from spec writing
+                self.app.call_from_thread(self._log_line, f"[impl] Starting spec_writing for {feature.title}")
+                run_spec_writing(feature, runner, status=status)
+                
+            # After spec_writing (or if already past it), run implementing
+            if feature.current_stage != "testing" and feature.current_stage != "review" and feature.current_stage != "final-human-approval":
+                self.app.call_from_thread(self._log_line, f"[impl] Starting implementing (current stage: {feature.current_stage})")
+                run_implementing(feature, runner, status=status)
+            
+            # After implementing, run tests
+            if feature.current_stage != "review" and feature.current_stage != "final-human-approval":
+                self.app.call_from_thread(self._log_line, f"[impl] After implementing, stage: {feature.current_stage}")
+                self.app.call_from_thread(self._log_line, f"[impl] Starting writing_tests")
+                run_writing_tests(feature, runner, status=status)
+            
+            # Run review (if in review stage or after tests)
+            if feature.current_stage == "review" and feature.current_stage != "final-human-approval":
+                self.app.call_from_thread(self._log_line, f"[impl] Running review for {feature.title}")
+                verdict, _ = run_review_impl(feature, runner, status=status)
+                self.app.call_from_thread(self._log_line, f"[impl] Review verdict: {verdict}")
+                if verdict == "PASS":
+                    feature.move_to_stage("final-human-approval")
+                    feature.add_history("PROMOTED", "Implementation approved")
+                    feature.save()
+                    self.app.call_from_thread(self._log_line, f"[impl] Moved to final-human-approval")
+            elif feature.current_stage != "final-human-approval":
+                # Also run review if not in review yet (for features coming from testing)
+                self.app.call_from_thread(self._log_line, f"[impl] Starting review_impl")
+                verdict, _ = run_review_impl(feature, runner, status=status)
+                self.app.call_from_thread(self._log_line, f"[impl] Review verdict: {verdict}")
+                if verdict == "PASS":
+                    feature.move_to_stage("final-human-approval")
+                    feature.add_history("PROMOTED", "Implementation approved")
+                    feature.save()
+                    self.app.call_from_thread(self._log_line, f"[impl] Moved to final-human-approval")
             self.app.call_from_thread(self._log_line, "=== Implementation completed ===")
         except RateLimitError as e:
             self.app.call_from_thread(self._log_line, f"=== Rate limited: {e} ===")

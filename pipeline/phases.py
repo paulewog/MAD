@@ -31,7 +31,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("pipeline")
 
-console = Console()
+# Redirect console.print to logger to avoid cluttering terminal
+class _LogConsole:
+    def print(self, msg, **kwargs):
+        # Extract the message text from rich formatting
+        import re
+        # Strip rich markup like [bold], [dim], etc.
+        clean_msg = re.sub(r'\[/?[a-z0-9]+\]', '', str(msg))
+        logger.info(clean_msg.strip())
+
+console = _LogConsole()
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -134,7 +143,7 @@ def run_planning(
     import sys
     
     runner = runner.for_phase("planning")
-    console.print(f"\n[bold blue]Planning:[/bold blue] {feature.title}")
+    # console.print(f"\n[bold blue]Planning:[/bold blue] {feature.title}")
     logger.info(f"[planning] Starting: {feature.title}")
     feature.add_history("PLANNING", "Starting planning")
     feature.save()

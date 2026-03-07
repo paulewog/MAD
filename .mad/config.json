@@ -28,9 +28,9 @@
     "push_interval_seconds": 10
   },
   "agent_for_phase": {
-    "planning": "default",
-    "spec_writing": "default",
-    "implementing": "default",
+    "planning": "claude",
+    "spec_writing": "claude",
+    "implementing": "claude",
     "fix_feedback": "default",
     "testing": "default",
     "review": "kilo",

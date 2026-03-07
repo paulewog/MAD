@@ -189,7 +189,71 @@
     </style>
 </head>
 <body>
-    <a class="back-link" href="/?key={{.Key}}">&larr; Back to Dashboard</a>
+    {{if .ShowKeyModal}}
+    <div class="modal-overlay" id="key-modal">
+        <div class="modal" style="max-width:400px">
+            <h3>Authentication Required</h3>
+            <p style="color:#8b949e;margin:0.5rem 0 1rem">Enter your dashboard key to access client details.</p>
+            <div id="key-error" style="color:#f85149;font-size:0.85rem;margin-bottom:0.5rem;display:none"></div>
+            <input type="password" id="key-input" placeholder="Enter key" style="width:100%;padding:0.75rem;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:1rem;margin-bottom:1rem">
+            <button onclick="saveKey()" style="width:100%;padding:0.75rem;background:#238636;border:none;border-radius:6px;color:#fff;font-size:1rem;cursor:pointer">Save Key</button>
+        </div>
+    </div>
+    <script>
+    function getKey() {
+        try {
+            var urlKey = new URLSearchParams(window.location.search).get('key');
+            if (urlKey) {
+                try { localStorage.setItem('mad_key', urlKey); } catch(e) {}
+                return urlKey;
+            }
+            return localStorage.getItem('mad_key') || '';
+        } catch(e) {
+            return new URLSearchParams(window.location.search).get('key') || '';
+        }
+    }
+    function saveKey() {
+        var input = document.getElementById('key-input');
+        var k = input.value.trim();
+        if (!k) return;
+        var errEl = document.getElementById('key-error');
+        fetch('/api/auth/validate?key=' + encodeURIComponent(k))
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.valid) {
+                    try { localStorage.setItem('mad_key', k); } catch(e) {}
+                    document.getElementById('key-modal').classList.remove('active');
+                    window.location.href = window.location.pathname + '?key=' + encodeURIComponent(k);
+                } else {
+                    errEl.textContent = 'Invalid key';
+                    errEl.style.display = 'block';
+                }
+            })
+            .catch(function() {
+                try { localStorage.setItem('mad_key', k); } catch(e) {}
+                window.location.href = window.location.pathname + '?key=' + encodeURIComponent(k);
+            });
+    }
+    function logout() {
+        try { localStorage.removeItem('mad_key'); } catch(e) {}
+        window.location.href = '/';
+    }
+    var key = getKey();
+    if (key && !new URLSearchParams(window.location.search).get('key')) {
+        window.location.href = window.location.pathname + '?key=' + encodeURIComponent(key);
+    }
+    document.getElementById('key-input').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') saveKey();
+    });
+    if (!key && document.getElementById('key-modal')) {
+        document.getElementById('key-modal').classList.add('active');
+    }
+    </script>
+    {{end}}
+    <div style="display:flex;justify-content:space-between;align-items:center">
+        <a class="back-link" href="/?key={{.Key}}">&larr; Back to Dashboard</a>
+        {{if .Authenticated}}<button onclick="logout()" style="padding:0.4rem 0.8rem;background:#30363d;color:#c9d1d9;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-weight:600">Logout</button>{{end}}
+    </div>
     <h1>Client: {{.ClientID}}</h1>
     <div class="client-status">
         {{if .Connected}}<span class="status-dot status-active"></span>Connected{{else}}<span class="status-dot status-stale"></span>Disconnected{{end}}
