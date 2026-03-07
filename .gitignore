@@ -2,4 +2,5 @@ logs/
 .tmp
 bin/
 __pycache__/
+pipeline/__pycache__/
 *.pyc

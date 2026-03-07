@@ -73,6 +73,11 @@ class FeatureFile:
         return self._data.get("title", "")
 
     @property
+    def item_type(self) -> str:
+        """Returns 'feature' or 'bug'. Defaults to 'feature' for existing items."""
+        return self._data.get("type", "feature")
+
+    @property
     def created(self) -> str:
         return self._data.get("created", "")
 
@@ -314,8 +319,12 @@ class FeatureFile:
     # --- Static finders ---
 
     @staticmethod
-    def create(board: str, title: str, description: str = "") -> "FeatureFile":
-        """Create a new feature file in the board's ideas stage."""
+    def create(board: str, title: str, description: str = "", item_type: str = "feature") -> "FeatureFile":
+        """Create a new feature file in the board's ideas stage.
+
+        Args:
+            item_type: "feature" (default) or "bug"
+        """
         config = Config()
         slug = _slugify(title)
         feature_id = uuid.uuid4().hex[:8]
@@ -327,6 +336,7 @@ class FeatureFile:
             "id": feature_id,
             "board": board,
             "title": title,
+            "type": item_type,
             "created": _now_iso(),
             "description": description or "No description provided.",
             "plan": "",

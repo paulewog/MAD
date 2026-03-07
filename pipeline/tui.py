@@ -1920,13 +1920,10 @@ class PipelineApp(App):
             items_pane.focus()
         except Exception:
             pass
-        
-        stage_headers = self.query(StageHeader)
-        feature_items = self.query(FeatureItem)
-        items = list(stage_headers) + list(feature_items)
-        if not items:
+
+        item_list = list(self.query("StageHeader, FeatureItem"))
+        if not item_list:
             return
-        item_list = items
         
         current = self.focused
         if current and current in item_list:
@@ -1950,13 +1947,10 @@ class PipelineApp(App):
             items_pane.focus()
         except Exception:
             pass
-        
-        stage_headers = self.query(StageHeader)
-        feature_items = self.query(FeatureItem)
-        items = list(stage_headers) + list(feature_items)
-        if not items:
+
+        item_list = list(self.query("StageHeader, FeatureItem"))
+        if not item_list:
             return
-        item_list = items
         
         current = self.focused
         if current and current in item_list:
