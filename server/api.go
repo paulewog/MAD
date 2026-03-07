@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/gorilla/websocket"
@@ -133,6 +134,24 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 			}
 			return strings.Join(boards, ", ")
 		},
+		"getBoardsFromClients": func(clients []ClientState) []string {
+			seen := map[string]bool{}
+			var boards []string
+			for _, c := range clients {
+				for _, f := range c.Features {
+					if f.Board != "" && !seen[f.Board] {
+						seen[f.Board] = true
+						boards = append(boards, f.Board)
+					}
+				}
+			}
+			// Also add a default option
+			if len(boards) == 0 {
+				boards = append(boards, "mad")
+			}
+			sort.Strings(boards)
+			return boards
+		},
 	}
 
 	tmpl := template.Must(template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/index.html", "templates/client.html"))
@@ -178,6 +197,7 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 			"Authenticated": authenticated,
 			"ShowKeyModal":  showKeyModal,
 			"StageGroups":   groupFeaturesByStage(allFeatures),
+			"Boards":        getBoardsFromClients(clients),
 		}
 		w.Header().Set("Content-Type", "text/html")
 		if err := tmpl.ExecuteTemplate(w, "index.html", data); err != nil {

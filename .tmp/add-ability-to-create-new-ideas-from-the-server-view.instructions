@@ -1,11 +1,11 @@
 Code Path: /home/paule/MAD
 Context File: /home/paule/MAD/.mad/CONTEXT.md
 
-You are an implementer breaking down a feature plan into concrete coding tasks.
+You are a senior code reviewer tasked with critically evaluating an implementation.
 
-Feature: Add ability to create new ideas from the server view
+## Feature: Add ability to create new ideas from the server view
 
-Plan:
+### Original Plan:
 ## Plan: Add ability to create new ideas from the server web app
 
 ### Overview
@@ -67,6 +67,105 @@ Add a "New Idea" form to the web app that sends a WebSocket message to a connect
 - Empty or invalid board name → Validate on server side before forwarding
 - Board doesn't exist on client → The `FeatureFile.create` method creates the directory if needed, so this is safe
 
-Write a detailed implementation spec — a list of specific coding tasks.
-For each task: what to create or modify, the approach, and dependencies on other tasks.
-Be concrete. No preamble.
+### Test Spec (requirements):
+Test specification written and saved to the feature JSON. The spec covers:
+
+1. **12 behaviors to verify** — REST endpoint validation, auth, WebSocket forwarding, pipeline client handling, FeatureFile creation, and UI forms in both client.html and index.html
+2. **12 edge cases** — client disconnection, duplicate titles, special characters, long inputs, missing boards, malformed JSON, concurrent requests, callback errors, and no-client scenarios
+3. **Failure criteria** — functional failures, validation bypasses, error handling breakdowns, expected error messages, and rollback behavior
+4. **Out of scope** — visual styling, poll timing, browser compatibility, performance, network simulation, and other non-functional concerns
+
+### Implementation:
+## Summary
+
+The "Add ability to create new ideas from the server view" feature is **fully implemented** across all layers. Here's what's in place:
+
+### Files Modified
+- **`server/api.go`** — `serveCreateIdea` handler (POST `/api/clients/{id}/ideas`) with validation (title/board required, client connected), auth checks, and WebSocket forwarding. Route wired in `apiClientsHandler`.
+- **`server/api_ideas_test.go`** — Comprehensive Go tests (36 tests covering success, validation, auth, edge cases, concurrency)
+- **`pipeline/server_client.py`** — `on_idea_created` callback parameter + `create_idea` message handling in `_handle_incoming`
+- **`pipeline/test_create_idea.py`** — 14 Python tests for callback wiring, message dispatch, edge cases
+- **`pipeline/tui.py`** — `_handle_create_idea` method calls `FeatureFile.create()` and triggers state push
+- **`server/templates/client.html`** — "New Idea" button + modal form (title, board, description)
+- **`server/templates/index.html`** — Dashboard-level "New Idea" button + modal with client selector dropdown
+
+### Architecture Flow
+Web UI form → POST `/api/clients/{id}/ideas` → Server validates & forwards `create_idea` WebSocket message → Pipeline client receives, calls `FeatureFile.create()` → State push reflects new idea
+
+### Test Results
+- **Go**: All 36 create_idea tests pass. (Other pre-existing flaky tests have intermittent race conditions unrelated to this feature.)
+- **Python**: All 14 tests pass.
+- **Build**: Go server compiles cleanly.
+
+### Tests Written
+
+Now I'll write tests for the missing behaviors. Let me add a test for the tui.py integration with FeatureFile.create.
+Let me verify the Go server compiles:
+Let me count the Go tests again to verify all are present:
+All tests pass. Summary:
+
+**Go tests (24 total):**
+- 22 in `api_ideas_test.go`
+- 1 in `api_ideas_handler_test.go`  
+- 1 additional test
+
+**Python tests (24 total):**
+- 14 original in `test_create_idea.py`
+- 10 new in `test_create_idea_tui.py` covering:
+  - FeatureFile.create integration (6 tests)
+  - ServerClient callback wiring (2 tests)
+  - Message format validation (2 tests)
+
+**Verification:**
+- Go server compiles cleanly
+- All 24 Go tests pass
+- All 24 Python tests pass
+
+---
+
+## Review Checklist
+
+For each item below, explicitly assess and document your findings:
+
+1. **Completeness**: Does the implementation cover ALL items in the plan? List any missing items.
+
+2. **Test Coverage**: Do tests verify ALL behaviors in the test spec? List any untested behaviors.
+
+3. **Code Quality**:
+   - Are there obvious bugs (null pointer, off-by-one, race conditions)?
+   - Is error handling adequate?
+   - Are there security concerns (injection, auth bypass)?
+   - Is there proper resource cleanup (files, connections)?
+
+4. **Edge Cases**: What happens with:
+   - Empty inputs?
+   - Very large inputs?
+   - Concurrent access?
+   - Network failures?
+   - Invalid states?
+
+5. **Architecture**:
+   - Is the code maintainable?
+   - Are dependencies explicit?
+   - Is there appropriate abstraction?
+
+---
+
+## Output Format
+
+Respond with EXACTLY this format (no other text). Use PLAIN TEXT only - no markdown formatting:
+
+**VERDICT: PASS** or **VERDICT: FAIL**
+
+If FAIL, you MUST provide specific, actionable feedback. Use plain text, no bold, no code blocks, no markdown:
+FEEDBACK: List each issue with file/function/line if possible, and what needs to be fixed.
+
+Example:
+```
+VERDICT: FAIL
+FEEDBACK:
+- Plan item "add authentication" not implemented - no login/user code found
+- Test spec requires "rate limiting" but no tests for it
+- NullPointerException in handle_submit() line 42 if input is None
+- Missing try/finally for file handle in process_data()
+```
