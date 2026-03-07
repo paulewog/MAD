@@ -33,6 +33,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from agent_status import AgentStatus
 from config import Config
+from config import (
+    view_context_file,
+    edit_context_file,
+)
 from phases import run_pipeline, _load_prompt, update_design_doc, _get_latest_feedback
 from runner import AgentRunner, RateLimitError
 from state import STAGES, STAGE_ACTIONS, FeatureFile
@@ -77,6 +81,83 @@ PIPELINE_PHASES = [
     ("review", "Review"),
 ]
 
+
+def handle_cli_commands(args: list) -> bool:
+    """Handle CLI commands. Returns True if command was handled, False otherwise."""
+    if len(args) < 2:
+        return False
+    
+    if args[1] == "config":
+        return _handle_config_command(args[2:])
+    elif args[1] == "context":
+        return _handle_context_command(args[2:])
+    
+    return False
+
+
+def _handle_config_command(args: list) -> bool:
+    """Handle 'mad config' subcommands."""
+    if not args:
+        print("Usage: mad config [get|set] [key] [value]")
+        return True
+    
+    config = Config()
+    
+    if args[0] == "get":
+        if len(args) < 2:
+            print("Usage: mad config get <key>")
+            return True
+        key = args[1]
+        if key == "code_path":
+            value = config.get_code_path_value()
+            if value:
+                print(value)
+            else:
+                code_path = config.code_path
+                if code_path:
+                    print(f"(derived) {code_path}")
+                else:
+                    print("(not set)")
+        else:
+            print(f"Unknown key: {key}")
+        return True
+    
+    elif args[0] == "set":
+        if len(args) < 3:
+            print("Usage: mad config set <key> <value>")
+            return True
+        key = args[1]
+        value = args[2]
+        if key == "code_path":
+            config.set_code_path(value)
+            print(f"code_path set to: {value}")
+        else:
+            print(f"Unknown key: {key}")
+        return True
+    
+    else:
+        print(f"Unknown config command: {args[0]}")
+        return True
+
+
+def _handle_context_command(args: list) -> bool:
+    """Handle 'mad context' subcommands."""
+    if not args:
+        print("Usage: mad context [view|edit]")
+        return True
+    
+    config = Config()
+    
+    if args[0] == "view":
+        view_context_file(config)
+        return True
+    elif args[0] == "edit":
+        edit_context_file(config)
+        return True
+    else:
+        print(f"Unknown context command: {args[0]}")
+        return True
+
 # Stages that require human attention — highlighted differently
 HUMAN_STAGES = {"final-human-approval"}
 
@@ -118,13 +199,13 @@ def _feature_markdown(feature: FeatureFile) -> str:
         lines += ["## Plan", "", feature.plan, ""]
 
     if feature.impl_spec:
-        lines += ["## Implementation Spec", "", feature.impl_spec, ""]
+        lines += ["## Implementation Spec", "", "```", feature.impl_spec, "```", ""]
 
     if feature.test_spec:
-        lines += ["## Test Spec", "", feature.test_spec, ""]
+        lines += ["## Test Spec", "", "```", feature.test_spec, "```", ""]
 
     if feature.impl_notes:
-        lines += ["## Implementation Notes", "", feature.impl_notes, ""]
+        lines += ["## Implementation Notes", "", "```", feature.impl_notes, "```", ""]
 
     # Show questions if any
     questions = feature.questions
@@ -2058,8 +2139,7 @@ class PipelineApp(App):
         
         self.notify(f"Starting pipeline from {stage}...", severity="information")
         
-        # Log is always visible now, just ensure log is focused
-        self._show_log()
+        # Log is always visible now
         self._log_line(f"Starting pipeline from {stage}...")
         
         # Run in background thread
@@ -2220,6 +2300,9 @@ class PipelineApp(App):
             
             if not candidates:
                 continue
+            
+            # Sort by most recently updated first (prefer items closer to completion)
+            candidates.sort(key=lambda f: f._path.stat().st_mtime, reverse=True)
                 
             for f in candidates:
                 if f.slug in self._auto_plan_queued:
@@ -2261,6 +2344,8 @@ class PipelineApp(App):
             # Check in reverse order to pick up from where we left off
             for stage in ["review", "testing", "implementing", "spec-writing", "approved"]:
                 candidates = FeatureFile.list_all(board=board, stage=stage)
+                # Sort by most recently updated first
+                candidates.sort(key=lambda f: f._path.stat().st_mtime, reverse=True)
                 logger.info(f"[auto-impl] Board '{board}', stage '{stage}': {len(candidates)} features")
                 for f in candidates:
                     if f.slug in self._auto_implement_queued:
@@ -2273,7 +2358,6 @@ class PipelineApp(App):
 
     def _auto_plan_feature(self, feature: FeatureFile) -> None:
         """Auto-run planning on a feature."""
-        self._show_log()
         self._log_line(f"=== Auto-Planning: {feature.title} ===")
         self._log_line(f"Stage: {feature.current_stage}")
         self._log_line("")
@@ -2282,7 +2366,6 @@ class PipelineApp(App):
 
     def _auto_implement_feature(self, feature: FeatureFile) -> None:
         """Auto-run implementation on a feature."""
-        self._show_log()
         self._log_line(f"=== Auto-Implementing: {feature.title} ===")
         self._log_line(f"Stage: {feature.current_stage}")
         self._log_line("")
@@ -2650,4 +2733,6 @@ def run_tui():
 
 
 if __name__ == "__main__":
+    if handle_cli_commands(sys.argv):
+        sys.exit(0)
     run_tui()

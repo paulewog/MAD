@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -10,6 +11,9 @@ from typing import Dict, List, Optional
 DEFAULT_GLOBAL_CONFIG = Path("~/MAD/config.json").expanduser()
 LOCAL_DIR = ".mad"
 LOCAL_CONFIG = "config.json"
+PROJECT_CONFIG = ".mad.config.json"
+CONTEXT_FILENAME = "CONTEXT.md"
+MAX_CONTEXT_SIZE = 100 * 1024  # 100KB
 
 
 def find_config() -> Optional[Path]:
@@ -224,6 +228,120 @@ class Config:
             push_interval_seconds=data.get("push_interval_seconds", 10.0),
         )
 
+    def _get_project_root(self) -> Path:
+        """Get the project root directory (where .mad.config.json lives)."""
+        return self.mad_dir.parent
+
+    def _get_project_config_path(self) -> Path:
+        """Get path to the project config file."""
+        return self._get_project_root() / PROJECT_CONFIG
+
+    def _get_per_board_config(self, board_name: str) -> Optional[dict]:
+        """Load per-board config if it exists."""
+        board_config_path = self.boards_dir / board_name / LOCAL_CONFIG
+        if board_config_path.exists():
+            try:
+                with open(board_config_path) as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+        return None
+
+    @property
+    def code_path(self) -> Optional[Path]:
+        """Get code_path from per-board config, project config, or derive from board location."""
+        project_config_path = self._get_project_config_path()
+        code_path = None
+
+        if self.boards:
+            for board in self.boards:
+                board_config = self._get_per_board_config(board)
+                if board_config and "code_path" in board_config:
+                    code_path = board_config["code_path"]
+                    break
+
+        if not code_path and project_config_path.exists():
+            try:
+                with open(project_config_path) as f:
+                    config_data = json.load(f)
+                    code_path = config_data.get("code_path")
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        if code_path:
+            resolved = os.path.realpath(code_path)
+            return Path(resolved)
+
+        derived = self._derive_code_path()
+        if derived:
+            return derived
+        return None
+
+    def _derive_code_path(self) -> Optional[Path]:
+        """Derive code_path from board location.
+        
+        Board is at: <project_root>/.mad/boards/<boardname>
+        So we need to go up 3 levels to get to project root.
+        """
+        if self.boards:
+            board_name = self.boards[0]
+            board_path = self.boards_dir / board_name
+            if board_path.exists():
+                derived = board_path.parent.parent.parent
+                resolved = os.path.realpath(derived)
+                return Path(resolved)
+        return None
+
+    @property
+    def context_file(self) -> Path:
+        """Get path to CONTEXT.md file."""
+        project_root = self._get_project_root()
+        return project_root / LOCAL_DIR / CONTEXT_FILENAME
+
+    def set_code_path(self, path: str) -> None:
+        """Set code_path in project config."""
+        if not path or not path.strip():
+            raise ValueError("code_path cannot be empty")
+        
+        project_config_path = self._get_project_config_path()
+        project_config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        config_data = {}
+        if project_config_path.exists():
+            try:
+                with open(project_config_path) as f:
+                    config_data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        config_data["code_path"] = path
+
+        try:
+            with open(project_config_path, "w") as f:
+                json.dump(config_data, f, indent=2)
+                f.write("\n")
+        except OSError as e:
+            raise RuntimeError(f"Failed to write config: {e}")
+
+    def get_code_path_value(self) -> Optional[str]:
+        """Get raw code_path value without resolving symlinks."""
+        project_config_path = self._get_project_config_path()
+
+        if project_config_path.exists():
+            try:
+                with open(project_config_path) as f:
+                    config_data = json.load(f)
+                    return config_data.get("code_path")
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        for board in self.boards:
+            board_config = self._get_per_board_config(board)
+            if board_config and "code_path" in board_config:
+                return board_config["code_path"]
+
+        return None
+
     @property
     def agent_for_phase(self) -> Dict[str, str]:
         """Get agent name for a given phase."""
@@ -292,3 +410,86 @@ class Config:
         for stage in ["ideas", "plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing",
                       "implementing", "testing", "review", "final-human-approval", "done", "rejected"]:
             (self.boards_dir / name / stage).mkdir(parents=True, exist_ok=True)
+
+
+def read_context_file(config: Config) -> Optional[str]:
+    """Read CONTEXT.md file with size limit and error handling.
+    
+    Returns None if file doesn't exist or cannot be read.
+    Truncates at 100KB byte boundary if file is too large.
+    """
+    context_path = config.context_file
+    if not context_path.exists():
+        return None
+    
+    try:
+        with open(context_path, "rb") as f:
+            content_bytes = f.read()
+        
+        if len(content_bytes) > MAX_CONTEXT_SIZE:
+            truncated_bytes = content_bytes[:MAX_CONTEXT_SIZE]
+            while truncated_bytes:
+                try:
+                    return truncated_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    truncated_bytes = truncated_bytes[:-1]
+            return ""
+        
+        return content_bytes.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def write_context_file(config: Config, content: str) -> None:
+    """Write content to CONTEXT.md file.
+    
+    Truncates content to 100KB at byte boundary if necessary.
+    """
+    context_path = config.context_file
+    context_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    content_bytes = content.encode("utf-8")
+    if len(content_bytes) > MAX_CONTEXT_SIZE:
+        content_bytes = content_bytes[:MAX_CONTEXT_SIZE]
+        while content_bytes:
+            try:
+                content_bytes.decode("utf-8")
+                break
+            except UnicodeDecodeError:
+                content_bytes = content_bytes[:-1]
+    
+    with open(context_path, "wb") as f:
+        f.write(content_bytes)
+
+
+def view_context_file(config: Config) -> None:
+    """Display CONTEXT.md content to stdout."""
+    content = read_context_file(config)
+    if content is None:
+        print("No CONTEXT.md file found.")
+        return
+    print(content)
+
+
+def edit_context_file(config: Config) -> None:
+    """Edit CONTEXT.md using $EDITOR or fallback editors."""
+    context_path = config.context_file
+    context_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    if not context_path.exists():
+        context_path.write_text("")
+    
+    editor = os.environ.get("EDITOR")
+    if not editor:
+        for fallback in ["vim", "nano", "vi"]:
+            result = subprocess.run(["which", fallback], capture_output=True)
+            if result.returncode == 0:
+                editor = fallback
+                break
+    
+    if not editor:
+        raise RuntimeError("No editor found. Set $EDITOR or install vim/nano.")
+    
+    result = subprocess.run([editor, str(context_path)])
+    if result.returncode != 0:
+        raise RuntimeError(f"Editor exited with code {result.returncode}")

@@ -10,7 +10,7 @@ from typing import Optional
 from rich.console import Console
 
 from agent_status import AgentStatus
-from config import AgentConfig, Config
+from config import AgentConfig, Config, read_context_file
 
 console = Console()
 
@@ -41,8 +41,14 @@ class AgentRunner:
     def __init__(self, config: Config, agent_name: str = None, workdir: Path = None):
         self._config = config
         self._agent_name = agent_name
-        # Default workdir to MAD_DIR env var or current directory
-        self._workdir = workdir or Path(os.environ.get("MAD_DIR", ".")).expanduser().resolve()
+        if workdir is not None:
+            self._workdir = workdir
+        else:
+            code_path = config.code_path
+            if code_path is not None:
+                self._workdir = code_path
+            else:
+                self._workdir = Path(os.environ.get("MAD_DIR", ".")).expanduser().resolve()
 
     @property
     def agent(self) -> AgentConfig:
@@ -57,7 +63,27 @@ class AgentRunner:
     def for_phase(self, phase: str) -> "AgentRunner":
         """Create a new runner configured for a specific phase."""
         agent_name = self._config.agent_for_phase.get(phase)
-        return AgentRunner(self._config, agent_name)
+        return AgentRunner(self._config, agent_name, self._workdir)
+
+    def _prepend_context(self, prompt: str) -> str:
+        """Prepend code path and context file info to prompt."""
+        code_path = self._config.code_path
+        context_file = self._config.context_file
+        
+        header = []
+        if code_path:
+            header.append(f"Code Path: {code_path}")
+        header.append(f"Context File: {context_file}")
+        
+        context_content = read_context_file(self._config)
+        
+        parts = ["\n".join(header), ""]
+        if context_content:
+            parts.append(context_content)
+            parts.append("")
+        parts.append(prompt)
+        
+        return "\n".join(parts)
 
     def interactive(self, workdir: Path, initial_message: str = None) -> None:
         """Launch the agent interactively in workdir.
@@ -75,6 +101,8 @@ class AgentRunner:
         console.print(f"[dim]Launching {self.agent.name} interactively in {workdir}[/dim]")
         
         if initial_message:
+            full_message = self._prepend_context(initial_message)
+            
             # Create .tmp directory
             tmp_dir = workdir / ".tmp"
             tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -84,9 +112,9 @@ class AgentRunner:
             
             # Write instructions to .tmp/<item>.instructions
             instructions_path = tmp_dir / f"{item_name}.instructions"
-            instructions_path.write_text(initial_message)
-            logger.info(f"[runner] Interactive instructions for '{item_name}': {len(initial_message)} chars")
-            logger.info(f"[runner] Instructions preview: {initial_message[:200]}...")
+            instructions_path.write_text(full_message)
+            logger.info(f"[runner] Interactive instructions for '{item_name}': {len(full_message)} chars")
+            logger.info(f"[runner] Instructions preview: {full_message[:200]}...")
             
             console.print(f"[dim].tmp/{item_name}.instructions contains the task. Just talk to kilo naturally![/dim]")
             
@@ -117,6 +145,7 @@ class AgentRunner:
         
         Instructions are written to .tmp/<item>.instructions file and read via --prompt.
         """
+        log_file = None
         try:
             workdir = workdir or self._workdir
             workdir = Path(workdir).expanduser().resolve()
@@ -135,11 +164,13 @@ class AgentRunner:
             for f in tmp_dir.glob(f"{item_name}.instructions*"):
                 f.unlink()
             
+            full_prompt = self._prepend_context(prompt)
+            
             # Write instructions to .tmp/<item>.instructions file
             instructions_path = tmp_dir / f"{item_name}.instructions"
-            instructions_path.write_text(prompt)
-            logger.info(f"[runner] Wrote instructions for '{item_name}': {len(prompt)} chars")
-            logger.info(f"[runner] Instructions preview: {prompt[:200]}...")
+            instructions_path.write_text(full_prompt)
+            logger.info(f"[runner] Wrote instructions for '{item_name}': {len(full_prompt)} chars")
+            logger.info(f"[runner] Instructions preview: {full_prompt[:200]}...")
             
             # Build command:
             # For kilo: "kilo run --format json --auto <message>"
@@ -257,11 +288,6 @@ class AgentRunner:
                     if status is not None and len(status.lines) > 200:
                         status.lines = status.lines[-200:]
             
-            # Close log file
-            if log_file:
-                log_file.close()
-                print(f"[runner] Log file closed", file=__import__('sys').stderr)
-            
             stderr_output = process.stderr.read() if process.stderr else ""
             full_output = "\n".join(output_lines)
 
@@ -281,3 +307,6 @@ class AgentRunner:
         finally:
             if status is not None:
                 status.running = False
+            if log_file:
+                log_file.close()
+                print(f"[runner] Log file closed", file=__import__('sys').stderr)

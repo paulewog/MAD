@@ -5,6 +5,7 @@ headless agent call, updates the feature file, and moves it to the next stage.
 """
 
 import logging
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -33,6 +34,40 @@ logger = logging.getLogger("pipeline")
 console = Console()
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+def _git_commit(feature: FeatureFile, stage: str) -> None:
+    """Commit current pipeline state to git for safety."""
+    try:
+        repo_root = Path(__file__).parent.parent
+        # Stage the feature file and any changes in .mad/boards
+        subprocess.run(
+            ["git", "add", "-A", ".mad/boards/", ".mad/logs/"],
+            cwd=repo_root,
+            capture_output=True,
+            check=True,
+        )
+        # Check if there are changes to commit
+        result = subprocess.run(
+            ["git", "diff", "--staged", "--quiet"],
+            cwd=repo_root,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            logger.info(f"[git] No changes to commit for {feature.title}")
+            return
+        
+        # Commit with descriptive message
+        msg = f"MAD: {feature.title} - {stage}"
+        subprocess.run(
+            ["git", "commit", "-m", msg],
+            cwd=repo_root,
+            capture_output=True,
+            check=True,
+        )
+        logger.info(f"[git] Committed: {msg}")
+    except Exception as e:
+        logger.warning(f"[git] Commit failed: {e}")
 
 
 def _load_prompt(name: str) -> str:
@@ -101,6 +136,8 @@ def run_planning(
     runner = runner.for_phase("planning")
     console.print(f"\n[bold blue]Planning:[/bold blue] {feature.title}")
     logger.info(f"[planning] Starting: {feature.title}")
+    feature.add_history("PLANNING", "Starting planning")
+    feature.save()
     print(f"[DEBUG] Starting planning for {feature.title}", file=sys.stderr)
     sys.stderr.flush()
 
@@ -189,6 +226,7 @@ def run_planning(
     feature.add_history("PLANNING", f"Plan generated via {runner.agent.name}")
     feature.save()
     feature.move_to_stage("reviewing-plan")
+    _git_commit(feature, "planning complete")
     
     console.print("[green]Plan generated. Feature moved to reviewing-plan.[/green]")
     return True
@@ -207,6 +245,8 @@ def run_plan_review(
     runner = runner.for_phase("reviewing_plan")
     console.print(f"\n[bold blue]Reviewing Plan:[/bold blue] {feature.title}")
     logger.info(f"[plan-review] Starting: {feature.title}")
+    feature.add_history("PLAN_REVIEW", "Starting plan review")
+    feature.save()
 
     template = _load_prompt("review-plan.md")
     
@@ -316,6 +356,8 @@ def run_implementing(
     runner = runner.for_phase("implementing")
     console.print(f"\n[bold blue]Implementing:[/bold blue] {feature.title}")
     logger.info(f"[implementing] Starting: {feature.title}")
+    feature.add_history("IMPLEMENTING", "Starting implementation")
+    feature.save()
 
     template = _load_prompt("implement.md")
     prompt = template.format(
@@ -324,6 +366,13 @@ def run_implementing(
         impl_spec=feature.impl_spec,
         test_spec=feature.test_spec,
     )
+    
+    # Check if there's previous review feedback to include
+    feedback_context = ""
+    latest_feedback = _get_latest_feedback(feature)
+    if latest_feedback and latest_feedback != "No previous feedback available.":
+        feedback_context = f"\n\n## Previous Review Feedback (you MUST address these issues):\n{latest_feedback}\n"
+        prompt += feedback_context
 
     if status is not None:
         status.phase = "implementing"
@@ -337,6 +386,7 @@ def run_implementing(
     feature.move_to_stage("testing")
     feature.add_history("TESTING", "Moved to testing phase")
     feature.save()
+    _git_commit(feature, "implementation complete")
     console.print("[green]Implementation done. Feature moved to testing.[/green]")
 
 
@@ -349,6 +399,8 @@ def run_fix_feedback(
     """Run the fix-feedback phase - focuses on fixing issues from review feedback."""
     runner = runner.for_phase("fix_feedback")
     console.print(f"\n[bold blue]Fixing Review Feedback:[/bold blue] {feature.title}")
+    feature.add_history("FIX_FEEDBACK", "Starting fix feedback")
+    feature.save()
 
     template = _load_prompt("fix-feedback.md")
     prompt = template.format(
@@ -383,6 +435,8 @@ def run_writing_tests(
     """Run the test-writing phase headlessly."""
     runner = runner.for_phase("testing")
     console.print(f"\n[bold blue]Writing Tests:[/bold blue] {feature.title}")
+    feature.add_history("TESTING", "Starting test writing")
+    feature.save()
 
     template = _load_prompt("write-tests.md")
     prompt = template.format(
@@ -415,6 +469,8 @@ def run_review_impl(
     """Run the review phase. Returns (verdict, feedback)."""
     runner = runner.for_phase("review")
     console.print(f"\n[bold blue]Reviewing:[/bold blue] {feature.title}")
+    feature.add_history("REVIEW", "Starting review")
+    feature.save()
 
     template = _load_prompt("review-impl.md")
     prompt = template.format(
@@ -519,6 +575,7 @@ def run_pipeline(
                 feature.move_to_stage("approved")
                 feature.add_history("PROMOTED", "Plan approved, moving to spec-writing")
                 feature.save()
+                _git_commit(feature, "plan approved")
                 break
             
             if attempt < max_plan_review_attempts:

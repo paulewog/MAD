@@ -1,8 +1,11 @@
-You are a QA engineer writing a test specification from a feature plan.
+Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+You are a senior code reviewer tasked with critically evaluating an implementation.
 
 ## Feature: add code path to board
 
-### Plan:
+### Original Plan:
 Based on the feature description and previous Q&A, here is the implementation plan:
 
 ## 1. Config Schema Changes
@@ -68,32 +71,84 @@ Implement the following CLI commands:
 - Document that setting cwd to project root has security implications if agent runs malicious code
 - Path validation to prevent escaping to parent directories or accessing sensitive paths is noted for future consideration but not implemented now
 
+### Test Spec (requirements):
+I'll write a comprehensive test specification based on the feature plan provided in the instructions.
+Test specification written to `/home/paule/MAD/.tmp/test-spec-add-code-path-to-board.md`. The spec covers:
+
+1. **Behaviors That MUST Be Verified**: Config schema changes (global/per-board), CONTEXT.md handling, agent working directory, and instruction prepending
+2. **Edge Cases**: Empty/null inputs, boundary conditions (100KB truncation), invalid states, concurrent operations, error conditions
+3. **What Constitutes Failure**: Criteria for test failure, expected error messages, rollback behavior
+4. **Out of Scope**: UI timing, visual assertions, performance benchmarks, network conditions, and other explicitly excluded areas
+
+### Implementation:
+I'll fix the two issues identified in the review feedback. Let me first examine the relevant code in both files.
+Now I'll fix both issues:
+
+1. **runner.py**: Remove the duplicate log_file close (lines 291-294), keep only the finally block cleanup
+2. **config.py**: Change iteration to check all boards instead of just the first one
+Let me verify the fixes are correctly applied:
+Now let me run the tests to verify the fixes work correctly:
+All 47 tests pass. Here's a summary of the fixes applied:
+
+1. **runner.py** - Removed the duplicate `log_file.close()` at lines 291-294. The log file is now only closed in the finally block (line 316), preventing the double-close error.
+
+2. **config.py:256-261** - Changed the `code_path` getter to iterate through all boards instead of only checking `self.boards[0]`. Now uses a for loop that checks each board's config and breaks when a `code_path` is found.
+
+### Tests Written
+
+All 47 tests pass. The test file at `/home/paule/MAD/pipeline/test_code_path.py` already contains comprehensive tests covering:
+
+1. **Config schema changes**: Global and per-board code_path configuration, default derivation
+2. **CONTEXT.md handling**: Reading, writing, viewing, editing, truncation at 100KB, UTF-8 boundary handling
+3. **Agent working directory**: Uses code_path as workdir, falls back to MAD_DIR
+4. **Agent instructions prepending**: Code path and context file included in prompts
+5. **Edge cases**: Empty/null inputs, long paths, permission errors, non-existent paths, concurrent operations
+
 ---
 
-## Test Spec Requirements
+## Review Checklist
 
-Write a comprehensive test spec with these sections:
+For each item below, explicitly assess and document your findings:
 
-### 1. Behaviors That MUST Be Verified
-- Each behavior from the plan
-- Success criteria for each
-- Expected outputs
+1. **Completeness**: Does the implementation cover ALL items in the plan? List any missing items.
 
-### 2. Edge Cases
-- Empty/null inputs
-- Boundary conditions
-- Invalid states
-- Concurrent operations
-- Error conditions
+2. **Test Coverage**: Do tests verify ALL behaviors in the test spec? List any untested behaviors.
 
-### 3. What Constitutes Failure
-- Criteria for test failure
-- Error messages expected
-- Rollback behavior
+3. **Code Quality**:
+   - Are there obvious bugs (null pointer, off-by-one, race conditions)?
+   - Is error handling adequate?
+   - Are there security concerns (injection, auth bypass)?
+   - Is there proper resource cleanup (files, connections)?
 
-### 4. Out of Scope
-- Explicitly list what NOT to test (UI timing, visual assertions, performance benchmarks, etc.)
+4. **Edge Cases**: What happens with:
+   - Empty inputs?
+   - Very large inputs?
+   - Concurrent access?
+   - Network failures?
+   - Invalid states?
+
+5. **Architecture**:
+   - Is the code maintainable?
+   - Are dependencies explicit?
+   - Is there appropriate abstraction?
 
 ---
 
-Write in plain language, NOT actual test code. Focus on "what should happen" not "how to test it".
+## Output Format
+
+Respond with EXACTLY this format (no other text). Use PLAIN TEXT only - no markdown formatting:
+
+**VERDICT: PASS** or **VERDICT: FAIL**
+
+If FAIL, you MUST provide specific, actionable feedback. Use plain text, no bold, no code blocks, no markdown:
+FEEDBACK: List each issue with file/function/line if possible, and what needs to be fixed.
+
+Example:
+```
+VERDICT: FAIL
+FEEDBACK:
+- Plan item "add authentication" not implemented - no login/user code found
+- Test spec requires "rate limiting" but no tests for it
+- NullPointerException in handle_submit() line 42 if input is None
+- Missing try/finally for file handle in process_data()
+```

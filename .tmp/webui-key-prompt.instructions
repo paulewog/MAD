@@ -1,8 +1,11 @@
-You are a QA engineer writing a test specification from a feature plan.
+Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
 
-## Feature: webui key prompt
+You are an implementer breaking down a feature plan into concrete coding tasks.
 
-### Plan:
+Feature: webui key prompt
+
+Plan:
 I'll explore the codebase to understand the current implementation and create a comprehensive plan that addresses all the issues raised in the review feedback.
 Now let me check the template structure in index.html:
 Now I have a complete understanding of the codebase. Let me create a comprehensive plan that addresses all the issues identified in the review feedback.
@@ -14,32 +17,6 @@ Now I have a complete understanding of the codebase. Let me create a comprehensi
 }
 ```
 
----
-
-## Test Spec Requirements
-
-Write a comprehensive test spec with these sections:
-
-### 1. Behaviors That MUST Be Verified
-- Each behavior from the plan
-- Success criteria for each
-- Expected outputs
-
-### 2. Edge Cases
-- Empty/null inputs
-- Boundary conditions
-- Invalid states
-- Concurrent operations
-- Error conditions
-
-### 3. What Constitutes Failure
-- Criteria for test failure
-- Error messages expected
-- Rollback behavior
-
-### 4. Out of Scope
-- Explicitly list what NOT to test (UI timing, visual assertions, performance benchmarks, etc.)
-
----
-
-Write in plain language, NOT actual test code. Focus on "what should happen" not "how to test it".
+Write a detailed implementation spec — a list of specific coding tasks.
+For each task: what to create or modify, the approach, and dependencies on other tasks.
+Be concrete. No preamble.

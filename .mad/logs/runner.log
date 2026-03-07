@@ -629,3 +629,80 @@ Based on the feature description and previous Q&A, he...
 2026-03-06 16:08:03,484 INFO Starting kilo with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/add-code-path-to-board.instructions and follow the instructions exactly.']
 2026-03-06 16:08:03,484 INFO status.feature_slug = 'add-code-path-to-board'
 2026-03-06 16:08:03,484 INFO Logging to: /home/paule/MAD/logs/kilo-add-code-path-to-board-1772842083.log
+2026-03-06 16:11:49,430 INFO [git] Committed: MAD: add code path to board - implementation complete
+2026-03-06 16:11:49,431 INFO [runner] Wrote instructions for 'add-code-path-to-board': 1958 chars
+2026-03-06 16:11:49,431 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+Write tests for the following implemented feature.
+
+Feature: add code path to board
+
+Test Spec (behaviors to verify):
+I'll wri...
+2026-03-06 16:11:49,432 INFO Starting kilo with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/add-code-path-to-board.instructions and follow the instructions exactly.']
+2026-03-06 16:11:49,432 INFO status.feature_slug = 'add-code-path-to-board'
+2026-03-06 16:11:49,432 INFO Logging to: /home/paule/MAD/logs/kilo-add-code-path-to-board-1772842309.log
+2026-03-06 16:14:32,203 INFO [runner] Wrote instructions for 'add-code-path-to-board': 7747 chars
+2026-03-06 16:14:32,203 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+You are a senior code reviewer tasked with critically evaluating an implementation.
+
+## Feature: add code path to board
+
+### O...
+2026-03-06 16:14:32,204 INFO Starting kilo with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/add-code-path-to-board.instructions and follow the instructions exactly.']
+2026-03-06 16:14:32,204 INFO status.feature_slug = 'add-code-path-to-board'
+2026-03-06 16:14:32,204 INFO Logging to: /home/paule/MAD/logs/kilo-add-code-path-to-board-1772842472.log
+2026-03-06 16:16:23,832 INFO [runner] Wrote instructions for 'add-code-path-to-board': 25843 chars
+2026-03-06 16:16:23,832 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+You are an AI coding agent tasked with fixing specific issues found in a code review.
+
+## Feature: add code path to board
+
+###...
+2026-03-06 16:16:23,833 INFO Starting kilo with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/add-code-path-to-board.instructions and follow the instructions exactly.']
+2026-03-06 16:16:23,833 INFO status.feature_slug = 'add-code-path-to-board'
+2026-03-06 16:16:23,833 INFO Logging to: /home/paule/MAD/logs/kilo-add-code-path-to-board-1772842583.log
+2026-03-06 16:17:33,968 INFO [runner] Wrote instructions for 'add-code-path-to-board': 2182 chars
+2026-03-06 16:17:33,968 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+Write tests for the following implemented feature.
+
+Feature: add code path to board
+
+Test Spec (behaviors to verify):
+I'll wri...
+2026-03-06 16:17:33,969 INFO Starting kilo with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/add-code-path-to-board.instructions and follow the instructions exactly.']
+2026-03-06 16:17:33,969 INFO status.feature_slug = 'add-code-path-to-board'
+2026-03-06 16:17:33,969 INFO Logging to: /home/paule/MAD/logs/kilo-add-code-path-to-board-1772842653.log
+2026-03-06 16:18:17,876 INFO [runner] Wrote instructions for 'add-code-path-to-board': 7102 chars
+2026-03-06 16:18:17,876 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+You are a senior code reviewer tasked with critically evaluating an implementation.
+
+## Feature: add code path to board
+
+### O...
+2026-03-06 16:18:17,877 INFO Starting kilo with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/add-code-path-to-board.instructions and follow the instructions exactly.']
+2026-03-06 16:18:17,877 INFO status.feature_slug = 'add-code-path-to-board'
+2026-03-06 16:18:17,877 INFO Logging to: /home/paule/MAD/logs/kilo-add-code-path-to-board-1772842697.log
+2026-03-06 16:26:54,790 INFO [spec-writing] Starting: webui key prompt
+2026-03-06 16:26:54,795 INFO [runner] Wrote instructions for 'webui-key-prompt': 11050 chars
+2026-03-06 16:26:54,795 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+You are an implementer breaking down a feature plan into concrete coding tasks.
+
+Feature: webui key prompt
+
+Plan:
+I'll explore...
+2026-03-06 16:26:54,796 INFO Starting kilo with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/webui-key-prompt.instructions and follow the instructions exactly.']
+2026-03-06 16:26:54,796 INFO status.feature_slug = 'webui-key-prompt'
+2026-03-06 16:26:54,796 INFO Logging to: /home/paule/MAD/logs/kilo-webui-key-prompt-1772843214.log
