@@ -244,9 +244,16 @@ def run_planning(
             console.print(f"[red]Error processing planning output: {e}[/red]")
             raise
     
-    # Fallback: treat entire output as plan
+    # Fallback: treat entire output as plan (but not if it's just the completion marker)
+    output_stripped = output.strip()
+    if output_stripped.upper() in ("PLAN_COMPLETE", "PLAN_COMPLETE\n",):
+        console.print(f"[red]Agent only output PLAN_COMPLETE without a plan! Output: {output_stripped[:100]}[/red]")
+        feature.add_history("PLANNING", f"FAILED: Agent did not produce a plan")
+        feature.save()
+        return False
+        
     console.print("[yellow]No valid JSON found, using fallback[/yellow]")
-    feature.set_plan(output.strip())
+    feature.set_plan(output_stripped)
     feature.add_history("PLANNING", f"Plan generated via {runner.agent.name}")
     feature.save()
     feature.move_to_stage("reviewing-plan")

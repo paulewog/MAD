@@ -6106,3 +6106,57 @@ TEST...
 2026-03-06 23:47:17,015 INFO [auto-plan] Checking boards: ['mad']
 2026-03-06 23:47:17,015 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
 2026-03-06 23:47:17,015 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:47:27,007 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:47:27,007 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:47:27,008 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:47:37,010 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:47:37,011 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:47:37,011 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:47:47,009 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:47:47,009 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:47:47,009 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:47:57,009 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:47:57,009 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:47:57,010 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:48:07,006 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:48:07,006 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:48:07,006 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:48:17,004 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:48:17,005 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:48:17,006 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:48:27,003 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:48:27,003 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:48:27,003 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:48:37,003 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:48:37,003 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:48:37,004 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:48:47,004 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:48:47,004 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:48:47,004 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:48:56,998 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:48:56,998 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:48:56,998 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:49:06,995 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:49:06,996 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:49:06,996 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:49:16,995 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:49:16,995 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:49:16,995 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:49:27,000 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:49:27,000 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:49:27,000 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:49:37,000 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:49:37,000 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:49:37,000 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:49:47,001 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:49:47,001 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:49:47,001 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:49:56,989 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:49:56,989 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:49:56,990 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:50:06,989 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:50:06,990 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:50:06,990 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:50:16,987 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:50:16,987 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:50:16,987 INFO [auto-impl] Skipping - implementation already in progress

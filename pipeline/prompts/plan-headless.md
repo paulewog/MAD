@@ -24,13 +24,19 @@ You are an AI helping plan this feature. Generate a plan based on the descriptio
 }
 ```
 
+**IMPORTANT - Output Rules:**
+- You MUST output valid JSON with the plan field filled in
+- Do NOT just write "PLAN_COMPLETE" - you must actually write the plan
+- The plan should be detailed and actionable
+- After outputting the JSON, write "PLAN_COMPLETE" on its own line
+
 **Instructions:**
 - Only include "questions" if you genuinely need human input to proceed
 - If "questions" is empty or missing, the plan will be considered complete
 - Keep questions specific and actionable
 - Write a complete, detailed plan in the "plan" field
 
-Start now and output only valid JSON.
+Start now and output only valid JSON with your plan.
 
 ## Checkpoint Instructions
 After completing each meaningful unit of work, write a checkpoint file to:
