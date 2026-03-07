@@ -60,4 +60,4 @@ FEEDBACK:
 - Missing try/finally for file handle in process_data()
 ```
 
-When finished, write "REVIEW_COMPLETE" on its own line and then exit. Do not wait for more input.
+When finished, write "DONE" on its own line and then exit. Do not wait for more input.

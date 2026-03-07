@@ -26,9 +26,9 @@ You are an AI helping plan this feature. Generate a plan based on the descriptio
 
 **IMPORTANT - Output Rules:**
 - You MUST output valid JSON with the plan field filled in
-- Do NOT just write "PLAN_COMPLETE" - you must actually write the plan
+- Do NOT just write "DONE" - you must actually write the plan
 - The plan should be detailed and actionable
-- After outputting the JSON, write "PLAN_COMPLETE" on its own line
+- After outputting the JSON, write "DONE" on its own line
 
 **Instructions:**
 - Only include "questions" if you genuinely need human input to proceed
@@ -59,4 +59,4 @@ Use this exact JSON format:
 Overwrite the file each time (not append). Create the .mad/checkpoints/ directory if it doesn't exist.
 If writing the checkpoint fails for any reason (permissions, disk space), just continue working — checkpoints are best-effort and should never block your actual work.
 
-When finished, write "PLAN_COMPLETE" on its own line and then exit. Do not wait for more input.
+When finished, write "DONE" on its own line and then exit. Do not wait for more input.

@@ -29,4 +29,4 @@ You are a design document updater. Your task is to mark a feature as complete in
 ## Output
 Only output the updated design document content (if single match), or the appropriate status message above.
 
-When finished, write "UPDATE_COMPLETE" on its own line and then exit. Do not wait for more input.
+When finished, write "DONE" on its own line and then exit. Do not wait for more input.

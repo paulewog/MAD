@@ -56,4 +56,4 @@ Use this exact JSON format:
 Overwrite the file each time (not append). Create the .mad/checkpoints/ directory if it doesn't exist.
 If writing the checkpoint fails for any reason (permissions, disk space), just continue working — checkpoints are best-effort and should never block your actual work.
 
-When finished, write "TESTSPEC_COMPLETE" on its own line and then exit. Do not wait for more input.
+When finished, write "TESTDONE" on its own line and then exit. Do not wait for more input.

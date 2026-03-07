@@ -228,6 +228,12 @@ class AgentRunner:
             if checkpoint_context:
                 full_prompt += checkpoint_context
             
+            # Add output file instructions
+            output_path = tmp_dir / f"{item_name}.output.json"
+            full_prompt += f"\n\nIMPORTANT: Write your complete output as JSON to this file: {output_path}\n"
+            full_prompt += "Write ONLY valid JSON to this file. Nothing else.\n"
+            full_prompt += "After writing the file, write DONE on its own line to signal completion.\n"
+            
             # Write instructions to .tmp/<item>.instructions file
             instructions_path = tmp_dir / f"{item_name}.instructions"
             instructions_path.write_text(full_prompt)
@@ -347,6 +353,10 @@ class AgentRunner:
                 if not line and process.poll() is not None:
                     break
                 if line:
+                    # Check for completion marker
+                    if line.strip().upper() == "DONE":
+                        logger.info(f"[runner] Received DONE signal")
+                    
                     # Write raw line to log file for debugging
                     if log_file:
                         log_file.write(line)
@@ -390,7 +400,22 @@ class AgentRunner:
                         status.lines = status.lines[-200:]
             
             stderr_output = process.stderr.read() if process.stderr else ""
-            full_output = "\n".join(output_lines)
+            
+            # Try to read output from file first (preferred)
+            output_from_file = ""
+            if output_path.exists():
+                try:
+                    output_from_file = output_path.read_text()
+                    logger.info(f"[runner] Read {len(output_from_file)} chars from output file")
+                except Exception as e:
+                    logger.warning(f"[runner] Failed to read output file: {e}")
+            
+            # Use file output if available, otherwise fall back to stdout
+            if output_from_file:
+                full_output = output_from_file
+            else:
+                full_output = "\n".join(output_lines)
+                logger.warning(f"[runner] No output file found, using stdout")
 
             # Check for rate limiting
             if "out of" in full_output.lower() and "usage" in full_output.lower():
