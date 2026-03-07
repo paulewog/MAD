@@ -1150,8 +1150,8 @@ class PipelineApp(App):
     }
 
     #items-pane {
-        width: 34;
-        min-width: 24;
+        width: 1fr;
+        min-width: 20;
         border-right: solid $panel;
         overflow-y: auto;
     }
@@ -1161,7 +1161,7 @@ class PipelineApp(App):
     }
 
     #details-pane {
-        width: 33;
+        width: 2fr;
         height: 100%;
         overflow-y: auto;
         border-right: solid $panel;
@@ -1172,7 +1172,7 @@ class PipelineApp(App):
     }
 
     #logs-agents-pane {
-        width: 33;
+        width: 1fr;
         height: 100%;
     }
 

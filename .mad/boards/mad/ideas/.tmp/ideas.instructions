@@ -1,12 +1,12 @@
 Code Path: /home/paule/MAD
 Context File: /home/paule/MAD/.mad/CONTEXT.md
 
-**Feature Iteration: AI Agent Checkpoint System**
+**Feature Iteration: specific-review-slots**
 
-The feature file is at: `ai-agent-checkpoint-system.json`
+The feature file is at: `specific-review-slots.json`
 
 **Current Description:**
-Agents sometimes agents hang and have to get killed, or they hit a usage restriction/backoff.  IT would be nice if our instructions said to periodically save how far they got along so that another agent session (or even different agent) can come along and pick up where they left off.  Maybe some sort of context for each phase that is saved?
+We should have a specific "review" area (maybe an array?) in the item - one for the plan review, one for the implementation review - so that it's easier to find when agents go grab the item, and also easier to show.
 
 **Current Plan:**
 (no plan yet)

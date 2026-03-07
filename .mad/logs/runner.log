@@ -6160,3 +6160,48 @@ TEST...
 2026-03-06 23:50:16,987 INFO [auto-plan] Checking boards: ['mad']
 2026-03-06 23:50:16,987 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
 2026-03-06 23:50:16,987 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:50:23,016 INFO Tests written. Feature moved to review.
+2026-03-06 23:50:23,017 INFO [bold blue]Reviewing:[/bold blue] AI Agent Checkpoint System
+2026-03-06 23:50:23,024 INFO [runner] Wrote instructions for 'ai-agent-checkpoint-system': 15911 chars
+2026-03-06 23:50:23,024 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+You are a senior code reviewer tasked with critically evaluating an implementation.
+
+## Feature: AI Agent Checkpoint System
+
+#...
+2026-03-06 23:50:23,025 INFO Starting kilo in cwd=/home/paule/MAD with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/ai-agent-checkpoint-system.instructions and follow the instructions exactly.']
+2026-03-06 23:50:23,025 INFO status.feature_slug = 'ai-agent-checkpoint-system'
+2026-03-06 23:50:23,025 INFO Logging to: /home/paule/MAD/logs/kilo-ai-agent-checkpoint-system-1772869823.log
+2026-03-06 23:50:27,010 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:50:27,010 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:50:27,010 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:50:36,986 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:50:36,987 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:50:36,987 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:50:46,984 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:50:46,984 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:50:46,985 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:50:56,983 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:50:56,983 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:50:56,983 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:51:06,982 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:51:06,983 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:51:06,983 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:51:16,982 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 23:51:16,983 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0
+2026-03-06 23:51:16,983 INFO [auto-impl] Skipping - implementation already in progress
+2026-03-06 23:51:26,277 INFO [runner] Interactive instructions for 'ideas': 648 chars
+2026-03-06 23:51:26,277 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+**Feature Iteration: specific-review-slots**
+
+The feature file is at: `specific-review-slots.json`
+
+**Current Description:**
+W...
+2026-03-06 23:52:06,269 INFO Review verdict: PASS
+2026-03-06 23:52:06,269 INFO Review feedback: I'll review the AI Agent Checkpoint System implementation. Let me examine the key files to verify co...
+2026-03-06 23:52:06,270 INFO Review PASSED. Feature moved to final-human-approval.
