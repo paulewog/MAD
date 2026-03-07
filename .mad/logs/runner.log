@@ -577,3 +577,55 @@ I'll write a comprehensive test specification based on the feature plan provided
 2026-03-06 15:57:19,706 INFO [auto-plan] Checking boards: ['mad']
 2026-03-06 15:57:19,706 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
 2026-03-06 15:57:19,707 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 15:57:48,859 INFO [runner] Wrote instructions for 'add-code-path-to-board': 9112 chars
+2026-03-06 15:57:48,859 INFO [runner] Instructions preview: You are a senior code reviewer tasked with critically evaluating an implementation.
+
+## Feature: add code path to board
+
+### Original Plan:
+Based on the feature description and previous Q&A, here is t...
+2026-03-06 15:57:48,860 INFO Starting kilo with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/add-code-path-to-board.instructions and follow the instructions exactly.']
+2026-03-06 15:57:48,860 INFO status.feature_slug = 'add-code-path-to-board'
+2026-03-06 15:57:48,860 INFO Logging to: /home/paule/MAD/logs/kilo-add-code-path-to-board-1772841468.log
+2026-03-06 15:58:29,706 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 15:58:29,896 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 15:58:29,896 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 15:59:39,686 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 15:59:39,687 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 15:59:39,687 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 16:00:49,662 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 16:00:49,663 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 16:00:49,663 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 16:01:59,659 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 16:01:59,661 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 16:01:59,661 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 16:03:09,654 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 16:03:09,655 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 16:03:09,655 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 16:04:19,652 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 16:04:19,653 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 16:04:19,653 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 16:05:29,635 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 16:05:29,635 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 16:05:29,635 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 16:06:39,630 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 16:06:39,631 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 16:06:39,632 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 16:07:49,609 INFO [auto-plan] Checking boards: ['mad']
+2026-03-06 16:07:49,610 INFO [auto-plan] mad: plan-inbox=0, reviewing-plan=0, approved=1
+2026-03-06 16:07:49,610 INFO [auto-plan] Starting: slimmer-item-details (approved)
+2026-03-06 16:08:01,761 INFO Connected to server as 'wsl-mad-cwd'
+2026-03-06 16:08:03,482 INFO [implementing] Starting: add code path to board
+2026-03-06 16:08:03,483 INFO [runner] Wrote instructions for 'add-code-path-to-board': 22476 chars
+2026-03-06 16:08:03,483 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+Implement the following feature.
+
+Feature: add code path to board
+
+Plan:
+Based on the feature description and previous Q&A, he...
+2026-03-06 16:08:03,484 INFO Starting kilo with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/add-code-path-to-board.instructions and follow the instructions exactly.']
+2026-03-06 16:08:03,484 INFO status.feature_slug = 'add-code-path-to-board'
+2026-03-06 16:08:03,484 INFO Logging to: /home/paule/MAD/logs/kilo-add-code-path-to-board-1772842083.log
