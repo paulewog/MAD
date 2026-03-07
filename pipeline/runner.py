@@ -9,6 +9,7 @@ from typing import Optional
 
 from rich.console import Console
 
+from agent_status import AgentStatus
 from config import AgentConfig, Config, read_context_file, get_mad_dir
 
 console = Console()

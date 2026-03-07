@@ -68,6 +68,55 @@
             margin-bottom: 0.5rem;
             overflow: hidden;
         }
+        /* Client cards grid */
+        .client-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1.5rem;
+        }
+        .client-card {
+            background: #161b22;
+            border-radius: 6px;
+            padding: 0.75rem;
+            border: 1px solid #30363d;
+        }
+        .client-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+        .client-card-header a {
+            font-weight: 600;
+            color: #58a6ff;
+            text-decoration: none;
+            font-size: 0.9rem;
+        }
+        .client-card-header a:hover { text-decoration: underline; }
+        .client-card-status {
+            font-size: 0.75rem;
+        }
+        .client-card-status.connected { color: #3fb950; }
+        .client-card-status.disconnected { color: #f85149; }
+        .client-card-stats {
+            display: flex;
+            gap: 1rem;
+            font-size: 0.8rem;
+            color: #8b949e;
+            margin-bottom: 0.5rem;
+        }
+        .client-card-stats span { color: #c9d1d9; }
+        .client-card-agents {
+            font-size: 0.75rem;
+            color: #8b949e;
+        }
+        .client-card-agents div { margin-bottom: 0.2rem; }
+        .client-card-agents .active { color: #d29922; }
+        .client-card-agents .idle { color: #484f58; }
+        @media (max-width: 600px) {
+            .client-grid { grid-template-columns: 1fr; }
+        }
         .stage-toggle {
             width: 100%;
             display: flex;
@@ -224,22 +273,9 @@
         </div>
     </div>
     <div class="section-label">Connected Clients</div>
-    <table>
-        <thead>
-            <tr>
-                <th>Client ID</th>
-                <th>Board(s)</th>
-                <th>Features</th>
-                <th>Plan Agent</th>
-                <th>Impl Agent</th>
-                <th>Last Seen</th>
-                <th>Status</th>
-            </tr>
-        </thead>
-        <tbody hx-get="/api/clients?key={{.Key}}" hx-trigger="every 5s" hx-swap="innerHTML">
-            {{template "client_rows" .}}
-        </tbody>
-    </table>
+    <div class="client-grid" hx-get="/api/clients?key={{.Key}}" hx-trigger="every 5s" hx-swap="innerHTML">
+        {{template "client_cards" .}}
+    </div>
     <h2>Aggregate View</h2>
     <div id="board-container">
         {{template "board_fragment" .}}
@@ -561,6 +597,23 @@
     <script>if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js'); }</script>
 </body>
 </html>
+{{define "client_cards"}}{{if .Clients}}<div class="client-grid">{{range .Clients}}<div class="client-card">
+    <div class="client-card-header">
+        <a href="/clients/{{.ClientID}}?key={{$.Key}}">{{.ClientID}}</a>
+        <span class="client-card-status {{if .Connected}}connected{{else}}disconnected{{end}}">
+            {{if .Connected}}● Connected{{else}}● Disconnected{{end}}
+        </span>
+    </div>
+    <div class="client-card-stats">
+        <div><strong>{{len .Features}}</strong> features</div>
+        <div><strong>{{uniqueBoards .Features}}</strong> boards</div>
+        <div>{{.LastSeen.Format "15:04"}}</div>
+    </div>
+    <div class="client-card-agents">
+        <div>Plan: {{if .PlanAgent.Running}}<span class="active">● {{.PlanAgent.Phase}}{{if .PlanAgent.Feature}} ({{.PlanAgent.Feature}}){{end}}</span>{{else}}<span class="idle">idle</span>{{end}}</div>
+        <div>Impl: {{if .ImplAgent.Running}}<span class="active">● {{.ImplAgent.Phase}}{{if .ImplAgent.Feature}} ({{.ImplAgent.Feature}}){{end}}</span>{{else}}<span class="idle">idle</span>{{end}}</div>
+    </div>
+</div>{{end}}</div>{{else}}<div class="empty-state">No clients connected</div>{{end}}{{end}}
 {{define "client_rows"}}{{if .Clients}}{{range .Clients}}<tr>
     <td><a href="/clients/{{.ClientID}}?key={{$.Key}}">{{.ClientID}}</a></td>
     <td>{{uniqueBoards .Features}}</td>
