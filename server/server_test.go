@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -44,9 +45,9 @@ func startTestServerT(t *testing.T, cfg *Config) (*Hub, *httptest.Server) {
 	t.Helper()
 	hub, ts := startTestServer(cfg)
 	t.Cleanup(func() {
+		hub.Stop()
 		ts.CloseClientConnections()
 		ts.Close()
-		time.Sleep(50 * time.Millisecond) // let goroutines drain
 	})
 	return hub, ts
 }
@@ -4362,6 +4363,202 @@ func TestClientPageReturns404ForNonexistentWithKey(t *testing.T) {
 
 	if resp.StatusCode != 404 {
 		t.Errorf("nonexistent client with key: status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestClientPageShowsOnlyCurrentClientBoards(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "board-filter-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	connA := wsConnect(t, ts, "", "client-alpha")
+	defer connA.Close()
+	waitForClient(hub, "client-alpha", 2*time.Second)
+	connA.WriteJSON(map[string]interface{}{
+		"type": "state_update",
+		"features": []map[string]string{
+			{"title": "Alpha Feature", "stage": "ideas", "board": "alpha-board", "id": "a-f1"},
+		},
+	})
+
+	connB := wsConnect(t, ts, "", "client-beta")
+	defer connB.Close()
+	waitForClient(hub, "client-beta", 2*time.Second)
+	connB.WriteJSON(map[string]interface{}{
+		"type": "state_update",
+		"features": []map[string]string{
+			{"title": "Beta Feature", "stage": "ideas", "board": "beta-board", "id": "b-f1"},
+		},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	resp, err := http.Get(ts.URL + "/clients/client-alpha?key=board-filter-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), "alpha-board") {
+		t.Error("client page should contain board from current client (alpha-board)")
+	}
+	if strings.Contains(string(body), "beta-board") {
+		t.Error("client page should NOT contain board from other client (beta-board)")
+	}
+}
+
+func TestDashboardShowsAllBoardsFromAllClients(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "dashboard-boards-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	connA := wsConnect(t, ts, "", "dash-client-a")
+	defer connA.Close()
+	waitForClient(hub, "dash-client-a", 2*time.Second)
+	connA.WriteJSON(map[string]interface{}{
+		"type": "state_update",
+		"features": []map[string]string{
+			{"title": "Dash A Feature", "stage": "ideas", "board": "board-a", "id": "da-f1"},
+		},
+	})
+
+	connB := wsConnect(t, ts, "", "dash-client-b")
+	defer connB.Close()
+	waitForClient(hub, "dash-client-b", 2*time.Second)
+	connB.WriteJSON(map[string]interface{}{
+		"type": "state_update",
+		"features": []map[string]string{
+			{"title": "Dash B Feature", "stage": "ideas", "board": "board-b", "id": "db-f1"},
+		},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	resp, err := http.Get(ts.URL + "/?key=dashboard-boards-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), "board-a") {
+		t.Error("dashboard should contain board from client A (board-a)")
+	}
+	if !strings.Contains(string(body), "board-b") {
+		t.Error("dashboard should contain board from client B (board-b)")
+	}
+}
+
+func TestClientPageFallsBackToMadForNoFeatures(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "noftr-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "empty-client")
+	defer conn.Close()
+	waitForClient(hub, "empty-client", 2*time.Second)
+	conn.WriteJSON(map[string]interface{}{
+		"type":     "state_update",
+		"features": []map[string]string{},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	resp, err := http.Get(ts.URL + "/clients/empty-client?key=noftr-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), "mad") {
+		t.Error("client page with no features should fall back to 'mad' board")
+	}
+}
+
+func TestClientPageWithMultipleBoards(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "multi-board-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "multi-board-client")
+	defer conn.Close()
+	waitForClient(hub, "multi-board-client", 2*time.Second)
+	conn.WriteJSON(map[string]interface{}{
+		"type": "state_update",
+		"features": []map[string]string{
+			{"title": "Feature 1", "stage": "ideas", "board": "board-z", "id": "mb-f1"},
+			{"title": "Feature 2", "stage": "ideas", "board": "board-a", "id": "mb-f2"},
+			{"title": "Feature 3", "stage": "ideas", "board": "board-m", "id": "mb-f3"},
+		},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	resp, err := http.Get(ts.URL + "/clients/multi-board-client?key=multi-board-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), "board-a") {
+		t.Error("client page should contain board-a")
+	}
+	if !strings.Contains(string(body), "board-m") {
+		t.Error("client page should contain board-m")
+	}
+	if !strings.Contains(string(body), "board-z") {
+		t.Error("client page should contain board-z")
+	}
+}
+
+func TestClientPageBoardsAreDeduplicated(t *testing.T) {
+	cfg := testConfig("")
+	cfg.DashboardKey = "dedup-key"
+	hub, ts := startTestServerT(t, cfg)
+
+	conn := wsConnect(t, ts, "", "dedup-client")
+	defer conn.Close()
+	waitForClient(hub, "dedup-client", 2*time.Second)
+	conn.WriteJSON(map[string]interface{}{
+		"type": "state_update",
+		"features": []map[string]string{
+			{"title": "Feature 1", "stage": "ideas", "board": "same-board", "id": "d-f1"},
+			{"title": "Feature 2", "stage": "ideas", "board": "same-board", "id": "d-f2"},
+			{"title": "Feature 3", "stage": "ideas", "board": "same-board", "id": "d-f3"},
+		},
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	resp, err := http.Get(ts.URL + "/clients/dedup-client?key=dedup-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	re := regexp.MustCompile(`value="same-board"`)
+	matches := re.FindAllString(string(body), -1)
+	if len(matches) != 1 {
+		t.Errorf("board should appear once as option value (deduplicated), found %d times", len(matches))
 	}
 }
 

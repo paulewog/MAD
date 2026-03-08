@@ -87,6 +87,7 @@ type Hub struct {
 	clients    map[string]*Client
 	register   chan *Client
 	unregister chan *Client
+	stop       chan struct{}
 	mu         sync.RWMutex
 	config     *Config
 }
@@ -105,6 +106,7 @@ func NewHub(cfg *Config) *Hub {
 		clients:    make(map[string]*Client),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
+		stop:       make(chan struct{}),
 		config:     cfg,
 	}
 }
@@ -112,6 +114,16 @@ func NewHub(cfg *Config) *Hub {
 func (h *Hub) Run() {
 	for {
 		select {
+		case <-h.stop:
+			h.mu.Lock()
+			for _, c := range h.clients {
+				c.closeChannel()
+				c.conn.Close()
+			}
+			h.clients = make(map[string]*Client)
+			h.mu.Unlock()
+			return
+
 		case client := <-h.register:
 			h.mu.Lock()
 			if existing, ok := h.clients[client.clientID]; ok {
@@ -134,6 +146,11 @@ func (h *Hub) Run() {
 			h.mu.Unlock()
 		}
 	}
+}
+
+// Stop shuts down the hub, closing all client connections.
+func (h *Hub) Stop() {
+	close(h.stop)
 }
 
 func (h *Hub) ListClients() []ClientState {

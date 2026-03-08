@@ -2074,3 +2074,68 @@ Test Spec (behaviors that must be veri...
 2026-03-07 15:44:35,916 INFO Logging to: /home/paule/MAD/logs/kilo-new-idea-client-specific-1772927075.log
 2026-03-07 15:47:01,013 INFO [runner] Read 731 chars from output file
 2026-03-07 15:47:01,013 INFO [runner] Log file closed
+2026-03-07 15:47:01,028 WARNING [git] Commit failed: Command '['git', 'add', '-A', '.mad/boards/', '.mad/logs/']' returned non-zero exit status 1.
+2026-03-07 15:47:01,028 WARNING [git] Commit failed: Command '['git', 'add', '-A', '.mad/boards/', '.mad/logs/']' returned non-zero exit status 1.
+2026-03-07 15:47:01,028 INFO Test verification FAILED. Feature moved to review for inspection.
+2026-03-07 15:47:01,028 INFO Test verification FAILED. Feature moved to review for inspection.
+2026-03-07 15:47:01,028 INFO [bold blue]Fixing Review Feedback:[/bold blue] new-idea-client-specific
+2026-03-07 15:47:01,028 INFO [bold blue]Fixing Review Feedback:[/bold blue] new-idea-client-specific
+2026-03-07 15:47:01,029 INFO [fix_feedback] Running: new-idea-client-specific
+2026-03-07 15:47:01,029 INFO [fix_feedback] Running: new-idea-client-specific
+2026-03-07 15:47:01,030 INFO [runner] Wrote instructions for 'new-idea-client-specific': 10907 chars
+2026-03-07 15:47:01,030 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+You are an AI coding agent tasked with fixing specific issues found in a code review.
+
+## Feature: new-idea-client-specific
+
+#...
+2026-03-07 15:47:01,030 INFO Starting kilo in cwd=/home/paule/MAD with cmd: ['kilo', 'run', '--auto', 'Read /home/paule/MAD/.tmp/new-idea-client-specific.instructions and follow the instructions exactly.']
+2026-03-07 15:47:01,030 INFO status.feature_slug = 'new-idea-client-specific'
+2026-03-07 15:47:01,030 INFO Logging to: /home/paule/MAD/logs/kilo-new-idea-client-specific-1772927221.log
+2026-03-07 15:48:16,846 INFO Connected to server as 'wsl-mad-cwd'
+2026-03-07 15:53:47,659 INFO Server connection lost, will reconnect...
+2026-03-07 15:53:48,863 WARNING Failed to connect to server: server rejected WebSocket connection: HTTP 502
+2026-03-07 15:53:51,108 WARNING Failed to connect to server: server rejected WebSocket connection: HTTP 502
+2026-03-07 15:53:55,389 INFO Connected to server as 'wsl-mad-cwd'
+2026-03-07 15:53:56,280 INFO Server connection lost, will reconnect...
+2026-03-07 15:53:57,530 INFO Connected to server as 'wsl-mad-cwd'
+2026-03-07 15:57:40,265 INFO [review] Running: new-idea-client-specific
+2026-03-07 15:57:40,265 INFO [review] Running: new-idea-client-specific
+2026-03-07 15:57:40,265 INFO [runner] Loaded checkpoint for new-idea-client-specific: 3 completed steps
+2026-03-07 15:57:40,265 INFO [runner] Wrote instructions for 'new-idea-client-specific': 10670 chars
+2026-03-07 15:57:40,265 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+You are a senior code reviewer tasked with critically evaluating an implementation.
+
+## Feature: new-idea-client-specific
+
+###...
+2026-03-07 15:57:40,266 INFO Starting claude in cwd=/home/paule/MAD with cmd: ['claude', '-p', 'Read /home/paule/MAD/.tmp/new-idea-client-specific.instructions and follow the instructions exactly.', '--dangerously-skip-permissions']
+2026-03-07 15:57:40,266 INFO status.feature_slug = 'new-idea-client-specific'
+2026-03-07 15:57:40,266 INFO Logging to: /home/paule/MAD/logs/claude-new-idea-client-specific-1772927860.log
+2026-03-07 15:58:05,755 INFO [runner] Read 44 chars from output file
+2026-03-07 15:58:05,755 INFO [runner] Log file closed
+2026-03-07 15:58:05,769 WARNING [git] Commit failed: Command '['git', 'add', '-A', '.mad/boards/', '.mad/logs/']' returned non-zero exit status 1.
+2026-03-07 15:58:05,769 WARNING [git] Commit failed: Command '['git', 'add', '-A', '.mad/boards/', '.mad/logs/']' returned non-zero exit status 1.
+2026-03-07 15:58:05,770 INFO Review PASSED. Feature moved to final-human-approval.
+2026-03-07 15:58:05,770 INFO Review PASSED. Feature moved to final-human-approval.
+2026-03-07 16:08:58,629 INFO Connected to server as 'wsl-mad-cwd'
+2026-03-07 16:09:17,268 INFO Connected to server as 'wsl-mad-cwd'
+2026-03-07 16:09:31,707 INFO [planning] Starting: move agent definitions to MAD built-in
+2026-03-07 16:09:31,709 INFO [planning] Running: move agent definitions to MAD built-in
+2026-03-07 16:09:31,709 INFO [planning] Running: move agent definitions to MAD built-in
+2026-03-07 16:09:31,710 INFO [runner] Wrote instructions for 'move-agent-definitions-to-mad-built-in': 2766 chars
+2026-03-07 16:09:31,710 INFO [runner] Instructions preview: Code Path: /home/paule/MAD
+Context File: /home/paule/MAD/.mad/CONTEXT.md
+
+# Design Planning: move agent definitions to MAD built-in
+
+**Description:** Agent definitions - how to run kilo or claude - re...
+2026-03-07 16:09:31,710 INFO Starting claude in cwd=/home/paule/MAD with cmd: ['claude', '-p', 'Read /home/paule/MAD/.tmp/move-agent-definitions-to-mad-built-in.instructions and follow the instructions exactly.', '--dangerously-skip-permissions']
+2026-03-07 16:09:31,710 INFO status.feature_slug = 'move-agent-definitions-to-mad-built-in'
+2026-03-07 16:09:31,710 INFO Logging to: /home/paule/MAD/logs/claude-move-agent-definitions-to-mad-built-in-1772928571.log
+2026-03-07 16:12:30,060 INFO [runner] Read 8118 chars from output file
+2026-03-07 16:12:30,060 INFO [runner] Log file closed
