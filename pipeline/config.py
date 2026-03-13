@@ -1,11 +1,15 @@
 """Configuration loader for MAD pipeline."""
 
 import json
+import logging
 import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
+
+
+logger = logging.getLogger("pipeline")
 
 
 DEFAULT_GLOBAL_CONFIG = Path("~/MAD/config.json").expanduser()
@@ -14,6 +18,31 @@ LOCAL_CONFIG = "config.json"
 PROJECT_CONFIG = ".mad.config.json"
 CONTEXT_FILENAME = "CONTEXT.md"
 MAX_CONTEXT_SIZE = 100 * 1024  # 100KB
+
+BUILTIN_AGENTS: Dict[str, dict] = {
+    "claude": {
+        "command": "claude",
+        "headless_flag": "-p",
+        "headless_extra_flags": ["--dangerously-skip-permissions"],
+        "model_flag": "--model",
+    },
+    "opencode": {
+        "command": "opencode",
+        "headless_flag": "",
+        "headless_extra_flags": ["run"],
+        "model_flag": "-m",
+    },
+}
+
+PIPELINE_PHASES = [
+    ("planning", "Planning"),
+    ("reviewing_plan", "Plan Review"),
+    ("spec_writing", "Spec Writing"),
+    ("implementing", "Implementing"),
+    ("fix_feedback", "Fix Feedback"),
+    ("testing", "Testing"),
+    ("review", "Review"),
+]
 
 
 def find_config() -> Optional[Path]:
@@ -81,14 +110,7 @@ def ensure_local_config(cwd: Path) -> Path:
     # Create default config
     local_dir.mkdir(parents=True, exist_ok=True)
     default_config = {
-        "current_agent": "claude",
-        "agents": {
-            "claude": {
-                "command": "claude",
-                "headless_flag": "-p",
-                "headless_extra_flags": ["--dangerously-skip-permissions"]
-            }
-        },
+        "default_agent": "claude",
         "boards": ["default"],
     }
     with open(config_path, "w") as f:
@@ -114,6 +136,24 @@ class AgentConfig:
     command: str
     headless_flag: str
     headless_extra_flags: List[str]
+    model_flag: str = "--model"
+    model: Optional[str] = None
+
+
+@dataclass
+class PhaseConfig:
+    """Configuration for a single phase's agent assignment."""
+
+    agent: str
+    model: Optional[str] = None
+
+
+@dataclass
+class IdeatingRound:
+    """Configuration for a single round of ideation debate."""
+
+    cli: str
+    model: Optional[str] = None
 
 
 @dataclass
@@ -142,6 +182,7 @@ class Config:
         self._path = path
         self._is_local = LOCAL_DIR in str(path)
         self._data = self._load()
+        self._migrate_config()
 
     @property
     def is_local(self) -> bool:
@@ -162,6 +203,42 @@ class Config:
         except FileNotFoundError:
             raise ValueError(f"Config file not found: {self._path}")
 
+    def _migrate_config(self):
+        """Migrate old config format to new format."""
+        try:
+            changed = False
+
+            if "agents" in self._data:
+                del self._data["agents"]
+                changed = True
+
+            if "current_agent" in self._data:
+                if "default_agent" not in self._data:
+                    self._data["default_agent"] = self._data["current_agent"]
+                del self._data["current_agent"]
+                changed = True
+
+            afp = self._data.get("agent_for_phase", {})
+            for phase, value in list(afp.items()):
+                if isinstance(value, str):
+                    agent_name = value
+                elif isinstance(value, dict):
+                    agent_name = value.get("agent", "")
+                else:
+                    agent_name = ""
+
+                if agent_name and agent_name != "default" and agent_name not in BUILTIN_AGENTS:
+                    if isinstance(value, dict) and value.get("model"):
+                        afp[phase] = {"agent": "default", "model": value["model"]}
+                    else:
+                        afp[phase] = "default"
+                    changed = True
+
+            if changed:
+                self._save()
+        except Exception as e:
+            logger.error(f"Config migration failed: {e}")
+
     def _save(self) -> None:
         with open(self._path, "w") as f:
             json.dump(self._data, f, indent=2)
@@ -180,22 +257,52 @@ class Config:
 
     @property
     def agents(self) -> Dict[str, AgentConfig]:
+        agent_defaults = self._data.get("agent_defaults", {})
         result = {}
-        for name, cfg in self._data.get("agents", {}).items():
+        for name, cfg in BUILTIN_AGENTS.items():
+            defaults = agent_defaults.get(name, {})
             result[name] = AgentConfig(
                 name=name,
                 command=cfg["command"],
                 headless_flag=cfg["headless_flag"],
                 headless_extra_flags=cfg.get("headless_extra_flags", []),
+                model_flag=cfg.get("model_flag", "--model"),
+                model=defaults.get("model"),
             )
         return result
 
     @property
+    def models(self) -> Dict[str, List[str]]:
+        """Get models configuration from config.json."""
+        return self._data.get("models", {})
+
+    def get_models_for_agent(self, agent_name: str) -> List[str]:
+        """Get available models for a specific agent."""
+        if agent_name == "default":
+            return []
+        return self.models.get(agent_name, [])
+
+    @property
+    def ideating_rounds(self) -> List[IdeatingRound]:
+        """Get ideating rounds configuration from config.json."""
+        raw = self._data.get("ideating", {})
+        rounds = raw.get("rounds", [])
+        result = []
+        for r in rounds:
+            if isinstance(r, dict):
+                result.append(IdeatingRound(
+                    cli=r.get("cli", "opencode"),
+                    model=r.get("model"),
+                ))
+            else:
+                result.append(IdeatingRound(cli=r))
+        return result
+
+    @property
     def current_agent(self) -> AgentConfig:
-        name = self._data.get("current_agent", "claude")
+        name = self.current_agent_name
         agents = self.agents
         if name not in agents:
-            # Fallback to first available
             name = list(agents.keys())[0] if agents else "claude"
         return agents.get(name, AgentConfig(
             name="claude",
@@ -206,7 +313,7 @@ class Config:
 
     @property
     def current_agent_name(self) -> str:
-        return self._data.get("current_agent", "claude")
+        return self._data.get("default_agent", self._data.get("current_agent", "claude"))
 
     @property
     def server(self) -> Optional["ServerConfig"]:
@@ -348,49 +455,84 @@ class Config:
         return None
 
     @property
-    def agent_for_phase(self) -> Dict[str, str]:
-        """Get agent name for a given phase."""
-        return self._data.get("agent_for_phase", {})
+    def agent_for_phase(self) -> Dict[str, PhaseConfig]:
+        """Get agent and optional model for each phase."""
+        raw = self._data.get("agent_for_phase", {})
+        result = {}
+        for phase, value in raw.items():
+            if isinstance(value, str):
+                result[phase] = PhaseConfig(agent=value, model=None)
+            elif isinstance(value, dict):
+                result[phase] = PhaseConfig(
+                    agent=value.get("agent", self.current_agent_name),
+                    model=value.get("model") or None,  # empty string -> None
+                )
+            else:
+                result[phase] = PhaseConfig(agent=self.current_agent_name, model=None)
+        return result
 
     def get_agent_for_phase(self, phase: str) -> AgentConfig:
         """Get the agent config for a specific phase."""
-        agent_name = self.agent_for_phase.get(phase, self.current_agent_name)
-        # Handle "default" option - use the current default agent
+        phase_cfg = self.agent_for_phase.get(phase)
+        if phase_cfg is None:
+            return self.current_agent
+        agent_name = phase_cfg.agent
         if agent_name == "default":
             agent_name = self.current_agent_name
         agents = self.agents
-        if agent_name in agents:
-            return agents[agent_name]
-        # Fallback to default
-        return self.current_agent
+        if agent_name not in agents:
+            return self.current_agent
+        agent_config = agents[agent_name]
+        if phase_cfg.model:
+            agent_config = AgentConfig(
+                name=agent_config.name,
+                command=agent_config.command,
+                headless_flag=agent_config.headless_flag,
+                headless_extra_flags=agent_config.headless_extra_flags,
+                model_flag=agent_config.model_flag,
+                model=phase_cfg.model,
+            )
+        return agent_config
 
-    def set_agent_for_phase(self, phase: str, agent_name: str) -> None:
+    def set_agent_for_phase(self, phase: str, agent_name: str, model: Optional[str] = None) -> None:
         """Set which agent to use for a specific phase."""
         if "agent_for_phase" not in self._data:
             self._data["agent_for_phase"] = {}
-        # Allow "default" as a value (means use the default agent)
-        if agent_name != "default" and agent_name not in self._data["agents"]:
-            raise ValueError(f"Unknown agent: {agent_name}")
-        self._data["agent_for_phase"][phase] = agent_name
-        self._save()
-
-    def set_agent_for_phases(self, phase_mapping: dict[str, str]) -> None:
-        """Set which agent to use for multiple phases at once."""
-        if "agent_for_phase" not in self._data:
-            self._data["agent_for_phase"] = {}
-        for phase, agent_name in phase_mapping.items():
-            # Allow "default" as a value (means use the default agent)
-            if agent_name != "default" and agent_name not in self._data["agents"]:
-                raise ValueError(f"Unknown agent: {agent_name}")
+        if agent_name != "default" and agent_name not in BUILTIN_AGENTS:
+            raise ValueError(f"Unknown agent: {agent_name}. Available: {list(BUILTIN_AGENTS.keys())}")
+        if model:
+            self._data["agent_for_phase"][phase] = {"agent": agent_name, "model": model}
+        else:
             self._data["agent_for_phase"][phase] = agent_name
         self._save()
 
+    def set_agent_for_phases(self, phase_mapping: dict) -> None:
+        """Set agent (and optional model) for multiple phases.
+        
+        Values can be strings (agent name only) or dicts with 'agent' and optional 'model' keys.
+        """
+        if "agent_for_phase" not in self._data:
+            self._data["agent_for_phase"] = {}
+        for phase, value in phase_mapping.items():
+            if isinstance(value, str):
+                agent_name = value
+                model = None
+            else:
+                agent_name = value["agent"]
+                model = value.get("model") or None
+            if agent_name != "default" and agent_name not in BUILTIN_AGENTS:
+                raise ValueError(f"Unknown agent: {agent_name}. Available: {list(BUILTIN_AGENTS.keys())}")
+            if model:
+                self._data["agent_for_phase"][phase] = {"agent": agent_name, "model": model}
+            else:
+                self._data["agent_for_phase"][phase] = agent_name
+        self._save()
+
     def set_current_agent(self, name: str) -> None:
-        if "agents" not in self._data:
-            self._data["agents"] = {}
-        if name not in self._data["agents"]:
-            raise ValueError(f"Unknown agent: {name}. Available: {list(self._data['agents'].keys())}")
-        self._data["current_agent"] = name
+        if name not in BUILTIN_AGENTS:
+            raise ValueError(f"Unknown agent: {name}. Available: {list(BUILTIN_AGENTS.keys())}")
+        self._data["default_agent"] = name
+        self._data.pop("current_agent", None)
         self._save()
 
     def setup_boards(self) -> None:

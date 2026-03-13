@@ -1,0 +1,303 @@
+{
+  "id": "6baefa10",
+  "board": "mad",
+  "title": "add code path to board",
+  "created": "2026-03-06T20:49Z",
+  "description": "Add a code path and context file to each board's configuration so that AI agents know where the associated project code lives and have access to project-level context whenever they are invoked. A board lives inside the project it represents (e.g., ~/mycode/.mad/boards/myboard), so the root code path is derivable, but it should be made explicit. Two additions: (1) a `code_path` field in ~/.mad/config.json pointing to the project root, and (2) a ~/.mad/CONTEXT.md file for free-form project context. Agents should also be started with their working directory set to the project root, not the individual work item directory. Every time an agent is invoked, its instructions should include the code path and the path to CONTEXT.md at the top.",
+  "plan": "Based on the feature description and previous Q&A, here is the implementation plan:\n\n## 1. Config Schema Changes\n\n### Add to <project_root>/.mad.config.json:\n- `code_path`: string (absolute path to project root)\n- `context_file`: string (path to CONTEXT.md, defaults to <project_root>/.mad/CONTEXT.md)\n- Resolve symlinks at read time using os.path.realpath()\n\n### Per-Board Configuration:\n- Store per-board config in <project_root>/.mad/boards/<boardname>/config.json\n- Per-board config takes precedence over global config (no merge, direct override)\n- Allow code_path to be set per-board; fall back to a default derivation if not set\n\n## 2. CONTEXT.md File Handling\n\n- Location: <project_root>/.mad/CONTEXT.md\n- Optional: missing file is OK, just ignore\n- Max size: 100KB - truncate at byte boundary (not character boundary) to avoid UTF-8 corruption\n- If file cannot be read (permission denied, etc.), ignore silently\n\n## 3. Agent Working Directory\n\n- When invoking an agent, set the working directory (cwd) to the project root (code_path), not the work item directory\n- This is a behavioral change from current implementation where cwd is set to the board's item location\n\n## 4. Agent Instructions Prepending\n\n- For each new agent session, prepend the following to the initial instruction prompt:\n  - \"Code Path: <code_path>\"\n  - \"Context File: <project_root>/.mad/CONTEXT.md\"\n- This applies to new agent sessions, not every message turn\n- If CONTEXT.md doesn't exist, still include the path in instructions\n\n## 5. CLI Commands (Required)\n\nImplement the following CLI commands:\n- `mad config set code_path <path>` - Set code_path in <project_root>/.mad.config.json\n- `mad config get code_path` - Get current code_path value\n- `mad context edit` - Edit CONTEXT.md using $EDITOR or fall back to a default editor\n- `mad context view` - Display current CONTEXT.md content (or indicate if missing)\n\n## 6. Default Code Path Derivation\n\n- Default: Allow derivation from board location as fallback\n- Algorithm: Use board directory's parent.parent (board's parent is <boardname>, parent's parent is project root)\n- If code_path doesn't exist (new project), allow it - don't validate existence at config write time\n\n## 7. Implementation Steps\n\n1. Modify config loading to read from <project_root>/.mad.config.json\n2. Add code_path and context_file fields to config schema\n3. Implement per-board config loading with precedence\n4. Create CONTEXT.md file handling functions (read, write with truncation, ignore errors)\n5. Modify agent invocation to set cwd to code_path\n6. Add instruction prepending for new agent sessions\n7. Implement CLI commands: config set/get, context edit/view\n8. Add error handling for config write failures (permissions, disk full)\n9. Handle editor fallback ($EDITOR, then vim, then error)\n\n## 8. Security Considerations (Future Item)\n\n- Document that setting cwd to project root has security implications if agent runs malicious code\n- Path validation to prevent escaping to parent directories or accessing sensitive paths is noted for future consideration but not implemented now",
+  "impl_spec": "Let me explore the codebase to understand its structure before writing the implementation spec.\nNow I have enough context. Let me write the detailed implementation spec based on the plan.\nI've written the implementation spec to `/home/paule/MAD/.tmp/add-code-path-to-board.spec`. The spec contains 10 specific coding tasks:\n\n1. **Add code_path and context_file to Config schema** - Properties and getters/setters in `config.py`\n2. **Implement per-board config loading** - Load from `.mad/boards/<boardname>/config.json` with precedence\n3. **CONTEXT.md file handling** - Read/write with 100KB truncation at byte boundary, silent ignore on errors\n4. **CLI config set/get commands** - Add `mad config set/get code_path`\n5. **CLI context edit/view commands** - Add `mad context edit/view`\n6. **Modify agent invocation cwd** - Set working directory to code_path instead of item location\n7. **Add instruction prepending** - Prepend Code Path and Context File to initial agent instructions\n8. **Default code path derivation** - Derive from board directory's parent.parent\n9. **Handle config write failures** - Try/except with user-friendly errors\n10. **Handle editor fallback** - $EDITOR -> vim -> error",
+  "test_spec": "I'll write a comprehensive test specification based on the feature plan provided in the instructions.\nTest specification written to `/home/paule/MAD/.tmp/test-spec-add-code-path-to-board.md`. The spec covers:\n\n1. **Behaviors That MUST Be Verified**: Config schema changes (global/per-board), CONTEXT.md handling, agent working directory, and instruction prepending\n2. **Edge Cases**: Empty/null inputs, boundary conditions (100KB truncation), invalid states, concurrent operations, error conditions\n3. **What Constitutes Failure**: Criteria for test failure, expected error messages, rollback behavior\n4. **Out of Scope**: UI timing, visual assertions, performance benchmarks, network conditions, and other explicitly excluded areas",
+  "impl_notes": "I'll fix the two issues identified in the review feedback. Let me first examine the relevant code in both files.\nNow I'll fix both issues:\n\n1. **runner.py**: Remove the duplicate log_file close (lines 291-294), keep only the finally block cleanup\n2. **config.py**: Change iteration to check all boards instead of just the first one\nLet me verify the fixes are correctly applied:\nNow let me run the tests to verify the fixes work correctly:\nAll 47 tests pass. Here's a summary of the fixes applied:\n\n1. **runner.py** - Removed the duplicate `log_file.close()` at lines 291-294. The log file is now only closed in the finally block (line 316), preventing the double-close error.\n\n2. **config.py:256-261** - Changed the `code_path` getter to iterate through all boards instead of only checking `self.boards[0]`. Now uses a for loop that checks each board's config and breaks when a `code_path` is found.\n\n### Tests Written\n\nAll 47 tests pass. The test file at `/home/paule/MAD/pipeline/test_code_path.py` already contains comprehensive tests covering:\n\n1. **Config schema changes**: Global and per-board code_path configuration, default derivation\n2. **CONTEXT.md handling**: Reading, writing, viewing, editing, truncation at 100KB, UTF-8 boundary handling\n3. **Agent working directory**: Uses code_path as workdir, falls back to MAD_DIR\n4. **Agent instructions prepending**: Code path and context file included in prompts\n5. **Edge cases**: Empty/null inputs, long paths, permission errors, non-existent paths, concurrent operations",
+  "history": [
+    {
+      "ts": "2026-03-06T20:49Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-06T22:28Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-06T22:33Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via kilo"
+    },
+    {
+      "ts": "2026-03-06T22:33Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Plan too high-level, ambiguities around global vs per-board config, missing mechanism details for agent instruction prepending"
+    },
+    {
+      "ts": "2026-03-06T22:33Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-06T22:38Z",
+      "stage": "REJECTED",
+      "note": "Rejected: accidentally promoted"
+    },
+    {
+      "ts": "2026-03-06T22:39Z",
+      "stage": "MOVED",
+      "note": "Manual move: implementing -> plan-inbox"
+    },
+    {
+      "ts": "2026-03-06T22:42Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via kilo"
+    },
+    {
+      "ts": "2026-03-06T22:43Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL \u2014 Unclear decision on CONTEXT.md location: The plan mentions both <project_root>/.mad/CONTEXT.md and ~/.mad/boards/<boardname>/CONTEXT.md as alternatives but doesn't specify which one to use\nAmbiguous agent invocation scope: \"Every time an agent is invoked\" is unclear - does this mean every turn in a conversation or every new agent session? The implementation should clarify if context is prepended to every message or just the initial message\nRedundant field: The plan lists context_file in config schema but never explains how it differs from or relates to code_path\nMissing size handling: No mention of what to do if CONTEXT.md is very large - should there be a size limit or truncation?\nSymlink handling: If code_path is a symlink, should it be resolved to the real path before use?\nSecurity consideration: Setting agent's working directory could have implications if the agent runs malicious code - should document or add safeguards\nPer-board config inheritance unclear: The plan says per-board config \"inherits from global\" but doesn't specify the merging logic (shallow vs deep merge)"
+    },
+    {
+      "ts": "2026-03-06T22:43Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Unclear decision on CONTEXT.md location: The plan mentions both <project_root>/.mad/CONTEXT.md and ~/.mad/boards/<boardname>/CONTEXT.md as alternatives but doesn't specify which one to use\nAmbiguous agent invocation scope: \"Every time an agent is invoked\" is unclear - does this mean every turn in a conversation or every new agent session? The implementation should clarify if context is prepended to every message or just the initial message\nRedundant field: The plan lists context_file in config schema but never explains how it differs from or relates to code_path\nMissing size handling: No mention of what to do if CONTEXT.md is very large - should there be a size limit or truncation?\nSymlink handling: If code_path is a symlink, should it be resolved to the real path before use?\nSecurity consideration: Setting agent's working directory could have implications if the agent runs malicious code - should document or add safeguards\nPer-board config inheritance unclear: The plan says per-board config \"inherits from global\" but doesn't specify the merging logic (shallow vs deep merge)"
+    },
+    {
+      "ts": "2026-03-06T22:43Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via kilo"
+    },
+    {
+      "ts": "2026-03-06T22:45Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL \u2014 Missing path validation: No handling for when code_path doesn't exist or isn't accessible - the plan should specify validation and error handling\nSecurity gap: No validation to prevent code_path from escaping to parent directories or accessing sensitive paths (e.g., /etc, ~/.ssh)\nMissing error handling for CONTEXT.md: No specification of what happens when the context file can't be read (permission denied, missing file)\nPer-board config undefined: The plan references per-board config (~/.mad/boards/<boardname>/config.json) but this file doesn't exist in the current codebase - the implementation would need to create this system from scratch\nDeep merge unspecified: The plan mentions \"deep merge\" but doesn't define the concrete merging logic (e.g., how nested objects are handled)\nField naming inconsistency: Config uses context_file but agent instructions show Context File: - should be consistent\nCONTEXT.md creation: Not specified whether the file should be auto-created when using mad context edit or if it's optional\nDerivation logic vague: The plan says code_path can be \"derived from board location\" but doesn't specify the exact derivation algorithm (e.g., is it board_path.parent.parent?)"
+    },
+    {
+      "ts": "2026-03-06T22:45Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Missing path validation: No handling for when code_path doesn't exist or isn't accessible - the plan should specify validation and error handling\nSecurity gap: No validation to prevent code_path from escaping to parent directories or accessing sensitive paths (e.g., /etc, ~/.ssh)\nMissing error handling for CONTEXT.md: No specification of what happens when the context file can't be read (permission denied, missing file)\nPer-board config undefined: The plan references per-board config (~/.mad/boards/<boardname>/config.json) but this file doesn't exist in the current codebase - the implementation would need to create this system from scratch\nDeep merge unspecified: The plan mentions \"deep merge\" but doesn't define the concrete merging logic (e.g., how nested objects are handled)\nField naming inconsistency: Config uses context_file but agent instructions show Context File: - should be consistent\nCONTEXT.md creation: Not specified whether the file should be auto-created when using mad context edit or if it's optional\nDerivation logic vague: The plan says code_path can be \"derived from board location\" but doesn't specify the exact derivation algorithm (e.g., is it board_path.parent.parent?)"
+    },
+    {
+      "ts": "2026-03-06T22:46Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via kilo"
+    },
+    {
+      "ts": "2026-03-06T22:46Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL \u2014 -Inconsistent CONTEXT.md location**: The original feature description states \"a ~/.mad/CONTEXT.md file for free-form project context\" but the plan uses <project_root>/.mad/CONTEXT.md. These are different locations and the plan doesn't acknowledge this discrepancy.\n\nIncorrect derivation example: The plan states ~/.mad/boards/mad \u2192 project root is ~, but going up two levels from ~/.mad/boards/mad/ would give ~/.mad/, not ~. The algorithm needs clarification on whether it's from the board directory or the ideas/work item subdirectory.\n\nCLI commands marked optional but required: The original feature requires setting code_path and viewing/editing context, but CLI commands are marked \"optional enhancement\" with no implementation timeline. Without CLI support, users cannot configure code_path.\n\nPath validation incomplete: The plan mentions blocking /etc and ~/.ssh but doesn't specify: what about /var, /usr, /root, or other system directories? The validation logic needs concrete definition.\n\nNo handling for code_path as non-existent path: If code_path points to a path that doesn't exist yet (e.g., user wants to create the project), the os.path.realpath() call and validation will fail. Should derivation work with non-existent paths?\n\nMissing per-board configuration: Original description says \"Add a code path to each board's configuration\" but plan uses only global config. If per-board is needed later, the schema change would require migration.\n\nUnclear symlink handling timing: When should symlinks be resolved - at config write time or read time? The plan mentions both \"before storing\" and \"before using\" which is ambiguous.\n\nNo migration strategy: If adding code_path to existing config schema, there's no mention of config version handling or migration for existing users."
+    },
+    {
+      "ts": "2026-03-06T22:46Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: -Inconsistent CONTEXT.md location**: The original feature description states \"a ~/.mad/CONTEXT.md file for free-form project context\" but the plan uses <project_root>/.mad/CONTEXT.md. These are different locations and the plan doesn't acknowledge this discrepancy.\n\nIncorrect derivation example: The plan states ~/.mad/boards/mad \u2192 project root is ~, but going up two levels from ~/.mad/boards/mad/ would give ~/.mad/, not ~. The algorithm needs clarification on whether it's from the board directory or the ideas/work item subdirectory.\n\nCLI commands marked optional but required: The original feature requires setting code_path and viewing/editing context, but CLI commands are marked \"optional enhancement\" with no implementation timeline. Without CLI support, users cannot configure code_path.\n\nPath validation incomplete: The plan mentions blocking /etc and ~/.ssh but doesn't specify: what about /var, /usr, /root, or other system directories? The validation logic needs concrete definition.\n\nNo handling for code_path as non-existent path: If code_path points to a path that doesn't exist yet (e.g., user wants to create the project), the os.path.realpath() call and validation will fail. Should derivation work with non-existent paths?\n\nMissing per-board configuration: Original description says \"Add a code path to each board's configuration\" but plan uses only global config. If per-board is needed later, the schema change would require migration.\n\nUnclear symlink handling timing: When should symlinks be resolved - at config write time or read time? The plan mentions both \"before storing\" and \"before using\" which is ambiguous.\n\nNo migration strategy: If adding code_path to existing config schema, there's no mention of config version handling or migration for existing users."
+    },
+    {
+      "ts": "2026-03-06T22:47Z",
+      "stage": "PLANNING",
+      "note": "Questions raised via kilo"
+    },
+    {
+      "ts": "2026-03-06T22:56Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via kilo"
+    },
+    {
+      "ts": "2026-03-06T22:56Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL \u2014 Config file location ambiguity: Original description says ~/.mad/config.json but plan uses <project_root>/.mad.config.json. These are different files - clarify which is used or if both exist.\nBoard config undefined: Plan mentions \"per-board config\" but never defines where per-board configs are stored or their format.\nDefault location unspecified: Plan says \"fall back to default location\" if code_path not set but doesn't specify what that default is.\nTruncation edge case: Truncating at exactly 100KB bytes can corrupt UTF-8 multi-byte characters. Should truncate at character boundary or use proper encoding-aware truncation.\nSymlink chain handling: os.path.realpath() handles chains correctly but plan doesn't explicitly acknowledge this.\nContext file path in instructions: Plan uses <project_root>/.mad/CONTEXT.md but what if context file doesn't exist? Still include the path in instructions?"
+    },
+    {
+      "ts": "2026-03-06T22:56Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Config file location ambiguity: Original description says ~/.mad/config.json but plan uses <project_root>/.mad.config.json. These are different files - clarify which is used or if both exist.\nBoard config undefined: Plan mentions \"per-board config\" but never defines where per-board configs are stored or their format.\nDefault location unspecified: Plan says \"fall back to default location\" if code_path not set but doesn't specify what that default is.\nTruncation edge case: Truncating at exactly 100KB bytes can corrupt UTF-8 multi-byte characters. Should truncate at character boundary or use proper encoding-aware truncation.\nSymlink chain handling: os.path.realpath() handles chains correctly but plan doesn't explicitly acknowledge this.\nContext file path in instructions: Plan uses <project_root>/.mad/CONTEXT.md but what if context file doesn't exist? Still include the path in instructions?"
+    },
+    {
+      "ts": "2026-03-06T22:57Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via kilo"
+    },
+    {
+      "ts": "2026-03-06T22:58Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL \u2014 Config file location mismatch: Original description specifies ~/.mad/config.json (global), but plan uses <project_root>/.mad.config.json (per-project). Must clarify which is correct.\nCONTEXT.md location mismatch: Original says ~/.mad/CONTEXT.md, plan says <project_root>/.mad/CONTEXT.md. Inconsistency must be resolved.\nAgent working directory conflict: Setting cwd to project root breaks agents that need to operate on work item directories (e.g., ideas/abc123/). Plan doesn't address how agents access work item files.\nNo config write validation: Plan doesn't handle errors when mad config set code_path fails (permissions, disk full, etc.)\nEditor fallback incomplete: Plan mentions $EDITOR or vim but doesn't handle case when neither environment variable is set.\nMissing Windows path handling: Plan uses Unix-style paths (~/) without addressing Windows compatibility (%USERPROFILE%)\nSession definition unclear: Plan says \"per session, not per message\" but doesn't define what constitutes a session boundary."
+    },
+    {
+      "ts": "2026-03-06T22:58Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Config file location mismatch: Original description specifies ~/.mad/config.json (global), but plan uses <project_root>/.mad.config.json (per-project). Must clarify which is correct.\nCONTEXT.md location mismatch: Original says ~/.mad/CONTEXT.md, plan says <project_root>/.mad/CONTEXT.md. Inconsistency must be resolved.\nAgent working directory conflict: Setting cwd to project root breaks agents that need to operate on work item directories (e.g., ideas/abc123/). Plan doesn't address how agents access work item files.\nNo config write validation: Plan doesn't handle errors when mad config set code_path fails (permissions, disk full, etc.)\nEditor fallback incomplete: Plan mentions $EDITOR or vim but doesn't handle case when neither environment variable is set.\nMissing Windows path handling: Plan uses Unix-style paths (~/) without addressing Windows compatibility (%USERPROFILE%)\nSession definition unclear: Plan says \"per session, not per message\" but doesn't define what constitutes a session boundary."
+    },
+    {
+      "ts": "2026-03-06T22:58Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via kilo"
+    },
+    {
+      "ts": "2026-03-06T22:59Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL \u2014 Config location discrepancy: Original description mentions ~/.mad/config.json (global) but plan uses <project_root>/.mad.config.json (per-project). Need clarification on which is correct.\nDerivation logic unclear: \"board's parent.parent\" is confusing notation - should clarify it's the board directory's parent directory's parent (i.e., project root).\nMissing validation: No validation that code_path exists or is accessible before use.\nEncoding truncation: Truncating at \"character boundary\" for 100KB with multi-byte UTF-8 could still produce invalid character sequences. Should truncate at byte boundary instead.\nAgent cwd concern: Setting cwd to project root instead of work item directory may break existing workflows that expect cwd at work item level.\nMissing migration: No mention of how to handle existing projects/boards when this feature is added."
+    },
+    {
+      "ts": "2026-03-06T22:59Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Config location discrepancy: Original description mentions ~/.mad/config.json (global) but plan uses <project_root>/.mad.config.json (per-project). Need clarification on which is correct.\nDerivation logic unclear: \"board's parent.parent\" is confusing notation - should clarify it's the board directory's parent directory's parent (i.e., project root).\nMissing validation: No validation that code_path exists or is accessible before use.\nEncoding truncation: Truncating at \"character boundary\" for 100KB with multi-byte UTF-8 could still produce invalid character sequences. Should truncate at byte boundary instead.\nAgent cwd concern: Setting cwd to project root instead of work item directory may break existing workflows that expect cwd at work item level.\nMissing migration: No mention of how to handle existing projects/boards when this feature is added."
+    },
+    {
+      "ts": "2026-03-06T23:01Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via kilo"
+    },
+    {
+      "ts": "2026-03-06T23:02Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS \u2014 VERDICT: PASS\n\nThe plan is comprehensive and covers all major aspects of the feature. It addresses:\nConfig schema changes with per-board precedence\nCONTEXT.md handling with appropriate error handling and size limits\nAgent working directory changes\nInstruction prepending\nCLI commands\nEdge cases like missing files, permission errors, and editor fallback"
+    },
+    {
+      "ts": "2026-03-06T23:02Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-06T23:14Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-06T23:16Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated (Agent A) via kilo"
+    },
+    {
+      "ts": "2026-03-06T23:40Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-06T23:41Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated (Agent A) via kilo"
+    },
+    {
+      "ts": "2026-03-06T23:42Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated (Agent B) via kilo"
+    },
+    {
+      "ts": "2026-03-06T23:52Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via kilo"
+    },
+    {
+      "ts": "2026-03-06T23:52Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-06T23:57Z",
+      "stage": "TESTING",
+      "note": "Tests written via kilo"
+    },
+    {
+      "ts": "2026-03-06T23:58Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL \u2014 config.py:313 - set_code_path() accepts empty string; test spec requires rejection\nconfig.py:256 - code_path getter iterates all boards instead of current board only - should check board-specific config first, not loop through all boards\nrunner.py - log_file may not close on early exit path (line 291-292 only closes in normal flow)"
+    },
+    {
+      "ts": "2026-03-07T00:11Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via kilo"
+    },
+    {
+      "ts": "2026-03-07T00:11Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-07T00:14Z",
+      "stage": "TESTING",
+      "note": "Tests written via kilo"
+    },
+    {
+      "ts": "2026-03-07T00:16Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL \u2014 runner.py:291-316 - Double-close of log_file: closed at line 293 after while loop AND again at line 316 in finally block. This causes error when log_file is opened (lines 236-237). Remove lines 291-294, keep only finally block cleanup.\nconfig.py:256 - code_path getter only checks first board (self.boards[0]) for per-board config, should iterate through all boards to find one with code_path set\n```"
+    },
+    {
+      "ts": "2026-03-07T00:17Z",
+      "stage": "FIX_FEEDBACK",
+      "note": "Fixed issues per review feedback via kilo"
+    },
+    {
+      "ts": "2026-03-07T00:17Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase after fixing feedback"
+    },
+    {
+      "ts": "2026-03-07T00:18Z",
+      "stage": "TESTING",
+      "note": "Tests written via kilo"
+    },
+    {
+      "ts": "2026-03-07T00:20Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS \u2014 Let me examine the implementation to perform the code review as instructed.\nBased on my code review, I found the implementation is complete and all 47 tests pass. Here's my assessment:\n\nVERDICT: PASS\n\nReview Summary:\n\nCompleteness: All 10 implementation tasks from the spec are covered:\n   - Config schema (code_path, context_file properties) \u2705\n   - Per-board config loading with precedence \u2705\n   - CONTEXT.md handling (100KB truncation, UTF-8 boundary) \u2705\n   - CLI config set/get commands \u2705\n   - CLI context edit/view commands \u2705\n   - Agent cwd set to code_path \u2705\n   - Instruction prepending \u2705\n   - Default code path derivation \u2705\n   - Config write error handling \u2705\n   - Editor fallback ($EDITOR \u2192 vim \u2192 error) \u2705\n\nTest Coverage: 47 comprehensive tests cover all key behaviors including edge cases (empty/null inputs, 100KB+ truncation, permission errors, concurrent operations).\n\nCode Quality: One minor issue - redundant log_file = None at runner.py:224 shadows the earlier declaration at line 148. This doesn't cause functional bugs but is poor style.\n\nEdge Cases: Handled correctly - empty/whitespace inputs raise errors, large files truncated at valid UTF-8 boundaries, permission errors ignored silently, non-existent paths allowed."
+    },
+    {
+      "ts": "2026-03-09T00:52Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "questions": [
+    {
+      "question": "What is the exact location for CONTEXT.md - should it be ~/.mad/CONTEXT.md or <project_root>/.mad/CONTEXT.md?",
+      "answer": "<project_root>/.mad/CONTEXT.md"
+    },
+    {
+      "question": "When you say 'every time an agent is invoked', do you mean every turn in a conversation or every new agent session? Should context be prepended to every message or just the initial message?",
+      "answer": "I mean every time a new agent session is done.  The actual initial prompt is basically \"Go read the instructions file that is here...\"; I want that instruction file to tell the agent where the project root is and where the CONTEXT.md file is for the project.  Additionally, I want the agent itself to be executed from the project root (right now, I believe it changes dir to the board's item's location)"
+    },
+    {
+      "question": "Should code_path be stored in global config (~/.mad/config.json), per-board config (~/.mad/boards/<boardname>/config.json), or both?",
+      "answer": "It should be in<project_root>/.mad.config.json"
+    },
+    {
+      "question": "What is the exact derivation algorithm for code_path from board location? For example, given ~/.mad/boards/myboard, what is the project root?",
+      "answer": "I think this should be allowed to be set per-board in <project_root>/.mad/config.json ... I also thing we should haev a default location if the board setting doesn't override it"
+    },
+    {
+      "question": "If code_path points to a non-existent path (user wants to create a new project), should derivation fail or allow it?",
+      "answer": "Hmmm.  I think it should be allowed."
+    },
+    {
+      "question": "Should symlinks in code_path be resolved at config write time, read time, or not at all?",
+      "answer": "read time, I think.  I assume agents can figure that out."
+    },
+    {
+      "question": "What is the maximum allowed size for CONTEXT.md? Should there be truncation or error if it's too large?",
+      "answer": "I'm not sure exactly.  Let's just go with 100kb for now?  I don't think we'll have too much in there."
+    },
+    {
+      "question": "What directories should be blocked for security (e.g., /etc, ~/.ssh, /var, /usr, /root)?",
+      "answer": "For now, let's ignore this, but let's create an item to address it."
+    },
+    {
+      "question": "Should CONTEXT.md be auto-created when using 'mad context edit' or is it optional/missing-is-ok?",
+      "answer": "I think it's optional, missing is okay.  We'll figure out what to do with it eventually."
+    },
+    {
+      "question": "What should happen when CONTEXT.md cannot be read (permission denied, missing file)?",
+      "answer": "Nothing, just ignore it."
+    },
+    {
+      "question": "What is the field naming convention - should config use 'code_path' and 'context_file' consistently?",
+      "answer": "Yes"
+    },
+    {
+      "question": "For per-board config, should it use deep merge or shallow merge when inheriting from global config?",
+      "answer": "No merge; per-board config takes precedence."
+    },
+    {
+      "question": "Is there a need for config version/migration handling for existing users?",
+      "answer": "No"
+    }
+  ]
+}

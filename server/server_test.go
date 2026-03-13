@@ -19,11 +19,19 @@ import (
 // Helpers
 // ---------------------------------------------------------------------------
 
-func testConfig(apiKey string) *Config {
+func testConfig(apiKey string, allowUnauthenticated ...bool) *Config {
+	allowUnauth := false
+	if len(allowUnauthenticated) > 0 {
+		allowUnauth = allowUnauthenticated[0]
+	} else if apiKey == "" {
+		allowUnauth = true
+	}
 	return &Config{
-		Port:        0,
-		APIKey:      apiKey,
-		MaxLogLines: 1000,
+		Port:                       0,
+		APIKey:                     apiKey,
+		MaxLogLines:                1000,
+		MoveTimeout:                30 * time.Second,
+		AllowUnauthenticatedAccess: allowUnauth,
 	}
 }
 
@@ -60,7 +68,7 @@ func wsConnect(t *testing.T, ts *httptest.Server, apiKey, clientID string) *webs
 	t.Helper()
 	url := wsURL(ts, "/ws")
 	if apiKey != "" {
-		url += "?api_key=" + apiKey
+		url += "?key=" + apiKey
 	}
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
@@ -130,6 +138,7 @@ func TestConfigDefaults(t *testing.T) {
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("SERVER_API_KEY", "")
 	t.Setenv("SERVER_MAX_LOG_LINES", "")
+	t.Setenv("MAD_ALLOW_NO_AUTH", "1")
 
 	cfg := loadConfig()
 	if cfg.Port != 8080 {
@@ -165,6 +174,7 @@ func TestConfigInvalidPort(t *testing.T) {
 	// without subprocess, so test the env parsing logic indirectly
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("SERVER_API_KEY", "")
+	t.Setenv("MAD_ALLOW_NO_AUTH", "1")
 	cfg := loadConfig()
 	if cfg.Port != 8080 {
 		t.Errorf("expected default port 8080, got %d", cfg.Port)
@@ -175,6 +185,7 @@ func TestConfigMaxLogLinesInvalidIgnored(t *testing.T) {
 	t.Setenv("SERVER_PORT", "")
 	t.Setenv("SERVER_API_KEY", "")
 	t.Setenv("SERVER_MAX_LOG_LINES", "notanumber")
+	t.Setenv("MAD_ALLOW_NO_AUTH", "1")
 
 	cfg := loadConfig()
 	if cfg.MaxLogLines != 1000 {
@@ -591,7 +602,7 @@ func TestWSAuthAcceptsValidKey(t *testing.T) {
 	cfg := testConfig("secret")
 	_, ts := startTestServerT(t, cfg)
 
-	url := wsURL(ts, "/ws") + "?api_key=secret"
+	url := wsURL(ts, "/ws") + "?key=secret"
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		t.Fatalf("should accept valid api_key: %v", err)
@@ -642,7 +653,7 @@ func TestWSAuthViaHeader(t *testing.T) {
 }
 
 func TestWSAuthNoKeyConfigMeansOpen(t *testing.T) {
-	cfg := testConfig("")
+	cfg := testConfig("", true)
 	_, ts := startTestServerT(t, cfg)
 
 	url := wsURL(ts, "/ws")
@@ -658,7 +669,7 @@ func TestWSRegisterWithInvalidAPIKey(t *testing.T) {
 	_, ts := startTestServerT(t, cfg)
 
 	// Connect with valid key but register with invalid key
-	url := wsURL(ts, "/ws") + "?api_key=secret"
+	url := wsURL(ts, "/ws") + "?key=secret"
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1063,8 +1074,8 @@ func TestCheckAPIAuthXAPIKey(t *testing.T) {
 
 func TestCheckAPIAuthEmptyKeyAllowsAll(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
-	if !checkAPIAuth(req, "") {
-		t.Error("empty API key should allow all")
+	if checkAPIAuth(req, "") {
+		t.Error("empty API key should not allow access")
 	}
 }
 
@@ -3711,11 +3722,11 @@ func TestDashboardKeyWhitespaceOnlyRejected(t *testing.T) {
 }
 
 func TestAPIClientsReturnsUnauthorizedForUnauthenticated(t *testing.T) {
-	cfg := testConfig("")
+	cfg := testConfig("", false)
 	cfg.DashboardKey = "secret-key"
 	hub, ts := startTestServerT(t, cfg)
 
-	conn := wsConnect(t, ts, "", "api-leak-client")
+	conn := wsConnect(t, ts, "secret-key", "api-leak-client")
 	defer conn.Close()
 	waitForClient(hub, "api-leak-client", 2*time.Second)
 
@@ -4007,14 +4018,14 @@ func TestAPIEndpointDashboardKeyWorksForIdeas(t *testing.T) {
 }
 
 func TestAPIEndpointDashboardKeyWrongKeyRejected(t *testing.T) {
-	cfg := testConfig("")
+	cfg := testConfig("", false)
 	cfg.DashboardKey = "correct-key"
 	hub, ts := startTestServerT(t, cfg)
 
 	features := []map[string]interface{}{
 		{"title": "F1", "stage": "ideas", "board": "b", "id": "wrongkey-f1"},
 	}
-	conn := registerClientWithFeatures(t, hub, ts, "", "wrongkey-client", features)
+	conn := registerClientWithFeatures(t, hub, ts, "correct-key", "wrongkey-client", features)
 	defer conn.Close()
 
 	resp := apiPostWithDashboardKey(t, ts, "/api/clients/wrongkey-client/ideas", "wrong-key", map[string]interface{}{

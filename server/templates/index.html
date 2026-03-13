@@ -12,6 +12,19 @@
     <link rel="apple-touch-icon" href="/static/icon-192.png">
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>    <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        [data-active="true"] .title::before {
+            content: '';
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border: 2px solid #58a6ff;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            vertical-align: middle;
+            margin-right: 5px;
+        }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
             background: #0d1117;
@@ -188,6 +201,19 @@
             margin-bottom: 0.25rem;
             word-break: break-word;
         }
+        .item-type-badge {
+            padding: 0 4px;
+            border-radius: 3px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            margin-left: 0.25rem;
+            color: white;
+            text-transform: uppercase;
+        }
+        .item-type-feature { background: #238636; }
+        .item-type-bug { background: #f85149; }
+        .item-type-enhancement { background: #1f6feb; }
+        .item-type-task { background: #8957e5; }
         .feature-card .meta {
             color: #484f58;
             font-size: 0.7rem;
@@ -253,7 +279,8 @@
             letter-spacing: 0.05em;
             margin-bottom: 0.5rem;
         }
-        }
+        .stage-section.needs-action { border-left: 3px solid #d29922; }
+        .stage-section.needs-action .stage-toggle { background: #1c2128; border-left: 3px solid #d29922; }
     </style>
 </head>
 <body>
@@ -295,7 +322,7 @@
             <h3 style="color:#58a6ff;font-size:1rem;margin-bottom:1rem">Create New Idea</h3>
             <div style="margin-bottom:1rem">
                 <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Client *</label>
-                <select id="new-idea-client" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
+                <select id="new-idea-client" onchange="fetchScriptsForNewIdea()" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
                     <option value="">Select a client...</option>
                 </select>
             </div>
@@ -313,6 +340,12 @@
             <div style="margin-bottom:1rem">
                 <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Description</label>
                 <textarea id="new-idea-description" placeholder="Optional description" rows="3" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit;resize:vertical"></textarea>
+            </div>
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Done Script (optional)</label>
+                <select id="new-idea-done-script" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
+                    <option value="">(none)</option>
+                </select>
             </div>
             <div style="display:flex;gap:0.5rem;justify-content:flex-end">
                 <button onclick="closeNewIdeaModal()" style="padding:0.5rem 1rem;background:#30363d;color:#c9d1d9;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-family:inherit">Cancel</button>
@@ -371,7 +404,7 @@
                     function cardHash(c) {
                         return [c.getAttribute('data-id'), c.getAttribute('data-stage'),
                                 c.getAttribute('data-title'), c.getAttribute('data-description'),
-                                c.getAttribute('data-history')].join('|');
+                                c.getAttribute('data-history'), c.getAttribute('data-active')].join('|');
                     }
                     var newCards = newBody.querySelectorAll('.feature-card');
                     var curCards = curBody.querySelectorAll('.feature-card');
@@ -417,7 +450,10 @@
             document.getElementById('new-idea-board').value = '';
             document.getElementById('new-idea-description').value = '';
             document.getElementById('new-idea-feedback').textContent = '';
-            
+            var btn = document.getElementById('submit-idea-btn');
+            btn.disabled = false;
+            btn.textContent = 'Create Idea';
+
             // Fetch clients to populate the dropdown
             fetch('/api/clients?key=' + encodeURIComponent(key)).then(function(r) { return r.json(); }).then(function(clients) {
                 _clientsCache = clients;
@@ -438,6 +474,20 @@
             
             document.getElementById('new-idea-title').focus();
         }
+        function fetchScriptsForNewIdea() {
+            var clientID = document.getElementById('new-idea-client').value;
+            var scriptSelect = document.getElementById('new-idea-done-script');
+            scriptSelect.innerHTML = '<option value="">(none)</option>';
+            if (!clientID) return;
+            fetch('/api/clients/' + encodeURIComponent(clientID) + '/scripts?key=' + encodeURIComponent(key)).then(function(r) { return r.json(); }).then(function(scripts) {
+                scripts.forEach(function(s) {
+                    var opt = document.createElement('option');
+                    opt.value = s.id;
+                    opt.textContent = s.label;
+                    scriptSelect.appendChild(opt);
+                });
+            }).catch(function() {});
+        }
         function closeNewIdeaModal(event) {
             if (!event || event.target === document.getElementById('new-idea-modal')) {
                 document.getElementById('new-idea-modal').classList.remove('active');
@@ -448,6 +498,7 @@
             var title = document.getElementById('new-idea-title').value.trim();
             var board = document.getElementById('new-idea-board').value.trim();
             var description = document.getElementById('new-idea-description').value.trim();
+            var doneScript = document.getElementById('new-idea-done-script').value;
             var feedback = document.getElementById('new-idea-feedback');
             var btn = document.getElementById('submit-idea-btn');
             if (!clientID) {
@@ -470,7 +521,7 @@
             fetch('/api/clients/' + encodeURIComponent(clientID) + '/ideas?key=' + encodeURIComponent(key), {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({title: title, board: board, description: description})
+                body: JSON.stringify({title: title, board: board, description: description, done_script: doneScript})
             }).then(function(resp) {
                 return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
             }).then(function(result) {
@@ -499,19 +550,33 @@
             btn.classList.toggle('collapsed');
             body.classList.toggle('hidden');
         }
+        var _modalClientId = null;
+        var _modalFeatureId = null;
         function showFeature(card) {
+            _modalClientId = card.getAttribute('data-client');
+            _modalFeatureId = card.getAttribute('data-id');
             var title = card.getAttribute('data-title');
+            var itemType = card.getAttribute('data-type') || 'feature';
             var stage = card.getAttribute('data-stage');
             var board = card.getAttribute('data-board');
             var created = card.getAttribute('data-created');
             var featureId = card.getAttribute('data-id');
-            var description = card.getAttribute('data-description') || '';
+            var description = decodeHtmlEntities(card.getAttribute('data-description') || '');
             var historyJSON = card.getAttribute('data-history') || '[]';
+            var doneScript = card.getAttribute('data-done-script') || '';
             var html =
                 '<div class="detail-row"><span class="detail-label">Stage</span><span class="detail-value">' + escapeHtml(stage) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Board</span><span class="detail-value">' + escapeHtml(board) + '</span></div>' +
+                '<div class="detail-row"><span class="detail-label">Type</span><span class="detail-value">' + escapeHtml(itemType) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">' + escapeHtml(created) + '</span></div>' +
-                '<div class="detail-row"><span class="detail-label">ID</span><span class="detail-value">' + escapeHtml(featureId) + '</span></div>';
+                '<div class="detail-row"><span class="detail-label">ID</span><span class="detail-value">' + escapeHtml(featureId) + '</span></div>' +
+                (doneScript ? '<div class="detail-row"><span class="detail-label">Done Script</span><span class="detail-value" style="color:#d2a8ff">' + escapeHtml(doneScript) + '</span></div>' : '') +
+                (stage === 'final-human-approval' ?
+                '<div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;padding:0.5rem 0;border-bottom:1px solid #21262d">' +
+                '<button id="btn-approve" onclick="approveFeature(\'done\')" style="padding:0.4rem 0.8rem;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-weight:600;color:#fff;background:#238636">Approve</button>' +
+                '<button id="btn-reject" onclick="showRejectModal()" style="padding:0.4rem 0.8rem;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-weight:600;color:#fff;background:#da3633">Reject</button>' +
+                '<span id="approval-feedback" style="margin-left:0.5rem;font-size:0.8rem"></span>' +
+                '</div>' : '');
             if (description) {
                 html += '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid #21262d">' +
                     '<div style="color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase;margin-bottom:0.3rem">Description</div>' +
@@ -532,6 +597,51 @@
                     html += '</div>';
                 }
             } catch(e) {}
+            // Reviews section
+            try {
+                var planReviews = JSON.parse(card.getAttribute('data-plan-reviews') || '[]');
+                var implReviews = JSON.parse(card.getAttribute('data-impl-reviews') || '[]');
+                var totalReviews = planReviews.length + implReviews.length;
+                if (totalReviews > 0) {
+                    html += '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid #21262d">' +
+                        '<div style="color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase;margin-bottom:0.3rem">Reviews (' + totalReviews + ')</div>';
+                    for (var pri = 0; pri < planReviews.length; pri++) {
+                        var pr = planReviews[pri];
+                        var verdict = pr.verdict || '';
+                        var verdictColor = verdict === 'PASS' ? '#3fb950' : (verdict === 'FAIL' ? '#f85149' : '#c9d1d9');
+                        var summary = pr.summary || pr.feedback || '';
+                        if (summary.length > 200) summary = summary.substring(0, 200) + '...';
+                        var feedbackLine = '';
+                        var fb = pr.feedback || '';
+                        if (fb && pr.summary && fb !== pr.summary) {
+                            if (fb.length > 200) fb = fb.substring(0, 200) + '...';
+                            feedbackLine = '<div style="font-size:0.65rem;padding:0.1rem 0 0.1rem 1rem;color:#8b949e">' + escapeHtml(fb) + '</div>';
+                        }
+                        html += '<div style="font-size:0.75rem;padding:0.2rem 0;border-bottom:1px solid #161b22">' +
+                            '<span style="color:#484f58">' + escapeHtml(pr.ts || '') + '</span> ' +
+                            '<span style="color:' + verdictColor + ';font-weight:bold">[' + escapeHtml(verdict) + ']</span> ' +
+                            '<span style="color:#c9d1d9">' + escapeHtml(summary) + '</span></div>' + feedbackLine;
+                    }
+                    for (var iri = 0; iri < implReviews.length; iri++) {
+                        var ir = implReviews[iri];
+                        var verdict = ir.verdict || '';
+                        var verdictColor = verdict === 'PASS' ? '#3fb950' : (verdict === 'FAIL' ? '#f85149' : '#c9d1d9');
+                        var summary = ir.summary || ir.feedback || '';
+                        if (summary.length > 200) summary = summary.substring(0, 200) + '...';
+                        var feedbackLine = '';
+                        var fb = ir.feedback || '';
+                        if (fb && ir.summary && fb !== ir.summary) {
+                            if (fb.length > 200) fb = fb.substring(0, 200) + '...';
+                            feedbackLine = '<div style="font-size:0.65rem;padding:0.1rem 0 0.1rem 1rem;color:#8b949e">' + escapeHtml(fb) + '</div>';
+                        }
+                        html += '<div style="font-size:0.75rem;padding:0.2rem 0;border-bottom:1px solid #161b22">' +
+                            '<span style="color:#484f58">' + escapeHtml(ir.ts || '') + '</span> ' +
+                            '<span style="color:' + verdictColor + ';font-weight:bold">[' + escapeHtml(verdict) + ']</span> ' +
+                            '<span style="color:#c9d1d9">' + escapeHtml(summary) + '</span></div>' + feedbackLine;
+                    }
+                    html += '</div>';
+                }
+            } catch(e) {}
             document.getElementById('modal-title').textContent = title;
             document.getElementById('modal-body').innerHTML = html;
             document.getElementById('feature-modal').classList.add('active');
@@ -540,6 +650,47 @@
             if (!event || event.target === document.getElementById('feature-modal')) {
                 document.getElementById('feature-modal').classList.remove('active');
             }
+        }
+        function showRejectModal() {
+            var reason = prompt('Rejection reason (optional):');
+            if (reason === null) return;
+            approveFeature('implementing', reason || 'No reason given');
+        }
+        function approveFeature(action, reason) {
+            var feedbackEl = document.getElementById('approval-feedback');
+            if (!feedbackEl) return;
+            feedbackEl.textContent = action === 'done' ? 'Approving...' : 'Rejecting...';
+            feedbackEl.style.color = '#8b949e';
+            var btnApprove = document.getElementById('btn-approve');
+            var btnReject = document.getElementById('btn-reject');
+            if (btnApprove) btnApprove.disabled = true;
+            if (btnReject) btnReject.disabled = true;
+            fetch('/api/clients/' + encodeURIComponent(_modalClientId) + '/features/' + encodeURIComponent(_modalFeatureId) + '/move?key=' + encodeURIComponent(key), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(reason !== undefined ? {target_stage: action, reason: reason} : {target_stage: action})
+            }).then(function(r) {
+                return r.json().then(function(data) {
+                    if (r.ok) {
+                        feedbackEl.style.color = '#3fb950';
+                        feedbackEl.textContent = action === 'done' ? 'Approved!' : 'Rejected!';
+                        setTimeout(function() {
+                            closeModal();
+                            smartPollBoard();
+                        }, 1000);
+                    } else {
+                        feedbackEl.style.color = '#f85149';
+                        feedbackEl.textContent = data.error || 'Failed';
+                        if (btnApprove) btnApprove.disabled = false;
+                        if (btnReject) btnReject.disabled = false;
+                    }
+                });
+            }).catch(function() {
+                feedbackEl.style.color = '#f85149';
+                feedbackEl.textContent = 'Network error';
+                if (btnApprove) btnApprove.disabled = false;
+                if (btnReject) btnReject.disabled = false;
+            });
         }
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
@@ -550,6 +701,11 @@
             var div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+        function decodeHtmlEntities(text) {
+            var ta = document.createElement('textarea');
+            ta.innerHTML = text;
+            return ta.value;
         }
     </script>
     {{end}}
@@ -634,7 +790,7 @@
     <td>{{.LastSeen.Format "15:04:05"}}</td>
     <td>{{if .Connected}}<span class="status-dot status-active"></span>Connected{{else}}<span class="status-dot status-stale"></span>Disconnected{{end}}</td>
 </tr>{{end}}{{else}}<tr><td colspan="7" class="empty-state">No clients connected</td></tr>{{end}}{{end}}
-{{define "board_fragment"}}{{range .StageGroups}}<div class="stage-section">
+{{define "board_fragment"}}{{range .StageGroups}}<div class="stage-section{{if eq .Stage "final-human-approval"}} needs-action{{end}}">
     <button type="button" class="stage-toggle{{if not .Features}} collapsed{{end}}" onclick="toggleStage(this)">
         <span>{{stageLabel .Stage}} <span class="stage-count{{if .Features}} has-items{{end}}">{{len .Features}}</span></span>
         <span class="arrow">&#9660;</span>
@@ -642,16 +798,21 @@
     <div class="stage-body{{if not .Features}} hidden{{end}}">
         {{if .Features}}{{range .Features}}<div class="feature-card" onclick="showFeature(this)"
             data-title="{{.Title}}"
+            data-type="{{.ItemType}}"
             data-stage="{{.Stage}}"
             data-board="{{.Board}}"
             data-created="{{.Created}}"
             data-id="{{.ID}}"
-            data-description="{{.Description}}"
+            data-description="{{escapeAttr .Description}}"
             data-history="{{toJSON .History}}"
             data-client="{{.ClientID}}"
-            data-checkpoint="{{toJSON .Checkpoint}}">
-            <div class="title">{{.Title}}{{if .Checkpoint}}{{if .Checkpoint.exists}} <span style="color:#d29922;font-size:0.7rem">● checkpoint</span>{{end}}{{end}}</div>
-            <div class="meta">{{if .ClientID}}<span style="color:#d2a8ff">{{.ClientID}}</span>{{end}}<span>{{.Board}}</span><span>{{.Created}}</span>{{if .Checkpoint}}{{if .Checkpoint.exists}}<span style="color:#d29922">{{.Checkpoint.last_checkpoint}}</span>{{end}}{{end}}</div>
+            data-checkpoint="{{toJSON .Checkpoint}}"
+            data-plan-reviews="{{toJSON .PlanReviews}}"
+            data-impl-reviews="{{toJSON .ImplReviews}}"
+            data-done-script="{{.DoneScript}}"
+            data-active="{{if index $.ActiveSlugs .Slug}}true{{end}}">
+            <div class="title">{{.Title}}{{if and .ItemType (ne .ItemType "feature")}} <span class="item-type-badge item-type-{{.ItemType}}" aria-label="Item type: {{.ItemType}}">{{.ItemType}}</span>{{end}}{{if .Checkpoint}}{{if .Checkpoint.exists}} <span style="color:#d29922;font-size:0.7rem">● checkpoint</span>{{end}}{{end}}</div>
+            <div class="meta">{{if .ClientID}}<span style="color:#d2a8ff">{{.ClientID}}</span>{{end}}<span>{{.Board}}</span><span>{{.Created}}</span>{{if .Checkpoint}}{{if .Checkpoint.exists}}<span style="color:#d29922">{{.Checkpoint.last_checkpoint}}</span>{{end}}{{end}}{{if .DoneScript}}<span class="done-script-badge" style="background:#a855f7;color:white;padding:0 4px;border-radius:3px;font-size:0.7rem">Script</span>{{end}}</div>
         </div>{{end}}{{else}}<div class="empty-stage">No features in this stage</div>{{end}}
     </div>
 </div>

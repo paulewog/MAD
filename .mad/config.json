@@ -1,22 +1,4 @@
 {
-  "current_agent": "kilo",
-  "agents": {
-    "claude": {
-      "command": "claude",
-      "headless_flag": "-p",
-      "headless_extra_flags": [
-        "--dangerously-skip-permissions"
-      ]
-    },
-    "kilo": {
-      "command": "kilo",
-      "headless_flag": "",
-      "headless_extra_flags": [
-        "run",
-        "--auto"
-      ]
-    }
-  },
   "boards": [
     "mad"
   ],
@@ -29,11 +11,55 @@
   },
   "agent_for_phase": {
     "planning": "claude",
-    "spec_writing": "claude",
-    "implementing": "kilo",
-    "fix_feedback": "kilo",
-    "testing": "kilo",
-    "review": "claude",
-    "reviewing_plan": "kilo"
+    "spec_writing": {
+      "agent": "claude",
+      "model": "opus"
+    },
+    "implementing": "opencode",
+    "fix_feedback": "opencode",
+    "testing": "opencode",
+    "review": {
+      "agent": "claude",
+      "model": "opus"
+    },
+    "reviewing_plan": "opencode"
+  },
+  "ideating": {
+    "rounds": [
+      {
+        "cli": "opencode",
+        "model": "minimax/MiniMax-M2.5"
+      },
+      {
+        "cli": "claude",
+        "model": "opus"
+      },
+      {
+        "cli": "opencode",
+        "model": "minimax/MiniMax-M2.5"
+      },
+      {
+        "cli": "claude",
+        "model": "sonnet"
+      }
+    ]
+  },
+  "default_agent": "claude",
+  "agent_defaults": {
+    "opencode": {
+      "model": "minimax/MiniMax-M2.5"
+    },
+    "claude": {
+      "model": "opus"
+    }
+  },
+  "models": {
+    "claude": [
+      "opus",
+      "sonnet"
+    ],
+    "opencode": [
+      "minimax/MiniMax-M2.5"
+    ]
   }
 }

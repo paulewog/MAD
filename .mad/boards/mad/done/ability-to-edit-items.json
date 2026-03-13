@@ -1,0 +1,353 @@
+{
+  "id": "8c561882",
+  "board": "mad",
+  "title": "ability to edit items",
+  "type": "feature",
+  "created": "2026-03-08T20:07Z",
+  "description": "I would like the ability to edit items from TUI and webui.",
+  "done_script": "",
+  "plan": "## Implementation Plan: Edit Items (Title, Type, Description) in IDEAS Stage\n\n### Overview\nImplement editing capabilities for title, item type, and description in both TUI and WebUI, restricted to the IDEAS stage only. This builds upon existing description editing patterns.\n\n### Core Data Layer Changes\n\n**File: pipeline/state.py**\n1. Add `set_title(self, new_title: str) -> None` method:\n   - Validate that new_title.strip() is not empty (addresses review feedback)\n   - If empty, raise ValueError('Title cannot be empty')\n   - Update self._data[\"title\"] = new_title\n   - Call self._save()\n   - Add history entry: self.add_history(self.current_stage.upper(), 'Title edited')\n\n2. Add `set_item_type(self, new_type: str) -> None` method:\n   - Validate new_type is either \"feature\" or \"bug\"\n   - If invalid, raise ValueError('Type must be \"feature\" or \"bug\"')\n   - Update self._data[\"type\"] = new_type\n   - Call self._save()\n   - Add history entry: self.add_history(self.current_stage.upper(), 'Type edited')\n\n### TUI Implementation\n\n**File: pipeline/tui.py**\n\n1. **Add keybindings to STAGE_ACTIONS (line 1432)**:\n   - Add to 'ideas' list: `('t', 'edit_title', 'Edit Title'), ('y', 'edit_item_type', 'Edit Type')`\n   - This addresses the review feedback about proper keybinding implementation\n\n2. **Add action handlers**:\n   - `action_edit_title()`: \n     - Check if selected_feature.current_stage == 'ideas' (addresses stage validation feedback)\n     - If not, show warning and return\n     - Open modal dialog similar to edit_done_script\n     - Pre-populate with current title\n     - On save, call selected_feature.set_title()\n   \n   - `action_edit_item_type()`:\n     - Check if selected_feature.current_stage == 'ideas'\n     - If not, show warning and return\n     - Open modal dialog with radio buttons for \"feature\" and \"bug\"\n     - Pre-select current type\n     - On save, call selected_feature.set_item_type()\n\n3. **Update _handle_edit_description() (line 1881)**:\n   - Add stage validation: `if feature.current_stage != 'ideas': logger.warning(...); return`\n   - This addresses the review feedback about stage validation clarification\n   - Update history format to match pattern: 'Description edited via TUI'\n\n### WebUI Implementation\n\n**File: server/api.go**\n\n1. **Add new API endpoints**:\n   - `/api/clients/{clientID}/features/{featureID}/edit-title` (POST)\n   - `/api/clients/{clientID}/features/{featureID}/edit-type` (POST)\n   - Follow same pattern as existing `serveEditDescription`\n\n2. **Add handlers**:\n   - `serveEditTitle()`: \n     - Parse JSON request with \"title\" field\n     - Validate feature exists in state.Features[]\n     - Check cached stage == \"ideas\" (addresses API stage validation feedback)\n     - Send message type \"edit_title\" to TUI client\n   \n   - `serveEditType()`:\n     - Parse JSON request with \"type\" field\n     - Validate type is \"feature\" or \"bug\"\n     - Check cached stage == \"ideas\"\n     - Send message type \"edit_item_type\" to TUI client\n\n3. **Add TUI message handlers**:\n   - Add `on_edit_title` and `on_edit_item_type` callbacks to ServerClient\n   - Implement `_handle_edit_title()` and `_handle_edit_item_type()` in TUI\n   - Follow same pattern as existing `_handle_edit_description()`\n   - Add proper stage validation (ideas only)\n   - Update history format to 'Title edited via web UI' (addresses history consistency feedback)\n\n**File: server/templates/index.html**\n\n1. **Add UI elements to feature modal** (around line 553):\n   - Add title editing: text input field with save button\n   - Add type editing: radio buttons (feature/bug) with save button\n   - Follow same styling pattern as description textarea\n   - Only show these elements when stage === \"ideas\"\n\n2. **Add JavaScript functions**:\n   - `saveTitle()`: POST to edit-title endpoint\n   - `saveType()`: POST to edit-type endpoint\n   - Follow same pattern as existing `saveDescription()`\n   - Add proper error handling and feedback display\n\n### Key Design Decisions (Addressing Review Feedback)\n\n1. **Stage Restriction**: All editing operations validate that current_stage === \"ideas\"\n   - TUI handlers check and warn if wrong stage\n   - WebUI only shows edit controls in ideas stage\n   - API validates cached stage (with note that TUI validation is authoritative)\n\n2. **History Format Consistency**:\n   - TUI: \"Title edited via TUI\", \"Type edited via TUI\" \n   - WebUI: \"Title edited via web UI\", \"Type edited via web UI\"\n   - Follows existing pattern from line 1890\n\n3. **Validation**:\n   - Empty title validation prevents slugify() resulting in empty string\n   - Type validation ensures only \"feature\" or \"bug\" values\n   - Stage validation prevents editing outside ideas phase\n\n4. **UI Consistency**:\n   - TUI uses modal dialogs (as requested)\n   - WebUI follows textarea + save button pattern\n   - Both show appropriate feedback messages\n\n### Testing Considerations\n\n1. **Stage Validation**: Verify editing is blocked outside ideas stage\n2. **Empty Title**: Confirm proper error handling for empty titles\n3. **Type Validation**: Test invalid type values are rejected\n4. **History Logging**: Verify proper history entries are created\n5. **UI State**: Ensure WebUI properly updates after edits\n6. **Cross-client Sync**: Test that TUI updates when WebUI makes changes\n\n### Implementation Order\n\n1. Add set_title() and set_item_type() methods to FeatureFile\n2. Update TUI keybindings and add action handlers\n3. Add API endpoints and handlers\n4. Update WebUI templates and JavaScript\n5. Test end-to-end functionality\n6. Verify all review feedback points are addressed\n\nThis plan addresses all previous review feedback while implementing the requested editing capabilities in a consistent, validated manner.",
+  "impl_spec": "## Implementation Spec: Edit Items (Title, Type, Description) in IDEAS Stage\n\n### Task 1: Add set_title() method to FeatureFile\n**File:** pipeline/state.py\n**Approach:** Add method following the existing set_description() pattern (line 129-131). Validate that new_title.strip() is not empty, raising ValueError if so. Set self._data[\"title\"] = new_title, call self._save(), then self.add_history(self.current_stage.upper(), 'Title edited').\n**Dependencies:** None\n\n### Task 2: Add set_item_type() method to FeatureFile\n**File:** pipeline/state.py\n**Approach:** Add method following same pattern. Validate new_type is \"feature\" or \"bug\", raising ValueError if not. Set self._data[\"type\"] = new_type, call self._save(), then self.add_history(self.current_stage.upper(), 'Type edited').\n**Dependencies:** None\n\n### Task 3: Add TUI keybindings for edit_title and edit_item_type\n**File:** pipeline/tui.py\n**Approach:** In STAGE_ACTIONS dict (line 1432), add ('t', 'edit_title', 'Edit Title') and ('y', 'edit_item_type', 'Edit Type') to the 'ideas' list. Add corresponding Binding entries in the class BINDINGS list (line 1404): Binding('t', 'edit_title', 'Edit Title', show=False) and Binding('y', 'edit_item_type', 'Edit Type', show=False).\n**Dependencies:** None\n\n### Task 4: Create EditTitleModal class\n**File:** pipeline/tui.py\n**Approach:** Create a ModalScreen[str | None] subclass following EditDoneScriptModal pattern (line 874-922). Contains a Label, an Input widget pre-populated with the current title, and Save/Cancel buttons. On save, dismiss with the input value. On cancel, dismiss with None. Add escape binding to cancel.\n**Dependencies:** None\n\n### Task 5: Create EditItemTypeModal class\n**File:** pipeline/tui.py\n**Approach:** Create a ModalScreen[str | None] subclass. Contains a Label, a Select widget with options [(\"Feature\", \"feature\"), (\"Bug\", \"bug\")] pre-selected to the current type, and Save/Cancel buttons. On save, dismiss with selected value. On cancel, dismiss with None.\n**Dependencies:** None\n\n### Task 6: Add action_edit_title() handler\n**File:** pipeline/tui.py\n**Approach:** Add method following action_edit_done_script() pattern (line 3365-3382). Check self.selected_feature exists, check selected_feature.current_stage == 'ideas' (if not, self.notify warning and return). Define callback that calls f.set_title(result), notifies success, and calls self._update_detail_view(). Push EditTitleModal screen with current title.\n**Dependencies:** Tasks 1, 3, 4\n\n### Task 7: Add action_edit_item_type() handler\n**File:** pipeline/tui.py\n**Approach:** Same pattern as Task 6. Check stage == 'ideas'. Define callback that calls f.set_item_type(result), notifies success, calls self._update_detail_view(). Push EditItemTypeModal with current type.\n**Dependencies:** Tasks 2, 3, 5\n\n### Task 8: Add stage validation to _handle_edit_description()\n**File:** pipeline/tui.py\n**Approach:** In _handle_edit_description() (line 1881), after finding the feature, add: if feature.current_stage != 'ideas': logger.warning('edit_description: feature not in ideas stage'); return. This restricts description editing to ideas stage only.\n**Dependencies:** None\n\n### Task 9: Add on_edit_title and on_edit_item_type callbacks to ServerClient\n**File:** pipeline/server_client.py\n**Approach:** In __init__() (line 47-73), add optional callback parameters on_edit_title and on_edit_item_type with type Callable[[str, str], Awaitable[None]]. Store as self._on_edit_title and self._on_edit_item_type. In _handle_incoming() (line 275-363), add elif blocks for msg_type == 'edit_title' and msg_type == 'edit_item_type', extracting feature_id and the new value (title or type), then calling the registered callback. Follow exact pattern of edit_description handling (lines 330-337).\n**Dependencies:** None\n\n### Task 10: Add _handle_edit_title() and _handle_edit_item_type() to TUI\n**File:** pipeline/tui.py\n**Approach:** Add async methods following _handle_edit_description() pattern (line 1881-1903). Each: find feature by ID, validate stage == 'ideas', call set_title/set_item_type, add_history with 'Title edited via web UI' / 'Type edited via web UI', refresh board, push updated state to server.\n**Dependencies:** Tasks 1, 2, 9\n\n### Task 11: Wire callbacks when creating ServerClient\n**File:** pipeline/tui.py\n**Approach:** Find where ServerClient is instantiated and on_edit_description is passed. Add on_edit_title=self._handle_edit_title and on_edit_item_type=self._handle_edit_item_type to the constructor call.\n**Dependencies:** Tasks 9, 10\n\n### Task 12: Add serveEditTitle() API endpoint\n**File:** server/api.go\n**Approach:** Add function following serveEditDescription() pattern (lines 1125-1182). Parse JSON with \"title\" field. Validate client exists and is connected, feature exists. Check feature's cached stage == \"ideas\" (iterate state.Features to find the feature and check its Stage field; if not \"ideas\", return 422 error). Build JSON message with type \"edit_title\", feature_id, and title. Send via hub.SendToClient().\n**Dependencies:** None\n\n### Task 13: Add serveEditType() API endpoint\n**File:** server/api.go\n**Approach:** Same pattern as Task 12. Parse JSON with \"type\" field. Validate type is \"feature\" or \"bug\" (return 400 if not). Check cached stage == \"ideas\". Build JSON message with type \"edit_item_type\", feature_id, and type. Send via hub.SendToClient().\n**Dependencies:** None\n\n### Task 14: Register routes for edit-title and edit-type\n**File:** server/api.go\n**Approach:** In the router section (around line 311-314 where edit-description is registered), add similar routing for \"edit-title\" -> serveEditTitle() and \"edit-type\" -> serveEditType().\n**Dependencies:** Tasks 12, 13\n\n### Task 15: Add title editing UI to WebUI feature modal\n**File:** server/templates/index.html\n**Approach:** In showFeature() function (around line 551), add a conditional block for stage === 'ideas'. Inside, add a title input field (text input pre-populated with current title from data attributes), a Save Title button, and a feedback span. Follow the description textarea/save button pattern. Add data-title attribute to feature cards (around line 791-803).\n**Dependencies:** None\n\n### Task 16: Add type editing UI to WebUI feature modal\n**File:** server/templates/index.html\n**Approach:** In same conditional block as Task 15, add two radio buttons for \"feature\" and \"bug\", pre-selecting the current type. Add a Save Type button and feedback span. Store current type in data-type attribute on feature cards.\n**Dependencies:** None\n\n### Task 17: Add saveTitle() JavaScript function\n**File:** server/templates/index.html\n**Approach:** Follow saveDescription() pattern (lines 621-650). POST to /api/clients/{clientID}/features/{featureID}/edit-title with JSON body {title: value}. Handle response with feedback span. Update data-title attribute on feature cards on success.\n**Dependencies:** Tasks 14, 15\n\n### Task 18: Add saveType() JavaScript function\n**File:** server/templates/index.html\n**Approach:** Follow saveDescription() pattern. POST to /api/clients/{clientID}/features/{featureID}/edit-type with JSON body {type: value}. Handle response with feedback span. Update data-type attribute on feature cards on success.\n**Dependencies:** Tasks 14, 16\n\n### Implementation Order\n1. Tasks 1, 2 (state.py - no dependencies)\n2. Tasks 3, 4, 5, 9 (TUI keybindings, modals, server_client callbacks - no cross-dependencies)\n3. Tasks 6, 7, 8, 10, 11 (TUI action handlers and wiring)\n4. Tasks 12, 13, 14 (API endpoints)\n5. Tasks 15, 16, 17, 18 (WebUI)\n6. End-to-end testing",
+  "test_spec": "## Test Specification: Edit Items (Title, Type, Description) in IDEAS Stage\n\n### 1. Behaviors That MUST Be Verified\n\n#### 1.1 Data Layer - set_title()\n- **Behavior**: Calling set_title('New Title') on a FeatureFile updates the title in the JSON data and persists to disk.\n  - Success: After calling set_title('New Title'), reading the JSON file shows \"title\": \"New Title\".\n  - A history entry is added with stage name (uppercased) and message 'Title edited'.\n\n- **Behavior**: set_title() with whitespace-only string raises ValueError.\n  - Success: set_title('   ') raises ValueError with message 'Title cannot be empty'.\n  - The title remains unchanged after the error.\n\n- **Behavior**: set_title() with empty string raises ValueError.\n  - Success: set_title('') raises ValueError with message 'Title cannot be empty'.\n\n#### 1.2 Data Layer - set_item_type()\n- **Behavior**: Calling set_item_type('bug') on a FeatureFile updates the type and persists to disk.\n  - Success: After calling set_item_type('bug'), reading the JSON file shows \"type\": \"bug\".\n  - A history entry is added with stage name (uppercased) and message 'Type edited'.\n\n- **Behavior**: Calling set_item_type('feature') works correctly.\n  - Success: After calling set_item_type('feature'), reading the JSON file shows \"type\": \"feature\".\n\n- **Behavior**: set_item_type() with invalid value raises ValueError.\n  - Success: set_item_type('enhancement') raises ValueError with message containing 'feature' and 'bug'.\n  - The type remains unchanged after the error.\n\n#### 1.3 TUI Keybindings\n- **Behavior**: Pressing 't' in ideas stage triggers edit_title action.\n  - Success: The STAGE_ACTIONS dict for 'ideas' contains the ('t', 'edit_title', 'Edit Title') entry.\n\n- **Behavior**: Pressing 'y' in ideas stage triggers edit_item_type action.\n  - Success: The STAGE_ACTIONS dict for 'ideas' contains the ('y', 'edit_item_type', 'Edit Type') entry.\n\n#### 1.4 TUI Action Handlers\n- **Behavior**: action_edit_title() opens a modal pre-populated with the current title when feature is in ideas stage.\n  - Success: Modal is pushed with the current title value.\n\n- **Behavior**: action_edit_title() shows warning and does nothing when feature is NOT in ideas stage.\n  - Success: No modal is opened; a warning notification is shown.\n\n- **Behavior**: action_edit_item_type() opens a modal with current type pre-selected when feature is in ideas stage.\n  - Success: Modal is pushed with the current type value.\n\n- **Behavior**: action_edit_item_type() shows warning and does nothing when feature is NOT in ideas stage.\n  - Success: No modal is opened; a warning notification is shown.\n\n- **Behavior**: Saving from EditTitleModal updates the feature title and refreshes the detail view.\n  - Success: Feature title is updated, detail view reflects new title.\n\n- **Behavior**: Cancelling EditTitleModal makes no changes.\n  - Success: Feature title remains the same.\n\n- **Behavior**: Saving from EditItemTypeModal updates the feature type and refreshes the detail view.\n  - Success: Feature type is updated, detail view reflects new type.\n\n#### 1.5 Stage Validation for Description Editing\n- **Behavior**: _handle_edit_description() rejects edits when feature is not in ideas stage.\n  - Success: Description remains unchanged; a warning is logged.\n\n- **Behavior**: _handle_edit_description() allows edits when feature is in ideas stage.\n  - Success: Description is updated and saved.\n\n#### 1.6 Server Client Callbacks\n- **Behavior**: ServerClient dispatches 'edit_title' messages to on_edit_title callback.\n  - Success: When a message with type 'edit_title' is received, the registered callback is invoked with the correct feature_id and title.\n\n- **Behavior**: ServerClient dispatches 'edit_item_type' messages to on_edit_item_type callback.\n  - Success: When a message with type 'edit_item_type' is received, the registered callback is invoked with the correct feature_id and type.\n\n#### 1.7 TUI Web Handlers\n- **Behavior**: _handle_edit_title() updates feature title when called from web UI and feature is in ideas stage.\n  - Success: Title is updated, history entry says 'Title edited via web UI', board is refreshed, updated state is pushed to server.\n\n- **Behavior**: _handle_edit_item_type() updates feature type when called from web UI and feature is in ideas stage.\n  - Success: Type is updated, history entry says 'Type edited via web UI', board is refreshed, updated state is pushed to server.\n\n- **Behavior**: _handle_edit_title() rejects edits when feature is not in ideas stage.\n  - Success: Title remains unchanged.\n\n- **Behavior**: _handle_edit_item_type() rejects edits when feature is not in ideas stage.\n  - Success: Type remains unchanged.\n\n#### 1.8 API Endpoints\n- **Behavior**: POST /api/clients/{clientID}/features/{featureID}/edit-title with valid title sends edit_title message to TUI client.\n  - Success: Returns 200, message is forwarded to TUI.\n\n- **Behavior**: POST /api/clients/{clientID}/features/{featureID}/edit-type with valid type sends edit_item_type message to TUI client.\n  - Success: Returns 200, message is forwarded to TUI.\n\n- **Behavior**: POST edit-title rejects when feature is not in ideas stage.\n  - Success: Returns 422 error with descriptive message.\n\n- **Behavior**: POST edit-type rejects when feature is not in ideas stage.\n  - Success: Returns 422 error with descriptive message.\n\n- **Behavior**: POST edit-type rejects invalid type values.\n  - Success: Returns 400 error when type is not 'feature' or 'bug'.\n\n- **Behavior**: POST edit-title with nonexistent feature returns appropriate error.\n  - Success: Returns 404 or appropriate error code.\n\n- **Behavior**: POST edit-type with nonexistent client returns appropriate error.\n  - Success: Returns 404 or appropriate error code.\n\n#### 1.9 WebUI\n- **Behavior**: Feature modal shows title input, type radio buttons, and save buttons when stage is 'ideas'.\n  - Success: Edit controls are present in the DOM when viewing an ideas-stage feature.\n\n- **Behavior**: Feature modal hides edit controls when stage is NOT 'ideas'.\n  - Success: Edit controls are absent from the DOM when viewing a non-ideas-stage feature.\n\n- **Behavior**: saveTitle() sends correct POST request and updates the UI on success.\n  - Success: POST request contains {title: value}, UI updates data-title attribute.\n\n- **Behavior**: saveType() sends correct POST request and updates the UI on success.\n  - Success: POST request contains {type: value}, UI updates data-type attribute.\n\n#### 1.10 History Logging Consistency\n- **Behavior**: TUI title edit logs 'Title edited' (via set_title) history entry.\n- **Behavior**: TUI type edit logs 'Type edited' (via set_item_type) history entry.\n- **Behavior**: Web UI title edit logs 'Title edited via web UI' history entry.\n- **Behavior**: Web UI type edit logs 'Type edited via web UI' history entry.\n  - Success for all: History entries match the expected format and include the correct stage.\n\n### 2. Edge Cases\n\n#### 2.1 Empty/Null Inputs\n- Title set to empty string '' -> ValueError raised, no change persisted.\n- Title set to whitespace '   \\t\\n' -> ValueError raised, no change persisted.\n- Title set to very long string (1000+ chars) -> Should succeed (no max length specified).\n- Type set to empty string '' -> ValueError raised.\n- Type set to null/None -> ValueError raised.\n- Type set to 'Feature' (capitalized) -> ValueError raised (case-sensitive).\n- Type set to 'BUG' (uppercase) -> ValueError raised.\n\n#### 2.2 Boundary Conditions\n- Title with special characters (quotes, backslashes, unicode) -> Should succeed and be saved correctly.\n- Title identical to current title -> Should succeed (no-op but still saves and logs history).\n- Type set to same value as current type -> Should succeed.\n- Feature at exact stage boundary (just moved out of ideas) -> Edit should be rejected.\n\n#### 2.3 Invalid States\n- Attempt to edit title when no feature is selected in TUI -> Should not crash; handler exits early.\n- Attempt to edit type of feature in 'approved' stage -> Warning shown, no change.\n- Attempt to edit type of feature in 'implementing' stage -> Warning shown, no change.\n- API call with missing 'title' field in JSON body -> Should return 400 error.\n- API call with missing 'type' field in JSON body -> Should return 400 error.\n- API call with malformed JSON -> Should return 400 error.\n\n#### 2.4 Concurrent Operations\n- Two simultaneous edit-title requests for same feature -> Both should succeed; last write wins.\n- Edit title via TUI while web UI edit is in flight -> Both should succeed independently.\n- Feature moves out of ideas stage while edit modal is open -> set_title/set_item_type still works at data layer (stage check is at handler level).\n\n#### 2.5 Error Conditions\n- Disk full when saving title change -> _save() error propagates; feature data in memory may be inconsistent.\n- Feature JSON file deleted between open modal and save -> Error should be handled gracefully.\n- Server disconnection during web UI save -> JavaScript should show error feedback.\n\n### 3. What Constitutes Failure\n\n- **Data corruption**: Title or type is saved with incorrect value, or other fields are modified unintentionally.\n- **Missing validation**: set_title('') succeeds without raising ValueError.\n- **Missing validation**: set_item_type('invalid') succeeds without raising ValueError.\n- **Stage bypass**: Title or type can be edited when feature is in any stage other than 'ideas'.\n- **Missing history**: An edit succeeds but no history entry is logged.\n- **Wrong history format**: History entry says 'Title edited' when edit came from web UI (should say 'Title edited via web UI').\n- **Crash/exception**: Pressing 't' or 'y' with no feature selected causes unhandled exception.\n- **API accepts bad input**: POST edit-type with type='invalid' returns 200 instead of 400.\n- **API ignores stage**: POST edit-title succeeds when feature is in 'approved' stage.\n- **UI inconsistency**: Edit controls are visible in web UI for non-ideas features.\n- **Stale UI**: After successful edit, the UI (TUI detail view or web UI) still shows old value.\n- **Keybinding conflict**: 't' or 'y' keys conflict with existing bindings in ideas stage.\n\n### 4. Out of Scope\n\n- **Visual/styling assertions**: Exact positioning, colors, fonts, spacing of UI elements.\n- **Performance benchmarks**: How fast edits save or UI refreshes.\n- **Browser compatibility**: Testing across different browsers or versions.\n- **TUI rendering**: Pixel-level verification of Textual widget rendering.\n- **Network latency**: Behavior under slow network conditions.\n- **Authentication/authorization**: Whether edit endpoints require proper auth (handled elsewhere).\n- **File rename on title change**: Whether changing the title causes the JSON filename (slug) to change (it should not based on the plan).\n- **Undo/redo**: No undo capability is specified in the plan.\n- **Bulk editing**: Editing multiple features simultaneously.\n- **Description editing behavior**: Already existing functionality; only the new stage validation for description is in scope.\n- **Mobile-specific layout**: Responsive behavior of edit controls on small screens.",
+  "impl_notes": "Fixed the history format for web UI edits. In _handle_edit_title (tui.py:2034-2037) and _handle_edit_item_type (tui.py:2062-2065), after calling set_title/set_item_type (which internally add 'Title edited'/'Type edited' to history), the code now updates the last history entry to include 'via web UI' to match the test spec requirements. All 15 edit items tests pass.",
+  "history": [
+    {
+      "ts": "2026-03-08T20:07Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-08T20:07Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-08T20:07Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T20:11Z",
+      "stage": "PLANNING",
+      "note": "Questions raised via claude"
+    },
+    {
+      "ts": "2026-03-08T20:27Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T20:29Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-08T20:29Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-08T20:30Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Plan has technical inconsistencies with existing architecture and missing impleme..."
+    },
+    {
+      "ts": "2026-03-08T20:30Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Key issues: (1) The plan proposes a PATCH endpoint but existing edit patterns use POST ..."
+    },
+    {
+      "ts": "2026-03-08T20:30Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T20:35Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-08T20:35Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-08T20:38Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Plan has critical issues: JSON field name mismatch for item_type, missing slug co..."
+    },
+    {
+      "ts": "2026-03-08T20:38Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: JSON FIELD MISMATCH: The plan references 'item_type' in JSON but state.py:82 shows it's..."
+    },
+    {
+      "ts": "2026-03-08T20:38Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T20:40Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-08T20:40Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-08T20:43Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Plan has 5 issues requiring fixes: (1) Missing empty title validation which cause..."
+    },
+    {
+      "ts": "2026-03-08T20:43Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Empty title handling: Add validation in set_title to reject empty strings - if slugify ..."
+    },
+    {
+      "ts": "2026-03-08T20:43Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T20:46Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-08T20:46Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-08T20:49Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - Plan is comprehensive and covers all necessary aspects: data layer changes (set_t..."
+    },
+    {
+      "ts": "2026-03-08T20:49Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-08T20:49Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-08T20:49Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-08T20:51Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T20:53Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T20:53Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T21:07Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T21:07Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T21:07Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T21:10Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T21:10Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T21:12Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation is mostly complete but has a duplicate history logging bug: web UI..."
+    },
+    {
+      "ts": "2026-03-08T21:12Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T21:17Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T21:17Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T21:17Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T21:20Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-08T21:20Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T21:21Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation is mostly complete and all 15 tests pass, but web UI edits log inc..."
+    },
+    {
+      "ts": "2026-03-08T21:22Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T21:26Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T21:26Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T21:26Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T21:29Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T21:29Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T21:30Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation covers all plan items: data layer (set_title, set_item_type with v..."
+    },
+    {
+      "ts": "2026-03-08T21:30Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-09T00:50Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-08T20:30Z",
+      "verdict": "FAIL",
+      "summary": "Plan has technical inconsistencies with existing architecture and missing implementation details.",
+      "feedback": "Key issues: (1) The plan proposes a PATCH endpoint but existing edit patterns use POST with WebSocket forwarding to Python client - architecture clarification needed. (2) The 'edit_description' endpoint already exists (line 311-314 in api.go) - plan should clarify it extends this rather than creating from scratch. (3) No handler exists in pipeline/tui.py for editing title or item_type - needs implementation. (4) Stage restriction (IDEAS only) is mentioned but not detailed - what error is returned for non-IDEAS items? (5) Slug regeneration when title changes needs implementation detail - how is slug generated? (6) Missing: concurrent edit handling when client is disconnected during edit operation. (7) WebUI needs to show edit button only for IDEAS items - this logic is not specified. (8) TUI: the plan mentions 'e' keybinding but Textual framework uses specific patterns - verify key is available. (9) Plan mentions 'plan', 'impl_spec', 'test_spec', 'impl_notes', 'design_ref' as non-editable but doesn't explain why these restrictions exist or how they're enforced server-side."
+    },
+    {
+      "ts": "2026-03-08T20:38Z",
+      "verdict": "FAIL",
+      "summary": "Plan has critical issues: JSON field name mismatch for item_type, missing slug conflict handling, and incomplete error handling for file operations.",
+      "feedback": "JSON FIELD MISMATCH: The plan references 'item_type' in JSON but state.py:82 shows it's stored as 'type' internally. The set_item_type method must write to 'type' key, not 'item_type': self._data['type'] = value.\n\nMISSING SLUG CONFLICT HANDLING: The set_title method (lines 78-91) moves the file to a new path based on slugified title, but doesn't handle the case where the new slug already exists as another file. Add conflict resolution, e.g., append counter: new_path = self._path.parent / f\"{new_slug}-{counter}.json\".\n\nNO ERROR HANDLING FOR FILE OPERATIONS: The shutil.move call has no error handling. Wrap in try/except and handle OSError.\n\nINCOMPLETE HISTORY ENTRIES: The plan mentions adding history but doesn't specify the action string. Use patterns like 'Title edited via TUI' / 'Title edited via web UI' and 'Item type edited via TUI' / 'Item type edited via web UI'.\n\nSTAGE VALIDATION ARCHITECTURE: The plan adds stage validation in Go handlers, but current serveEditDescription doesn't validate stage. This is correct but ensure consistency - either all edit operations validate stage or none do.\n\nREQUEST STRUCTURE: For edit-item-type, the plan says '{\"item_type\": \"feature\" | \"bug\"}'. Verify this matches the expected type values in the codebase - state.py:81-82 shows defaults to 'feature'."
+    },
+    {
+      "ts": "2026-03-08T20:43Z",
+      "verdict": "FAIL",
+      "summary": "Plan has 5 issues requiring fixes: (1) Missing empty title validation which causes invalid filenames, (2) Unclear stage validation behavior change from current implementation, (3) Inconsistent history entry format with existing code, (4) Unclear keybinding implementation location, (5) API stage validation needs clarification on using pushed state vs actual file.",
+      "feedback": "Empty title handling: Add validation in set_title to reject empty strings - if slugify results in empty string, return error. Add: if not new_title.strip(): raise ValueError('Title cannot be empty').\n\nStage validation clarification: The existing _handle_edit_description (tui.py:1881) does NOT validate stage. Plan proposes restricting to 'ideas' only - this is a behavior change. Clarify: Is restricting to 'ideas' intentional? If so, ensure TUI handler also validates: if feature.current_stage != 'ideas': logger.warning(...); return.\n\nHistory format consistency: Change from f'Title edited via {source}' to match existing pattern like line 1890: feature.add_history(feature.current_stage.upper(), 'Title edited via web UI'). Remove 'via {source}', use fixed 'web UI' in handler.\n\nKeybinding implementation: STAGE_ACTIONS dict (tui.py:1432) defines stage-specific actions as tuples. Plan should add to 'ideas' list: [('t', 'edit_title', 'Edit Title'), ('y', 'edit_item_type', 'Edit Type')] rather than 'around line 1433'.\n\nAPI stage validation: The API handler can only check pushed state (state.Features[].Stage), not the actual file. This is fine but clarify: validation happens against the cached state sent from TUI, not the authoritative file. Add note that TUI handler should also validate for security."
+    },
+    {
+      "ts": "2026-03-08T20:49Z",
+      "verdict": "PASS",
+      "summary": "Plan is comprehensive and covers all necessary aspects: data layer changes (set_title, set_item_type), TUI keybindings and handlers, WebUI API endpoints and UI elements, stage validation for ideas-only editing, and proper history logging. Technical feasibility is confirmed - keys 't' and 'y' are available, API patterns match existing code, and validation logic is sound.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-08T21:12Z",
+      "verdict": "FAIL",
+      "summary": "Implementation is mostly complete but has a duplicate history logging bug: web UI edit handlers call both set_title()/set_item_type() (which log history internally) AND add_history() again, resulting in two history entries per web edit. No tests exist for this feature.",
+      "feedback": "DUPLICATE HISTORY BUG (Critical): In tui.py lines 2034-2035, _handle_edit_title() calls feature.set_title(title) which internally calls self.add_history(stage, 'Title edited'), then immediately calls feature.add_history(stage, 'Title edited via web UI'). This creates TWO history entries per web UI title edit. Same issue at lines 2061-2062 for _handle_edit_item_type(). Fix: Either (a) remove the add_history() calls from set_title()/set_item_type() in state.py and let callers handle history, or (b) remove the extra add_history() calls in the web handlers and accept the generic 'Title edited'/'Type edited' message, or (c) add an optional parameter to set_title/set_item_type to suppress internal history logging when the caller wants custom messages.\n\nNO TESTS: There are zero test files for this feature. The test spec lists extensive behaviors to verify (data layer validation, TUI keybindings, stage validation, API endpoints, history logging) but no tests were written. At minimum, unit tests for set_title() and set_item_type() validation and history behavior should exist.\n\nMinor - Description edit stage validation inconsistency: The plan says to add stage validation to _handle_edit_description() (line 1979), which was done. However, the serveEditDescription API endpoint in api.go (line 1133) does NOT validate stage=='ideas', unlike serveEditTitle and serveEditItemType which do. This means the API allows description edits for any stage, relying only on the TUI handler for stage enforcement. Consider adding stage validation to the description API endpoint for consistency."
+    },
+    {
+      "ts": "2026-03-08T21:21Z",
+      "verdict": "FAIL",
+      "summary": "Implementation is mostly complete and all 15 tests pass, but web UI edits log incorrect history format. Plan and test spec require 'Title edited via web UI' and 'Type edited via web UI' for web-originated edits, but current code logs 'Title edited' and 'Type edited' for both TUI and web UI paths.",
+      "feedback": "History format bug for web UI edits (MUST FIX):\n\nThe plan (section 'History Format Consistency') and test spec (sections 1.7 and 1.10) require:\nTUI edits: 'Title edited' / 'Type edited' (via set_title/set_item_type)\nWeb UI edits: 'Title edited via web UI' / 'Type edited via web UI'\n\nCurrently, _handle_edit_title() (tui.py:2034) calls feature.set_title(title) which always logs 'Title edited'. Same for _handle_edit_item_type() (tui.py:2060) which calls feature.set_item_type(item_type) always logging 'Type edited'.\n\nCompare to _handle_edit_description() (tui.py:1983-1984) which correctly calls feature.set_description(description) (no internal history) then separately calls feature.add_history(feature.current_stage.upper(), 'Description edited via web UI').\n\nFix options:\n(Simplest) After calling set_title/set_item_type in the web handlers, update the last history entry's note to include 'via web UI'. E.g.: feature._data['history'][-1]['note'] = 'Title edited via web UI' then feature._save().\n(Cleaner) Add an optional source parameter to set_title/set_item_type that appends ' via web UI' to the history note when provided.\n(Like description) Remove add_history from set_title/set_item_type and add history explicitly in each caller (TUI action handlers and web handlers).\n\nOption 2 or 3 is recommended. The test suite should also add a test verifying the 'via web UI' history format for web-originated edits."
+    },
+    {
+      "ts": "2026-03-08T21:30Z",
+      "verdict": "PASS",
+      "summary": "Implementation covers all plan items: data layer (set_title, set_item_type with validation), TUI keybindings/modals/actions with stage checks, server_client callbacks, API endpoints with stage/type validation, and WebUI edit controls gated to ideas stage. All 15 tests pass. History format correctly differentiates TUI vs web UI edits.",
+      "feedback": null
+    }
+  ],
+  "questions": [
+    {
+      "question": "Which specific item attributes should be made editable? Currently, description can be edited via WebUI and done_script via TUI. Other available attributes include: plan, impl_spec, test_spec, impl_notes, and design_ref. Should all of these be editable, or do you want a specific subset?",
+      "answer": "Just the description and type of issue, and possibly the title (but not the slug?)"
+    },
+    {
+      "question": "What is the priority order for implementing editing capabilities? Should we start with the most commonly needed fields (like impl_notes or design_ref) or implement all editing features at once?",
+      "answer": "The requested fields at the same time"
+    },
+    {
+      "question": "For TUI editing experience, do you prefer: (A) Modal dialogs like the current done_script editor, (B) Inline editing with keyboard shortcuts, or (C) A dedicated 'edit mode' that can be toggled on/off?",
+      "answer": "Modal dialogues"
+    },
+    {
+      "question": "For WebUI editing, should we follow the existing pattern (textarea with save button like description editing) for all text fields, or do you want different UI approaches for different field types?",
+      "answer": "Consistent patterns"
+    },
+    {
+      "question": "Are there any restrictions on which fields can be edited in which pipeline stages? For example, should plan editing be restricted to certain stages, or should all fields be editable regardless of the item's current stage?",
+      "answer": "We shouldn't modify things like the plan, etc.  Also, I think we should only edit it in the IDEAS stage."
+    },
+    {
+      "question": "Should this feature focus on commonly used editing scenarios (like quick notes/corrections), or do you need comprehensive editing capability that could replace manual JSON file editing entirely?",
+      "answer": "No, I'm thinking just editing while its in the IDEAS phase."
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-08T14:29:11.782151",
+    "verdict": "FAIL",
+    "results": {
+      "passed": 15,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "Data layer tests (test_edit_items.py) - 15/15 PASS. However, test coverage is INCOMPLETE per the test spec. No tests exist for: (1.3) TUI keybindings verification, (1.4) TUI action handlers, (1.5) stage validation for description editing, (1.6) server client callbacks for edit_title/edit_item_type, (1.7) TUI web handlers (_handle_edit_title, _handle_edit_item_type), (1.8) API endpoints (edit-title, edit-type), (1.9) WebUI (saveTitle, saveType). History consistency (1.10) only partially tested - data layer shows 'Title edited'/'Type edited' but no tests verify 'via web UI' suffix for web-originated edits. Implementation exists (verified via grep) but automated test coverage is inadequate."
+  }
+}

@@ -1,0 +1,138 @@
+{
+  "id": "efa2905e",
+  "board": "mad",
+  "title": "Planning questions review",
+  "created": "2026-03-07T19:31Z",
+  "description": "Make sure the planning agent is told to ask the user questions as needed. I haven't had any questions in a long time.",
+  "plan": "## Problem\n\nThe `plan-headless.md` prompt template actively discourages the planning agent from asking questions. Line 28 says \"Only include questions if you genuinely need human input to proceed\" \u2014 this causes the agent to skip questions and produce plans based on assumptions instead.\n\nThe bug template (`plan-bug.md`) correctly encourages questions by listing specific categories to ask about and stating \"you should almost always have questions.\"\n\n## Changes\n\n### 1. Update `pipeline/prompts/plan-headless.md`\n\nReplace the current instructions section with stronger guidance that encourages question-asking:\n\n- Remove the discouraging language \"Only include questions if you genuinely need human input\"\n- Add a list of categories the agent should consider asking about (similar to bug template), such as:\n  - Scope boundaries (what's in/out of scope)\n  - User-facing behavior expectations\n  - Integration points with existing code\n  - Edge cases and error handling preferences\n  - Priority/ordering if multiple sub-tasks\n- Add language like: \"When in doubt, ask. A short clarification now saves significant rework later.\"\n- Keep the existing JSON structure and checkpoint instructions unchanged\n\n### 2. Verify the code path works\n\nThe code in `phases.py:run_planning()` (lines 484-491) already correctly handles questions \u2014 when questions are present in the JSON output, it calls `feature.set_questions()` and moves the feature to `requested-input` stage. No code changes needed.\n\n### Files to modify\n- `pipeline/prompts/plan-headless.md` \u2014 update instructions to encourage question-asking",
+  "impl_spec": "## Implementation Spec: Planning Questions Review\n\n### Task 1: Update `pipeline/prompts/plan-headless.md` \u2014 Replace discouraging instructions with question-encouraging guidance\n\n**File:** `pipeline/prompts/plan-headless.md`\n**Action:** Modify lines 27-33 (the **Instructions** section)\n\n**Current content (lines 27-33):**\n```\n**Instructions:**\n- Only include \"questions\" if you genuinely need human input to proceed\n- If \"questions\" is empty or missing, the plan will be considered complete\n- Keep questions specific and actionable\n- Write a complete, detailed plan in the \"plan\" field\n- The plan should be detailed and actionable\n```\n\n**Replace with:**\n```\n**Instructions:**\n- When in doubt, ask. A short clarification now saves significant rework later.\n- Consider asking about:\n  - Scope boundaries \u2014 what's in scope vs. out of scope\n  - User-facing behavior expectations\n  - Integration points with existing code\n  - Edge cases and error handling preferences\n  - Priority or ordering if multiple sub-tasks are involved\n- Keep questions specific and actionable\n- If \"questions\" is empty or missing, the plan will be considered complete\n- Only write a complete plan in the \"plan\" field if you have enough information to be confident in the approach\n- The plan should be detailed and actionable\n```\n\n**Why:** The current line 28 (`Only include \"questions\" if you genuinely need human input to proceed`) actively discourages the agent from asking questions. The replacement follows the pattern established in `plan-bug.md` which successfully encourages questions by listing specific categories and using positive framing.\n\n**Dependencies:** None\n\n### Task 2: Verify \u2014 No code changes needed in `pipeline/phases.py`\n\n**File:** `pipeline/phases.py`\n**Action:** Read-only verification (no changes)\n\n**Verification:** The `run_planning()` function at line 452 already correctly handles the questions flow:\n- Line 518: Checks if `questions` key exists, is a list, and is non-empty\n- Lines 520-524: Calls `feature.set_questions()`, adds history, saves, and moves to `requested-input` stage\n- Line 525: Returns `False` to indicate human input is needed\n\nThis code path works regardless of how many or few questions the agent produces \u2014 no changes needed.\n\n**Dependencies:** None\n\n### Summary\n- **1 file to modify:** `pipeline/prompts/plan-headless.md`\n- **0 code files to change:** The Python pipeline already handles questions correctly\n- **Risk:** Low \u2014 this is a prompt-only change that cannot break existing functionality",
+  "test_spec": "# Test Specification: Planning Questions Review\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Discouraging language removed from plan-headless.md\n- **Behavior:** The line \"Only include questions if you genuinely need human input to proceed\" (line 28) must be removed or replaced with encouraging language.\n- **Success criteria:** The file no longer contains any phrasing that discourages question-asking. No variant of \"only include questions if\" or \"only ask if\" should appear.\n- **Expected output:** The instructions section uses positive, encouraging language about asking questions.\n\n### 1.2 Question categories added to plan-headless.md\n- **Behavior:** The template must include a list of categories the agent should consider asking about, similar to the bug template's list.\n- **Success criteria:** The following categories (or close equivalents) appear in the instructions:\n  - Scope boundaries (what's in/out of scope)\n  - User-facing behavior expectations\n  - Integration points with existing code\n  - Edge cases and error handling preferences\n  - Priority/ordering if multiple sub-tasks\n- **Expected output:** A bulleted or numbered list of question categories in the instructions section.\n\n### 1.3 Encouraging language added\n- **Behavior:** The template must include language that actively encourages asking questions, such as \"When in doubt, ask. A short clarification now saves significant rework later.\"\n- **Success criteria:** At least one sentence explicitly encourages the agent to ask questions rather than make assumptions.\n- **Expected output:** A clear statement in the instructions that favors asking over assuming.\n\n### 1.4 JSON structure and checkpoint instructions preserved\n- **Behavior:** The existing JSON structure example (with \"questions\" and \"plan\" fields) and the {checkpoint_instructions} placeholder must remain unchanged.\n- **Success criteria:** The JSON block in the template is identical to the original. The {checkpoint_instructions} placeholder is still present at the end.\n- **Expected output:** Same JSON example block and checkpoint placeholder as the original template.\n\n### 1.5 Template variables preserved\n- **Behavior:** All template variables ({title}, {description}, {checkpoint_instructions}) must still be present in the updated file.\n- **Success criteria:** A search for each variable finds exactly one occurrence in the file.\n- **Expected output:** The template renders correctly when variables are substituted.\n\n### 1.6 Existing code path still works (no code changes needed)\n- **Behavior:** The question-handling code in phases.py (lines 516-525) correctly processes questions from the JSON output, calls feature.set_questions(), and moves the feature to requested-input stage.\n- **Success criteria:** No changes are made to phases.py. The existing code handles: (a) questions present and non-empty -> moves to requested-input, (b) no questions but plan present -> moves to reviewing-plan.\n- **Expected output:** phases.py is unmodified.\n\n## 2. Edge Cases\n\n### 2.1 Template with empty description\n- The template should still render correctly when {description} is \"(no description)\" \u2014 the question categories should still guide the agent to ask relevant questions even without a detailed description.\n\n### 2.2 Template rendering with all variables\n- The updated template must render correctly when all placeholder variables are substituted. No broken formatting or orphaned placeholders.\n\n### 2.3 Bug template not affected\n- The plan-bug.md template must remain completely unchanged. Only plan-headless.md is modified.\n\n### 2.4 Questions array edge cases in code path (verify still works)\n- Empty questions array [] -> treated as no questions, plan proceeds\n- Questions with missing \"question\" key -> still passed to set_questions (existing behavior)\n- Both questions and plan present -> questions take priority (existing behavior, line 518 checked before line 528)\n\n## 3. What Constitutes Failure\n\n### 3.1 Prompt regression\n- FAIL if plan-headless.md still contains \"Only include questions if you genuinely need human input\" or equivalent discouraging language.\n- FAIL if no question categories are listed in the instructions.\n- FAIL if no encouraging language about asking questions is present.\n\n### 3.2 Structural damage\n- FAIL if the JSON example block is missing or altered (the questions/plan structure must remain).\n- FAIL if {checkpoint_instructions}, {title}, or {description} placeholders are missing.\n- FAIL if plan-bug.md has been modified.\n- FAIL if any file other than plan-headless.md is modified.\n\n### 3.3 Code path breakage\n- FAIL if phases.py is modified in any way.\n- FAIL if the template no longer produces valid input for the JSON parsing in phases.py (lines 500-514).\n\n## 4. Out of Scope\n\n- **LLM output quality:** We do not test whether the updated prompt actually causes an LLM to ask more questions. That is a prompt engineering concern, not a functional test.\n- **End-to-end pipeline testing:** We do not run the full pipeline to verify question flow. The code path is already verified to work.\n- **Performance:** No performance benchmarks for template rendering.\n- **UI/TUI behavior:** How questions are displayed in the TUI is not tested here.\n- **Other prompt templates:** Only plan-headless.md is in scope. Other templates (review, implementation, etc.) are not tested.\n- **Question answering flow:** The flow after questions are asked (human provides answers, planning resumes) is not in scope.",
+  "impl_notes": "Updated pipeline/prompts/plan-headless.md to encourage question-asking in the planning agent. Replaced the discouraging line 'Only include questions if you genuinely need human input to proceed' with positive guidance including 'When in doubt, ask. A short clarification now saves significant rework later.' Added a list of 5 question categories (scope boundaries, user-facing behavior expectations, integration points, edge cases, priority/ordering). Preserved JSON structure, template variables, and checkpoint instructions. Verified phases.py code path (lines 518-525) correctly handles questions without any changes needed.",
+  "history": [
+    {
+      "ts": "2026-03-07T19:31Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-07T19:40Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-07T22:56Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T22:57Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T22:57Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T22:58Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-07T22:58Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-08T02:37Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-08T02:37Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-08T02:38Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T02:39Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T02:39Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T02:40Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T02:40Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T02:40Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T02:44Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-08T02:44Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T02:45Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-08T02:45Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-09T00:54Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-07T22:58Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-08T02:45Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-07T18:44:21.192759",
+    "verdict": "PASS",
+    "results": {
+      "passed": 614,
+      "failed": 96,
+      "errors": 0
+    },
+    "feedback": "Feature implementation verified correct per spec. All 6 required behaviors manually verified: (1) Discouraging language removed from plan-headless.md, (2) Question categories added (5 categories), (3) Encouraging language added, (4) JSON structure preserved, (5) Template variables {title}, {description}, {checkpoint_instructions} preserved, (6) phases.py unchanged (question handling code at lines 516-525). The 96 test failures are pre-existing issues unrelated to this feature: checkpoint system tests check for expanded content in raw template files (they expect '.mad/checkpoints/<feature-slug>.checkpoint.json' but templates use {checkpoint_instructions} placeholder), other failures are in server_client, create_idea, slimmer_item_details_tui tests."
+  }
+}

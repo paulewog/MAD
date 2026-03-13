@@ -4,6 +4,7 @@
 import asyncio
 import atexit
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import signal
 import sys
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 # Import config early for logging setup
-from config import Config, get_mad_dir
+from config import Config, get_mad_dir, BUILTIN_AGENTS, PIPELINE_PHASES
 
 # Set up pipeline log file - use code_path if set, otherwise use mad_dir from cwd
 _config = Config()
@@ -24,7 +25,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
-        logging.FileHandler(_pipeline_log_file),
+        RotatingFileHandler(_pipeline_log_file, maxBytes=5*1024*1024, backupCount=5),
     ]
 )
 logger = logging.getLogger("pipeline")
@@ -40,8 +41,10 @@ from config import (
     view_context_file,
     edit_context_file,
 )
+from lock import PipelineLock, PipelineLockError
 from phases import run_pipeline, _load_prompt, update_design_doc, _get_latest_feedback
 from runner import AgentRunner, RateLimitError
+from scripts import ScriptConfig, ScriptStatus, load_scripts, run_script
 from state import STAGES, STAGE_ACTIONS, FeatureFile
 
 from textual import work
@@ -59,12 +62,14 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    ListView,
     Log,
     Markdown,
     Select,
     Static,
     TabbedContent,
     TabPane,
+    TextArea,
 )
 
 # Optional server push
@@ -74,16 +79,12 @@ except ImportError:
     HAS_WEBSOCKETS = False
     ServerClient = None
 
-# Pipeline phases that can have different agents assigned
-PIPELINE_PHASES = [
-    ("planning", "Planning"),
-    ("reviewing_plan", "Plan Review"),
-    ("spec_writing", "Spec Writing"),
-    ("implementing", "Implementing"),
-    ("fix_feedback", "Fix Feedback"),
-    ("testing", "Testing"),
-    ("review", "Review"),
-]
+
+def _last_modified_key(f: FeatureFile) -> str:
+    history = f._data.get("history", [])
+    if history:
+        return history[-1].get("ts", "")
+    return f._data.get("created", "")
 
 
 def handle_cli_commands(args: list) -> bool:
@@ -168,6 +169,7 @@ HUMAN_STAGES = {"final-human-approval"}
 # Display order: ideas first, then pipeline flow, then archived
 STAGE_DISPLAY_ORDER = [
     "ideas",
+    "ideating",
     "plan-inbox",
     "requested-input",
     "reviewing-plan",
@@ -187,6 +189,8 @@ def _feature_markdown(feature: FeatureFile) -> str:
     header = f"**Board:** {feature.board} | **Stage:** {feature.current_stage} | **ID:** {feature.id}"
     if feature.design_ref:
         header += f" | **Design:** {feature.design_ref}"
+    if feature.done_script:
+        header += f" | **Done Script:** {feature.done_script}"
     
     lines = [
         f"# {feature.title}",
@@ -198,6 +202,14 @@ def _feature_markdown(feature: FeatureFile) -> str:
     description = feature.get_section("Description")
     if description:
         lines += ["## Description", "", description, ""]
+
+    if feature.Ideation:
+        lines += ["## Ideation", "", feature.Ideation, ""]
+
+    if feature.ideation_summaries:
+        lines += ["## Ideation Rounds", ""]
+        for i, summary in enumerate(feature.ideation_summaries):
+            lines += [f"### Round {i+1}", "", summary[:300] + "..." if len(summary) > 300 else summary, ""]
 
     if feature.plan:
         lines += ["## Plan", "", feature.plan, ""]
@@ -315,6 +327,33 @@ def _build_feature_detail_widgets(feature: FeatureFile) -> list:
     if description:
         widgets.append(Static(_escape_markup(description)))
     
+    # Ideation (collapsible, collapsed by default)
+    if feature.Ideation:
+        import re
+        escaped = feature.Ideation.replace("[", r"\[").replace("]", r"\]").replace("{", r"\{").replace("}", r"\}")
+        escaped = re.sub(r'([%])', r'\\\1', escaped)
+        widgets.append(Collapsible(Static(escaped), title="Ideation", collapsed=True))
+    else:
+        widgets.append(Collapsible(Static("[dim]No ideation provided[/dim]"), title="Ideation", collapsed=True))
+    
+    # Ideation Rounds (collapsible, collapsed by default)
+    if feature.ideation_summaries:
+        import re
+        rounds_content = ""
+        for i, summary in enumerate(feature.ideation_summaries):
+            escaped = summary.replace("[", r"\[").replace("]", r"\]").replace("{", r"\{").replace("}", r"\}")
+            escaped = re.sub(r'([%])', r'\\\1', escaped)
+            rounds_content += f"## Round {i+1}\n{escaped}\n\n"
+        widgets.append(Collapsible(Static(rounds_content), title=f"Ideation Rounds ({len(feature.ideation_summaries)})", collapsed=True))
+    
+    # Done Script (always visible if set)
+    if feature.done_script:
+        from scripts import load_scripts
+        scripts = load_scripts(Config().mad_dir)
+        script = next((s for s in scripts if s.id == feature.done_script), None)
+        label = script.label if script else f"[MISSING] {feature.done_script}"
+        widgets.append(Static(f"Done Script: {label}"))
+    
     # History (collapsible, expanded by default)
     if feature.history:
         # Escape all markup characters for safe display
@@ -333,6 +372,13 @@ def _build_feature_detail_widgets(feature: FeatureFile) -> list:
         widgets.append(Collapsible(Static(escaped), title="Plan", collapsed=True))
     else:
         widgets.append(Collapsible(Static("[dim]No plan provided[/dim]"), title="Plan", collapsed=True))
+    
+    # Plan Exploration Summary (collapsible, collapsed by default)
+    if feature.plan_exploration_summary:
+        import re
+        escaped = feature.plan_exploration_summary.replace("[", r"\[").replace("]", r"\]").replace("{", r"\{").replace("}", r"\}")
+        escaped = re.sub(r'([%])', r'\\\1', escaped)
+        widgets.append(Collapsible(Static(escaped), title="Plan Exploration Summary", collapsed=True))
     
     # Implementation Spec (collapsible, collapsed by default)
     if feature.impl_spec:
@@ -389,11 +435,23 @@ def _build_feature_detail_widgets(feature: FeatureFile) -> list:
         if plan_reviews:
             review_lines.append("Plan Reviews:")
             for r in plan_reviews:
-                review_lines.append(f"  {r.get('ts', '')} | {r.get('verdict', '')} | {_escape_markup(r.get('feedback', '') or '')[:200]}")
+                summary = r.get('summary', '') or r.get('feedback', '') or ''
+                primary = _escape_markup(summary)[:200]
+                line = f"  {r.get('ts', '')} | {r.get('verdict', '')} | {primary}"
+                review_lines.append(line)
+                fb = r.get('feedback', '') or ''
+                if fb and summary and fb != summary:
+                    review_lines.append(f"    {_escape_markup(fb)[:200]}")
         if impl_reviews:
             review_lines.append("Impl Reviews:")
             for r in impl_reviews:
-                review_lines.append(f"  {r.get('ts', '')} | {r.get('verdict', '')} | {_escape_markup(r.get('feedback', '') or '')[:200]}")
+                summary = r.get('summary', '') or r.get('feedback', '') or ''
+                primary = _escape_markup(summary)[:200]
+                line = f"  {r.get('ts', '')} | {r.get('verdict', '')} | {primary}"
+                review_lines.append(line)
+                fb = r.get('feedback', '') or ''
+                if fb and summary and fb != summary:
+                    review_lines.append(f"    {_escape_markup(fb)[:200]}")
         widgets.append(Collapsible(Static("\n".join(review_lines)), title=f"Review History ({len(plan_reviews) + len(impl_reviews)})", collapsed=True))
 
     # Questions (collapsible, collapsed by default)
@@ -455,6 +513,8 @@ class StageHeader(Static):
 class FeatureItem(Static):
     """A clickable/focusable feature item in the kanban list."""
 
+    _spinner_frames = "\u29fe\u29fd\u29fb\u28ff\u287f\u29df\u29ef\u29f7"
+
     class Selected(Message):
         """Posted when this feature item is selected."""
 
@@ -462,19 +522,36 @@ class FeatureItem(Static):
             self.feature = feature
             super().__init__()
 
-    def __init__(self, feature: FeatureFile, is_selected: bool = False) -> None:
+    def __init__(self, feature: FeatureFile, is_selected: bool = False, is_active: bool = False) -> None:
         self.feature = feature
-        display_name = feature.slug
-        # Truncate long slugs for the left pane
-        if len(display_name) > 24:
-            display_name = display_name[:22] + ".."
-        indicator = " << " if is_selected else ""
-        super().__init__(f"    {display_name}{indicator}")
+        self._is_selected = is_selected
+        self.is_active = is_active
+        self._frame = 0
+        super().__init__(self._render_label())
         self.can_focus = True
         classes = "feature-item"
         if is_selected:
             classes += " --selected"
+        if is_active:
+            classes += " --active"
         self.set_classes(classes)
+
+    def _render_label(self) -> str:
+        display_name = self.feature.slug
+        if len(display_name) > 24:
+            display_name = display_name[:22] + ".."
+        if self.is_active:
+            return f" [cyan]{self._spinner_frames[self._frame]}[/cyan]  {display_name}"
+        indicator = " << " if self._is_selected else ""
+        return f"    {display_name}{indicator}"
+
+    def on_mount(self) -> None:
+        if self.is_active:
+            self.set_interval(0.1, self._advance_spinner)
+
+    def _advance_spinner(self) -> None:
+        self._frame = (self._frame + 1) % len(self._spinner_frames)
+        self.update(self._render_label())
 
     def on_click(self) -> None:
         self.post_message(self.Selected(self.feature))
@@ -725,8 +802,8 @@ class AnswerQuestionsModal(ModalScreen[bool | None]):
             self.dismiss(True)
 
 
-class NewFeatureModal(ModalScreen[tuple[str, str, str] | None]):
-    """Modal to create a new feature -- collects title, description, and board."""
+class NewFeatureModal(ModalScreen[tuple[str, str, str, str, str] | None]):
+    """Modal to create a new feature -- collects title, description, board, and done_script."""
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
@@ -778,7 +855,8 @@ class NewFeatureModal(ModalScreen[tuple[str, str, str] | None]):
     #new-dialog {
         width: 70;
         height: auto;
-        max-height: 22;
+        max-height: 36;
+        overflow-y: auto;
         border: thick $panel;
         background: $surface;
         padding: 1 2;
@@ -798,21 +876,28 @@ class NewFeatureModal(ModalScreen[tuple[str, str, str] | None]):
     }
     """
 
-    def __init__(self, boards: list[str], default_board: str) -> None:
+    def __init__(self, boards: list[str], default_board: str, scripts: list = None) -> None:
         self.boards = boards
         self.default_board = default_board
+        self.scripts = scripts or []
         super().__init__()
 
     def compose(self) -> ComposeResult:
         options = [(b, b) for b in self.boards]
+        type_options = [('Feature', 'feature'), ('Bug', 'bug')]
+        script_options = [("(none)", "")] + [(s.label, s.id) for s in self.scripts]
         with Vertical(id="new-dialog"):
-            yield Label("New Feature")
+            yield Label("New Item")
             yield Label("Board:")
             yield Select(options, value=self.default_board, id="new-board")
+            yield Label("Type:")
+            yield Select(type_options, value='feature', id="new-type")
             yield Label("Title (required):")
-            yield Input(placeholder="Feature title", id="new-title")
+            yield Input(placeholder="Item title", id="new-title")
             yield Label("Description (optional):")
             yield Input(placeholder="Brief description", id="new-desc")
+            yield Label("Done Script (optional):")
+            yield Select(script_options, value="", id="new-done-script")
             with Horizontal(id="new-buttons"):
                 yield Button("Create", variant="primary", id="new-create")
                 yield Button("Cancel", variant="default", id="new-cancel")
@@ -835,7 +920,61 @@ class NewFeatureModal(ModalScreen[tuple[str, str, str] | None]):
         board = self.query_one("#new-board", Select).value
         if board is Select.BLANK:
             board = self.default_board
-        self.dismiss((str(board), title, desc))
+        item_type = self.query_one("#new-type", Select).value
+        done_script_select = self.query_one("#new-done-script", Select)
+        done_script = done_script_select.value if done_script_select.value else ""
+        self.dismiss((str(board), title, desc, done_script, str(item_type)))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class EditDoneScriptModal(ModalScreen[str | None]):
+    """Modal to edit the done script for a feature."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    CSS = """
+    EditDoneScriptModal {
+        align: center middle;
+    }
+    #edit-script-dialog {
+        width: 50;
+        height: auto;
+        border: thick $panel;
+        background: $surface;
+        padding: 1 2;
+    }
+    #edit-script-dialog Select {
+        margin: 1 0;
+    }
+    """
+
+    def __init__(self, current_script: str, scripts: list) -> None:
+        self.current_script = current_script or ""
+        self.scripts = scripts or []
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        script_options = [("(none)", "")] + [(s.label, s.id) for s in self.scripts]
+        current_value = self.current_script if self.current_script else ""
+        with Vertical(id="edit-script-dialog"):
+            yield Label("Edit Done Script")
+            yield Label("Select script to run when item is completed:")
+            yield Select(script_options, value=current_value, id="edit-script-select")
+            with Horizontal(id="edit-script-buttons"):
+                yield Button("Save", variant="primary", id="edit-script-save")
+                yield Button("Cancel", variant="default", id="edit-script-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "edit-script-save":
+            script_select = self.query_one("#edit-script-select", Select)
+            value = script_select.value if script_select.value else ""
+            self.dismiss(value)
+        else:
+            self.dismiss(None)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -915,6 +1054,249 @@ class MoveFeatureModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class RunScriptModal(ModalScreen[Optional[tuple[str, str]]]):
+    """Modal to select and run a script."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    CSS = """
+    RunScriptModal {
+        align: center middle;
+    }
+    #script-dialog {
+        width: 60;
+        height: auto;
+        border: thick $panel;
+        background: $surface;
+        padding: 1 2;
+    }
+    #script-dialog Select {
+        margin: 1 0;
+    }
+    #script-dialog TextArea {
+        margin: 1 0;
+        height: 3;
+    }
+    #script-buttons {
+        margin-top: 1;
+        height: 3;
+    }
+    #script-buttons Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, scripts: list[ScriptConfig]):
+        self.scripts = scripts
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        options = [(s.label, s.id) for s in self.scripts]
+        with Vertical(id="script-dialog"):
+            yield Label("Run Script:")
+            yield Select(options, prompt="Select script", id="script-select")
+            yield TextArea(placeholder="Additional context for the agent (optional)", id="script-context")
+            with Horizontal(id="script-buttons"):
+                yield Button("Run", variant="primary", id="script-run")
+                yield Button("Cancel", variant="default", id="script-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "script-run":
+            script_select = self.query_one("#script-select", Select)
+            script_id = script_select.value
+            if script_id is Select.BLANK or script_id is None:
+                self.app.notify("Please select a script", severity="warning")
+                return
+            context = self.query_one("#script-context", TextArea).text or ""
+            selected = next((s for s in self.scripts if s.id == script_id), None)
+            if selected:
+                if selected.confirm:
+                    self.app.push_screen(
+                        ConfirmModal(f"Run '{selected.label}'?"),
+                        callback=lambda ok: self._handle_confirm(ok, script_id, context) if ok else None
+                    )
+                else:
+                    self.dismiss((script_id, context))
+        else:
+            self.dismiss(None)
+
+    def _handle_confirm(self, ok: bool, script_id: str, context: str) -> None:
+        if ok:
+            self.dismiss((script_id, context))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ConfirmModal(ModalScreen[bool]):
+    """Simple confirmation modal."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    CSS = """
+    ConfirmModal {
+        align: center middle;
+    }
+    #confirm-dialog {
+        width: 40;
+        height: auto;
+        border: thick $panel;
+        background: $surface;
+        padding: 1 2;
+    }
+    #confirm-buttons {
+        margin-top: 1;
+        height: 3;
+    }
+    #confirm-buttons Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-dialog"):
+            yield Label(self.message, id="confirm-message")
+            with Horizontal(id="confirm-buttons"):
+                yield Button("Yes", variant="primary", id="confirm-yes")
+                yield Button("No", variant="default", id="confirm-no")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "confirm-yes":
+            self.dismiss(True)
+        else:
+            self.dismiss(False)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
+class UnifiedEditModal(ModalScreen[dict | None]):
+    """Modal to edit feature fields - shows all fields for IDEAS stage, only script for others."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    CSS = """
+    UnifiedEditModal {
+        align: center middle;
+    }
+    #unified-edit-dialog {
+        width: 60;
+        height: auto;
+        max-height: 80%;
+        border: thick $panel;
+        background: $surface;
+        padding: 1 2;
+    }
+    #unified-edit-dialog VerticalScroll {
+        height: 100%;
+    }
+    #unified-edit-dialog Label {
+        width: 100%;
+        text-wrap: wrap;
+        margin-top: 1;
+    }
+    #unified-edit-dialog Input {
+        margin: 1 0;
+    }
+    #unified-edit-dialog Select {
+        margin: 1 0;
+    }
+    #unified-edit-dialog TextArea {
+        margin: 1 0;
+        height: 4;
+    }
+    #unified-edit-buttons {
+        margin-top: 1;
+        height: 3;
+        dock: bottom;
+    }
+    #unified-edit-buttons Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, feature_data: dict, current_stage: str, scripts: list) -> None:
+        self.feature_data = feature_data
+        self.current_stage = current_stage
+        self.scripts = scripts or []
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        is_early_stage = self.current_stage in ("ideas", "ideating", "plan-inbox")
+        
+        with Vertical(id="unified-edit-dialog"):
+            with VerticalScroll(id="unified-edit-content"):
+                yield Label(f"[bold]Edit Feature[/bold] - {self.current_stage.replace('-', ' ').title()}")
+                
+                yield Label("Title:")
+                yield Input(
+                    value=self.feature_data.get("title", ""),
+                    placeholder="Feature title",
+                    id="title-input"
+                )
+                
+                if is_early_stage:
+                    yield Label("Type:")
+                    type_options = [("Feature", "feature"), ("Bug", "bug")]
+                    current_type = self.feature_data.get("item_type", "feature")
+                    yield Select(type_options, value=current_type, id="type-select")
+                
+                yield Label("Description:")
+                description = self.feature_data.get("description", "")
+                yield TextArea(
+                    description,
+                    placeholder="Feature description",
+                    id="description-area"
+                )
+                
+                yield Label("Done Script:")
+                script_options = [("(none)", "")] + [(s.label, s.id) for s in self.scripts]
+                current_script = self.feature_data.get("done_script", "")
+                yield Select(script_options, value=current_script, id="script-select")
+            
+            with Horizontal(id="unified-edit-buttons"):
+                yield Button("Save", variant="primary", id="edit-save")
+                yield Button("Cancel", variant="default", id="edit-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "edit-save":
+            self._save()
+        else:
+            self.dismiss(None)
+
+    def _save(self) -> None:
+        is_early_stage = self.current_stage in ("ideas", "ideating", "plan-inbox")
+        result = {}
+        
+        title_input = self.query_one("#title-input", Input)
+        result["title"] = title_input.value.strip()
+        
+        if is_early_stage:
+            type_select = self.query_one("#type-select", Select)
+            result["item_type"] = type_select.value if type_select.value else "feature"
+        
+        desc_area = self.query_one("#description-area", TextArea)
+        result["description"] = desc_area.text
+        
+        script_select = self.query_one("#script-select", Select)
+        result["done_script"] = script_select.value if script_select.value else ""
+        
+        self.dismiss(result)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 # ---------------------------------------------------------------------------
 # Settings panel
 # ---------------------------------------------------------------------------
@@ -928,14 +1310,17 @@ class SettingsPane(Static):
         padding: 1;
     }
     .settings-row {
-        layout: horizontal;
-        height: auto;
+        height: 3;
     }
     .settings-row Label {
-        width: 20;
+        width: 16;
     }
     .settings-row Select {
-        width: 30;
+        width: 20;
+    }
+    .settings-row Input {
+        width: 1fr;
+        margin-left: 1;
     }
     """
 
@@ -953,7 +1338,7 @@ class SettingsPane(Static):
         yield Label("[bold]Pipeline Settings[/bold]\n", id="settings-title")
         
         # Default agent selector
-        agents = list(self._config.agents.keys())
+        agents = list(BUILTIN_AGENTS.keys())
         current_default = self._config.current_agent_name
         agent_options = [(a, a) for a in agents]
         
@@ -969,15 +1354,15 @@ class SettingsPane(Static):
         # Phase assignments - horizontal rows
         agent_for_phase = self._config.agent_for_phase
         for phase_key, phase_label in PIPELINE_PHASES:
-            current_agent = agent_for_phase.get(phase_key, current_default)
-            phase_options = [("default", "default")] + [(a, a) for a in agents]
+            phase_cfg = agent_for_phase.get(phase_key)
+            current_agent = phase_cfg.agent if phase_cfg else current_default
+            current_model = phase_cfg.model if phase_cfg else ""
+            phase_options = [("default", "default")] + [(a, a) for a in BUILTIN_AGENTS]
+            model_options = [(m, m) for m in self._config.get_models_for_agent(current_agent)]
             with Horizontal(classes="settings-row"):
                 yield Label(f"{phase_label}:", id=f"label-{phase_key}")
-                yield Select(
-                    phase_options,
-                    value=current_agent,
-                    id=f"phase-{phase_key}"
-                )
+                yield Select(phase_options, value=current_agent, id=f"phase-{phase_key}")
+                yield Select(model_options, value=current_model if current_model else Select.NULL, id=f"model-{phase_key}")
         
         yield Button("Save Settings", variant="primary", id="save-settings")
 
@@ -994,20 +1379,148 @@ class SettingsPane(Static):
                 self._config.set_current_agent(new_default)
             
             # Get phase assignments
-            new_agent_for_phase = {}
+            new_phase_mapping = {}
             for phase_key, _ in PIPELINE_PHASES:
-                phase_select = self.query_one(f"#phase-{phase_key}", Select)
-                agent = phase_select.value
+                agent = self.query_one(f"#phase-{phase_key}", Select).value
+                model_select = self.query_one(f"#model-{phase_key}", Select)
+                model_value = model_select.value
+                model = model_value if model_value and model_value != Select.NULL else None
                 if agent and agent != Select.BLANK and isinstance(agent, str):
-                    new_agent_for_phase[phase_key] = agent
+                    if model:
+                        new_phase_mapping[phase_key] = {"agent": agent, "model": model}
+                    else:
+                        new_phase_mapping[phase_key] = agent
             
             # Save phase assignments
-            self._config.set_agent_for_phases(new_agent_for_phase)
+            self._config.set_agent_for_phases(new_phase_mapping)
             
             self.post_message(self.SettingsChanged())
             self.notify("Settings saved!", severity="information")
         except Exception as e:
             self.notify(f"Failed to save: {e}", severity="error")
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        """Handle agent dropdown changes to update model options."""
+        try:
+            if event.select.id and event.select.id.startswith("phase-"):
+                phase_key = event.select.id.replace("phase-", "")
+                new_agent = event.select.value
+                if new_agent and new_agent != "" and isinstance(new_agent, str):
+                    if new_agent == "default":
+                        agent_name = "default"
+                    else:
+                        agent_name = new_agent
+                else:
+                    agent_name = "default"
+                model_select = self.query_one(f"#model-{phase_key}", Select)
+                model_options = [(m, m) for m in self._config.get_models_for_agent(agent_name)]
+                model_select.set_options(model_options)
+                model_select.value = Select.NULL
+        except Exception as e:
+            self.notify(f"Failed to update model options: {e}", severity="warning")
+
+
+# ---------------------------------------------------------------------------
+# Scripts panel
+# ---------------------------------------------------------------------------
+
+
+class ScriptsPane(Static):
+    """Scripts panel for viewing and running scripts."""
+
+    CSS = """
+    ScriptsPane {
+        padding: 1;
+    }
+    #scripts-title {
+        margin-bottom: 1;
+    }
+    #scripts-list {
+        height: 30;
+        border: solid $panel;
+        margin-bottom: 1;
+    }
+    #context-label {
+        margin-top: 1;
+    }
+    #context-area {
+        height: 6;
+        margin-bottom: 1;
+    }
+    #scripts-buttons {
+        height: 3;
+    }
+    #scripts-buttons Button {
+        margin: 0 1;
+    }
+    """
+
+    def __init__(self, scripts: list, script_status: Optional["ScriptStatus"], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._scripts = scripts
+        self._script_status = script_status
+
+    def compose(self) -> ComposeResult:
+        yield Label("[bold]Scripts[/bold]\n", id="scripts-title")
+        
+        yield Label("Select a script to run:", id="scripts-list-label")
+        yield Select(
+            [(s.label, str(i)) for i, s in enumerate(self._scripts)],
+            prompt="Select a script...",
+            id="script-select"
+        )
+        
+        yield Label("Additional context (optional):", id="context-label")
+        yield TextArea(placeholder="Context to pass to the script", id="context-area")
+        
+        with Horizontal(id="scripts-buttons"):
+            yield Button("Run Script", variant="primary", id="run-script-btn")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "run-script-btn":
+            self._run_selected_script()
+
+    def _run_selected_script(self) -> None:
+        """Run the selected script."""
+        try:
+            script_select = self.query_one("#script-select", Select)
+            selected_value = script_select.value
+            
+            if selected_value is Select.BLANK or selected_value is None:
+                self.notify("Please select a script first", severity="warning")
+                return
+            
+            try:
+                script_index = int(str(selected_value))
+            except (ValueError, TypeError):
+                self.notify("Invalid script selection", severity="warning")
+                return
+            
+            if script_index < 0 or script_index >= len(self._scripts):
+                self.notify("Invalid script selection", severity="warning")
+                return
+            
+            script = self._scripts[script_index]
+            context_area = self.query_one("#context-area", TextArea)
+            context = context_area.text or ""
+            
+            if script.confirm:
+                self.app.push_screen(
+                    ConfirmModal(f"Run '{script.label}'?"),
+                    callback=lambda ok: self._execute_script(script.id, context) if ok else None
+                )
+            else:
+                self._execute_script(script.id, context)
+        except Exception as e:
+            self.notify(f"Error: {e}", severity="error")
+
+    def _execute_script(self, script_id: str, context: str) -> None:
+        """Execute the script via the parent app."""
+        app = self.app
+        if hasattr(app, '_run_script_async'):
+            app._run_script_async(script_id, context)
+            self.notify(f"Running script: {script_id}", severity="information")
+
 
 # Number of stdout tail lines to display in the status widget
 _STATUS_TAIL_LINES = 8
@@ -1201,6 +1714,7 @@ class PipelineApp(App):
         Binding("u", "restore", "Restore"),
         Binding("p", "promote", "Promote"),
         Binding("s", "start", "Start"),
+        Binding("d", "debate", "Debate"),
         Binding("ctrl+a", "toggle_auto_plan", "Auto-Plan"),
         Binding("ctrl+d", "toggle_auto_implement", "Auto-Impl"),
         Binding("ctrl+s", "stop_auto", "Stop"),
@@ -1212,40 +1726,26 @@ class PipelineApp(App):
         Binding(";", "go_to_settings", "Settings"),
         Binding("up", "focus_previous", "Up"),
         Binding("down", "focus_next", "Down"),
+        Binding("e", "unified_edit", "Edit", show=False),
         Binding("k", "kill_agent", "Kill Agent", show=False),
         Binding("ctrl+k", "restart_agent", "Restart Agent", show=False),
     ]
 
     # Stage -> list of available actions (key, action, label)
     STAGE_ACTIONS = {
-        "ideas": [("m", "move", "Move"), ("i", "interactive", "Interact"), ("a", "approve", "To Plan"), ("x", "reject", "Reject")],
-        "plan-inbox": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
-        "reviewing-plan": [("m", "move", "Move"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
-        "requested-input": [("m", "move", "Move"), ("q", "answer_questions", "Answer"), ("s", "start", "Start")],
-        "approved": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
-        "spec-writing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
-        "implementing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
-        "testing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("ctrl+r", "restart", "Restart")],
-        "review": [("m", "move", "Move"), ("a", "approve", "Approve"), ("r", "review", "Review"), ("x", "reject", "Reject"), ("ctrl+r", "restart", "Restart")],
-        "final-human-approval": [("m", "move", "Move"), ("a", "approve", "Done"), ("x", "reject", "Reject")],
-        "done": [("m", "move", "Move"), ("u", "restore", "Restore")],
-        "rejected": [("m", "move", "Move"), ("u", "restore", "Restore")],
-    }
-
-    # Stage -> list of available actions (key, action, label)
-    STAGE_ACTIONS = {
-        "ideas": [("m", "move", "Move"), ("i", "interactive", "Interact"), ("a", "approve", "To Plan"), ("x", "reject", "Reject")],
-        "plan-inbox": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
-        "reviewing-plan": [("m", "move", "Move"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
-        "requested-input": [("m", "move", "Move"), ("q", "answer_questions", "Answer"), ("s", "start", "Start")],
-        "approved": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
-        "spec-writing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
-        "implementing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart")],
-        "testing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("ctrl+r", "restart", "Restart")],
-        "review": [("m", "move", "Move"), ("a", "approve", "Approve"), ("x", "reject", "Reject"), ("ctrl+r", "restart", "Restart")],
-        "final-human-approval": [("m", "move", "Move"), ("a", "approve", "Done"), ("x", "reject", "Reject")],
-        "done": [("m", "move", "Move"), ("u", "restore", "Restore")],
-        "rejected": [("m", "move", "Move"), ("u", "restore", "Restore")],
+        "ideas": [("m", "move", "Move"), ("d", "debate", "Debate"), ("i", "interactive", "Interact"), ("a", "approve", "To Plan"), ("x", "reject", "Reject"), ("e", "unified_edit", "Edit")],
+        "ideating": [("m", "move", "Move"), ("e", "unified_edit", "Edit")],
+        "plan-inbox": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart"), ("e", "unified_edit", "Edit")],
+        "reviewing-plan": [("m", "move", "Move"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart"), ("e", "unified_edit", "Edit")],
+        "requested-input": [("m", "move", "Move"), ("q", "answer_questions", "Answer"), ("s", "start", "Start"), ("e", "unified_edit", "Edit")],
+        "approved": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart"), ("e", "unified_edit", "Edit")],
+        "spec-writing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart"), ("e", "unified_edit", "Edit")],
+        "implementing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart"), ("e", "unified_edit", "Edit")],
+        "testing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("ctrl+r", "restart", "Restart"), ("e", "unified_edit", "Edit")],
+        "review": [("m", "move", "Move"), ("a", "approve", "Approve"), ("r", "review", "Review"), ("x", "reject", "Reject"), ("ctrl+r", "restart", "Restart"), ("e", "unified_edit", "Edit")],
+        "final-human-approval": [("m", "move", "Move"), ("a", "approve", "Done"), ("x", "reject", "Reject"), ("e", "unified_edit", "Edit")],
+        "done": [("m", "move", "Move"), ("u", "restore", "Restore"), ("e", "unified_edit", "Edit")],
+        "rejected": [("m", "move", "Move"), ("u", "restore", "Restore"), ("e", "unified_edit", "Edit")],
     }
 
     # Global hotkeys that are always available
@@ -1266,6 +1766,10 @@ class PipelineApp(App):
         if self._plan_running or self._implement_running:
             bindings.append(("k", "kill_agent", "Kill"))
             bindings.append(("ctrl+k", "restart_agent", "Restart"))
+        
+        # Show kill when a script is running
+        if self._script_status and self._script_status.running:
+            bindings.append(("k", "kill_script", "Kill Script"))
         
         if not self.selected_feature:
             return bindings + [("ctrl+q", "quit", "Quit")]
@@ -1367,6 +1871,10 @@ class PipelineApp(App):
         color: $text;
     }
 
+    .feature-item.--active {
+        color: cyan;
+    }
+
     #status-bar {
         dock: bottom;
         height: 1;
@@ -1434,6 +1942,11 @@ class PipelineApp(App):
         self._rate_limit_until: float = 0.0
         # Server client for pushing state to monitoring server
         self._server_client: Optional[ServerClient] = None
+        # Scripts configuration
+        self._scripts: list[ScriptConfig] = load_scripts(self._config.mad_dir)
+        self._script_status: Optional[ScriptStatus] = None
+        # Pipeline lock for preventing concurrent runs
+        self._pipeline_lock = PipelineLock(self._config)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -1450,10 +1963,12 @@ class PipelineApp(App):
                 yield TabPane(board, id=f"board-{board}")
             # Settings tab
             yield TabPane("Settings", id="settings-tab")
+            # Scripts tab
+            yield TabPane("Scripts", id="scripts-tab")
         
         self.active_board = boards[0] if boards else ""
 
-        # Kanban layout - shown for board tabs, hidden for settings
+        # Kanban layout - shown for board tabs, hidden for settings/scripts
         with Horizontal(id="main-layout"):
             with VerticalScroll(id="items-pane"):
                 yield Static("Loading...", id="kanban-placeholder")
@@ -1482,6 +1997,10 @@ class PipelineApp(App):
         with Vertical(id="settings-view"):
             yield SettingsPane(self._config, id="settings-pane")
 
+        # Scripts view - hidden by default
+        with Vertical(id="scripts-view"):
+            yield ScriptsPane(self._scripts, self._script_status, id="scripts-pane")
+
         yield Static("", id="status-bar")
         
         # Custom contextual footer with clickable buttons
@@ -1496,9 +2015,13 @@ class PipelineApp(App):
             self._refresh_board(self.active_board)
         # Initialize footer
         self._update_footer()
-        # Hide settings view initially
+        # Hide settings and scripts views initially
         try:
             self.query_one("#settings-view", Vertical).display = False
+        except NoMatches:
+            pass
+        try:
+            self.query_one("#scripts-view", Vertical).display = False
         except NoMatches:
             pass
         # Auto-refresh every 10 seconds to pick up external changes
@@ -1518,6 +2041,12 @@ class PipelineApp(App):
                 on_start_agent=self._handle_start_agent,
                 on_idea_created=self._handle_create_idea,
                 on_move_requested=self._on_move_requested,
+                on_edit_description=self._handle_edit_description,
+                on_edit_done_script=self._handle_edit_done_script,
+                on_edit_title=self._handle_edit_title,
+                on_edit_item_type=self._handle_edit_item_type,
+                on_run_script=self._handle_run_script,
+                on_set_agent_for_phase=self._handle_set_agent_for_phase,
             )
             self._connect_server()
             self.set_interval(5.0, self._periodic_server_push)
@@ -1556,6 +2085,8 @@ class PipelineApp(App):
                 features, self._plan_agent_status, self._implement_agent_status,
                 auto_plan_enabled=self.auto_plan_enabled,
                 auto_impl_enabled=self.auto_implement_enabled,
+                scripts=self._scripts,
+                script_status=self._script_status,
             )
 
     def _handle_set_auto_mode(self, mode: str, enabled: bool) -> None:
@@ -1570,7 +2101,7 @@ class PipelineApp(App):
             features = FeatureFile.list_all()
             self._push_to_server(features[:])
 
-    def _handle_start_agent(self, feature_id: str, action: str) -> None:
+    async def _handle_start_agent(self, feature_id: str, action: str) -> None:
         """Handle start_agent message from the server (web UI triggered plan/implement)."""
         features = self._load_features(self.active_board)
         feature = None
@@ -1594,27 +2125,25 @@ class PipelineApp(App):
             logger.warning("start_agent: implement agent already running")
             return
 
-        def _do_start():
-            self.selected_feature = feature
-            self._show_log()
-            if action == "plan":
-                self._log_line(f"=== Running PLAN (via web UI) for: {feature.title} ===")
-                self._log_line(f"Stage: {feature.current_stage}")
-                self._log_line("")
-                self._plan_running = True
-                self._run_plan_async(feature)
-            else:
-                self._log_line(f"=== Running IMPLEMENT (via web UI) for: {feature.title} ===")
-                self._log_line(f"Stage: {feature.current_stage}")
-                self._log_line("")
-                self._implement_running = True
-                self._run_implement_async(feature)
-        self.call_from_thread(_do_start)
+        self.selected_feature = feature
+        self._show_log()
+        if action == "plan":
+            self._log_line(f"=== Running PLAN (via web UI) for: {feature.title} ===")
+            self._log_line(f"Stage: {feature.current_stage}")
+            self._log_line("")
+            self._plan_running = True
+            self._run_plan_async(feature)
+        else:
+            self._log_line(f"=== Running IMPLEMENT (via web UI) for: {feature.title} ===")
+            self._log_line(f"Stage: {feature.current_stage}")
+            self._log_line("")
+            self._implement_running = True
+            self._run_implement_async(feature)
 
-    async def _handle_create_idea(self, title: str, board: str, description: str, item_type: str = "feature") -> None:
+    async def _handle_create_idea(self, title: str, board: str, description: str, item_type: str = "feature", done_script: str = "") -> None:
         """Handle create_idea message from the server (web UI created a new idea)."""
         try:
-            feature = FeatureFile.create(board, title, description, item_type=item_type)
+            feature = FeatureFile.create(board, title, description, item_type=item_type, done_script=done_script)
             logger.info(f"Created new idea: {feature.title} ({feature.id}) in board {board}")
             self._refresh_board(self.active_board)
             if self._server_client and self._server_client.connected:
@@ -1623,36 +2152,183 @@ class PipelineApp(App):
                     features, self._plan_agent_status, self._implement_agent_status,
                     auto_plan_enabled=self.auto_plan_enabled,
                     auto_impl_enabled=self.auto_implement_enabled,
+                    scripts=self._scripts,
+                    script_status=self._script_status,
                 ))
         except Exception as e:
             logger.warning(f"create_idea: failed to create idea: {e}")
 
-    def _on_move_requested(self, feature_id: str, target_stage: str) -> None:
+    async def _on_move_requested(self, feature_id: str, target_stage: str, request_id: str, reason: str = "") -> None:
         """Handle move_feature message from the server (web UI moved a feature to a new stage)."""
-        def _do_move():
-            try:
-                feature = FeatureFile.find(feature_id)
-                if not feature:
-                    logger.warning(f"move_feature: feature {feature_id} not found")
-                    return
-                if target_stage not in STAGES:
-                    logger.warning(f"move_feature: invalid target stage {target_stage}")
-                    return
-                logger.info(f"Moving feature {feature_id} to {target_stage} via web UI")
-                feature.add_history(target_stage.upper(), f"Moved via web UI")
-                feature.move_to_stage(target_stage)
-                self._refresh_board(self.active_board)
-                # Push updated state back to server
-                if self._server_client and self._server_client.connected:
-                    features = self._load_features(self.active_board)
-                    asyncio.create_task(self._server_client.push_state(
-                        features, self._plan_agent_status, self._implement_agent_status,
-                        auto_plan_enabled=self.auto_plan_enabled,
-                        auto_impl_enabled=self.auto_implement_enabled,
-                    ))
-            except Exception as e:
-                logger.warning(f"move_feature: failed to move feature: {e}")
-        self.call_from_thread(_do_move)
+        try:
+            feature = FeatureFile.find(feature_id)
+            if not feature:
+                logger.warning(f"move_feature: feature {feature_id} not found")
+                if request_id and self._server_client:
+                    await self._server_client.send_move_result(request_id, False, "feature not found")
+                return
+            if target_stage not in STAGES:
+                logger.warning(f"move_feature: invalid target stage {target_stage}")
+                if request_id and self._server_client:
+                    await self._server_client.send_move_result(request_id, False, f"invalid target stage: {target_stage}")
+                return
+            logger.info(f"Moving feature {feature_id} to {target_stage} via web UI")
+            if target_stage == "implementing" and feature.current_stage == "final-human-approval" and reason:
+                from phases import _get_latest_feedback
+                prev_feedback = _get_latest_feedback(feature)
+                full_feedback = f"Human rejection: {reason}\n\nPrevious review feedback:\n{prev_feedback}"
+                feature.add_impl_review("FAIL", f"Human rejected from final-human-approval: {reason}", full_feedback)
+                feature.add_history("IMPLEMENTING", f"Sent back to implementing: {reason or 'No reason given'}")
+            else:
+                feature.add_history(target_stage.upper(), "Moved via web UI")
+            feature.move_to_stage(target_stage)
+            if target_stage == "done":
+                from scripts import execute_done_script
+                try:
+                    execute_done_script(feature, self._config)
+                except Exception as e:
+                    logger.warning(f"Done script execution failed: {e}")
+            self._refresh_board(self.active_board)
+            # Push updated state back to server
+            if self._server_client and self._server_client.connected:
+                features = self._load_features(self.active_board)
+                asyncio.create_task(self._server_client.push_state(
+                    features, self._plan_agent_status, self._implement_agent_status,
+                    auto_plan_enabled=self.auto_plan_enabled,
+                    auto_impl_enabled=self.auto_implement_enabled,
+                    scripts=self._scripts,
+                    script_status=self._script_status,
+                ))
+            if request_id and self._server_client:
+                await self._server_client.send_move_result(request_id, True)
+        except Exception as e:
+            logger.warning(f"move_feature: failed to move feature: {e}")
+            if request_id and self._server_client:
+                await self._server_client.send_move_result(request_id, False, str(e))
+
+    async def _handle_edit_description(self, feature_id: str, description: str) -> None:
+        """Handle edit_description message from the server (web UI edited a feature's description)."""
+        try:
+            feature = FeatureFile.find(feature_id)
+            if not feature:
+                logger.warning(f"edit_description: feature {feature_id} not found")
+                return
+            if feature.current_stage != "ideas":
+                logger.warning(f"edit_description: feature {feature_id} not in ideas stage")
+                return
+            logger.info(f"Editing description for feature {feature_id} via web UI")
+            feature.set_description(description)
+            feature.add_history(feature.current_stage.upper(), "Description edited via web UI")
+            self._refresh_board(self.active_board)
+            # Push updated state back to server
+            if self._server_client and self._server_client.connected:
+                features = self._load_features(self.active_board)
+                asyncio.create_task(self._server_client.push_state(
+                    features, self._plan_agent_status, self._implement_agent_status,
+                    auto_plan_enabled=self.auto_plan_enabled,
+                    auto_impl_enabled=self.auto_implement_enabled,
+                    scripts=self._scripts,
+                    script_status=self._script_status,
+                ))
+        except Exception as e:
+            logger.warning(f"edit_description: failed to edit description: {e}")
+
+    async def _handle_edit_done_script(self, feature_id: str, done_script: str) -> None:
+        """Handle edit_done_script message from the server (web UI edited a feature's done script)."""
+        try:
+            feature = FeatureFile.find(feature_id)
+            if not feature:
+                logger.warning(f"edit_done_script: feature {feature_id} not found")
+                return
+            logger.info(f"Editing done_script for feature {feature_id} via web UI")
+            feature.set_done_script(done_script)
+            feature.add_history(feature.current_stage.upper(), "Done script edited via web UI")
+            self._refresh_board(self.active_board)
+            # Push updated state back to server
+            if self._server_client and self._server_client.connected:
+                features = self._load_features(self.active_board)
+                asyncio.create_task(self._server_client.push_state(
+                    features, self._plan_agent_status, self._implement_agent_status,
+                    auto_plan_enabled=self.auto_plan_enabled,
+                    auto_impl_enabled=self.auto_implement_enabled,
+                    scripts=self._scripts,
+                    script_status=self._script_status,
+                ))
+        except Exception as e:
+            logger.warning(f"edit_done_script: failed to edit done script: {e}")
+
+    async def _handle_edit_title(self, feature_id: str, title: str) -> None:
+        """Handle edit_title message from the server (web UI edited a feature's title)."""
+        try:
+            feature = FeatureFile.find(feature_id)
+            if not feature:
+                logger.warning(f"edit_title: feature {feature_id} not found")
+                return
+            if feature.current_stage != "ideas":
+                logger.warning(f"edit_title: feature {feature_id} not in ideas stage")
+                return
+            logger.info(f"Editing title for feature {feature_id} via web UI")
+            feature.set_title(title)
+            feature._data["history"][-1]["note"] = "Title edited via web UI"
+            feature._save()
+            self._refresh_board(self.active_board)
+            # Push updated state back to server
+            if self._server_client and self._server_client.connected:
+                features = self._load_features(self.active_board)
+                asyncio.create_task(self._server_client.push_state(
+                    features, self._plan_agent_status, self._implement_agent_status,
+                    auto_plan_enabled=self.auto_plan_enabled,
+                    auto_impl_enabled=self.auto_implement_enabled,
+                    scripts=self._scripts,
+                    script_status=self._script_status,
+                ))
+        except Exception as e:
+            logger.warning(f"edit_title: failed to edit title: {e}")
+
+    async def _handle_edit_item_type(self, feature_id: str, item_type: str) -> None:
+        """Handle edit_item_type message from the server (web UI edited a feature's type)."""
+        try:
+            feature = FeatureFile.find(feature_id)
+            if not feature:
+                logger.warning(f"edit_item_type: feature {feature_id} not found")
+                return
+            if feature.current_stage != "ideas":
+                logger.warning(f"edit_item_type: feature {feature_id} not in ideas stage")
+                return
+            logger.info(f"Editing item_type for feature {feature_id} via web UI")
+            feature.set_item_type(item_type)
+            feature._data["history"][-1]["note"] = "Type edited via web UI"
+            feature._save()
+            self._refresh_board(self.active_board)
+            # Push updated state back to server
+            if self._server_client and self._server_client.connected:
+                features = self._load_features(self.active_board)
+                asyncio.create_task(self._server_client.push_state(
+                    features, self._plan_agent_status, self._implement_agent_status,
+                    auto_plan_enabled=self.auto_plan_enabled,
+                    auto_impl_enabled=self.auto_implement_enabled,
+                    scripts=self._scripts,
+                    script_status=self._script_status,
+                ))
+        except Exception as e:
+            logger.warning(f"edit_item_type: failed to edit item type: {e}")
+
+    async def _handle_run_script(self, script_id: str, context: str) -> None:
+        """Handle run_script message from the server (web UI requested script execution)."""
+        script = next((s for s in self._scripts if s.id == script_id), None)
+        if not script:
+            logger.warning(f"run_script: script '{script_id}' not found")
+            return
+        self._run_script_async(script_id, context)
+
+    async def _handle_set_agent_for_phase(self, phase: str, agent: str, model: str) -> None:
+        """Handle set_agent_for_phase message from the server (web UI changed phase settings)."""
+        try:
+            cfg = Config()
+            cfg.set_agent_for_phase(phase, agent, model or None)
+            logger.info(f"Set agent for phase {phase}: agent={agent}, model={model}")
+        except ValueError as e:
+            logger.warning(f"Invalid set_agent_for_phase: {e}")
 
     async def _on_server_connected(self) -> None:
         """Push full board state immediately after connecting to server."""
@@ -1663,6 +2339,8 @@ class PipelineApp(App):
                 features, self._plan_agent_status, self._implement_agent_status,
                 auto_plan_enabled=self.auto_plan_enabled,
                 auto_impl_enabled=self.auto_implement_enabled,
+                scripts=self._scripts,
+                script_status=self._script_status,
             )
 
     @work(thread=False)
@@ -1674,9 +2352,11 @@ class PipelineApp(App):
                     features, self._plan_agent_status, self._implement_agent_status,
                     auto_plan_enabled=self.auto_plan_enabled,
                     auto_impl_enabled=self.auto_implement_enabled,
+                    scripts=self._scripts,
+                    script_status=self._script_status,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to push state to server: {e}")
 
     def on_settings_pane_settings_changed(self, event: SettingsPane.SettingsChanged) -> None:
         """Handle settings changes - reload config."""
@@ -1687,11 +2367,15 @@ class PipelineApp(App):
     def on_tabbed_content_tab_activated(
         self, event: TabbedContent.TabActivated
     ) -> None:
-        """Handle tab switch - boards or settings."""
+        """Handle tab switch - boards, settings or scripts."""
         pane_id = event.pane.id or ""
         
         if pane_id == "settings-tab":
             self._show_settings_view()
+            return
+        
+        if pane_id == "scripts-tab":
+            self._show_scripts_view()
             return
         
         if pane_id.startswith("board-"):
@@ -1709,18 +2393,36 @@ class PipelineApp(App):
             main_layout.display = False
             settings_view = self.query_one("#settings-view", Vertical)
             settings_view.display = True
+            scripts_view = self.query_one("#scripts-view", Vertical)
+            scripts_view.display = False
+            self.query_one("#status-bar", Static).display = False
+            self.query_one("#contextual-footer", Horizontal).display = False
+        except NoMatches:
+            pass
+
+    def _show_scripts_view(self) -> None:
+        """Show the scripts panel and hide the kanban."""
+        try:
+            main_layout = self.query_one("#main-layout", Horizontal)
+            main_layout.display = False
+            settings_view = self.query_one("#settings-view", Vertical)
+            settings_view.display = False
+            scripts_view = self.query_one("#scripts-view", Vertical)
+            scripts_view.display = True
             self.query_one("#status-bar", Static).display = False
             self.query_one("#contextual-footer", Horizontal).display = False
         except NoMatches:
             pass
 
     def _show_kanban_view(self) -> None:
-        """Show the kanban board and hide settings."""
+        """Show the kanban board and hide settings/scripts."""
         try:
             main_layout = self.query_one("#main-layout", Horizontal)
             main_layout.display = True
             settings_view = self.query_one("#settings-view", Vertical)
             settings_view.display = False
+            scripts_view = self.query_one("#scripts-view", Vertical)
+            scripts_view.display = False
             self.query_one("#status-bar", Static).display = True
             self.query_one("#contextual-footer", Horizontal).display = True
         except NoMatches:
@@ -1777,8 +2479,16 @@ class PipelineApp(App):
         selected_slug = self.selected_feature.slug if self.selected_feature else None
         selected_board = self.selected_feature.board if self.selected_feature else None
 
+        # Compute active slugs
+        active_slugs: set[str] = set()
+        if self._plan_running and self._plan_agent_status and self._plan_agent_status.feature_slug:
+            active_slugs.add(self._plan_agent_status.feature_slug)
+        if self._implement_running and self._implement_agent_status and self._implement_agent_status.feature_slug:
+            active_slugs.add(self._implement_agent_status.feature_slug)
+
         for stage in STAGE_DISPLAY_ORDER:
             stage_features = by_stage.get(stage, [])
+            stage_features.sort(key=_last_modified_key, reverse=True)
             count = len(stage_features)
             items_pane.mount(StageHeader(stage, count))
 
@@ -1787,7 +2497,7 @@ class PipelineApp(App):
                     is_sel = (
                         f.slug == selected_slug and f.board == selected_board
                     )
-                    items_pane.mount(FeatureItem(f, is_selected=is_sel))
+                    items_pane.mount(FeatureItem(f, is_selected=is_sel, is_active=f.slug in active_slugs))
 
     def _update_status_bar(
         self, board: str, features: list[FeatureFile]
@@ -1964,6 +2674,63 @@ class PipelineApp(App):
         except NoMatches:
             pass
 
+    def action_go_to_scripts(self) -> None:
+        """Switch to the Scripts tab."""
+        try:
+            tabs = self.query_one("#main-tabs", TabbedContent)
+            tabs.active = "scripts-tab"
+        except NoMatches:
+            pass
+
+    def action_unified_edit(self) -> None:
+        """Open unified edit modal for the selected feature."""
+        f = self.selected_feature
+        if not f:
+            self.notify("No feature selected", severity="warning")
+            return
+
+        feature_data = {
+            "title": f.title,
+            "item_type": f.item_type,
+            "description": f.get_section("Description") or "",
+            "done_script": f.done_script,
+        }
+
+        def handle_unified_edit(result: dict | None) -> None:
+            if result is None:
+                return
+            
+            stage = f.current_stage
+            
+            if "title" in result:
+                if result["title"]:
+                    try:
+                        f.set_title(result["title"])
+                    except ValueError as e:
+                        self.notify(f"Error: {e}", severity="error")
+                        return
+            
+            if stage in ("ideas", "ideating", "plan-inbox") and "item_type" in result:
+                try:
+                    f.set_item_type(result["item_type"])
+                except ValueError as e:
+                    self.notify(f"Error: {e}", severity="error")
+                    return
+            
+            if "description" in result:
+                f.set_description(result["description"])
+            
+            if "done_script" in result:
+                f.set_done_script(result["done_script"])
+            
+            self.notify("Feature updated", severity="information")
+            self._update_detail_view()
+
+        self.push_screen(
+            UnifiedEditModal(feature_data, f.current_stage, self._scripts),
+            callback=handle_unified_edit,
+        )
+
     def action_refresh(self) -> None:
         """Manually refresh the board."""
         self._refresh_board(self.active_board)
@@ -1999,8 +2766,8 @@ class PipelineApp(App):
         try:
             items_pane = self.query_one("#items-pane")
             items_pane.focus()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to focus items pane in focus_previous: {e}")
 
         item_list = list(self.query("StageHeader, FeatureItem"))
         if not item_list:
@@ -2026,8 +2793,8 @@ class PipelineApp(App):
         try:
             items_pane = self.query_one("#items-pane")
             items_pane.focus()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to focus items pane in focus_next: {e}")
 
         item_list = list(self.query("StageHeader, FeatureItem"))
         if not item_list:
@@ -2098,6 +2865,28 @@ class PipelineApp(App):
 
         self.push_screen(MoveFeatureModal(f.current_stage), callback=handle_move)
 
+    def action_debate(self) -> None:
+        """Move the selected feature to ideating stage for debate."""
+        f = self.selected_feature
+        if not f:
+            self.notify("No feature selected", severity="warning")
+            return
+        
+        if f.current_stage != "ideas":
+            self.notify("Debate is only available from ideas stage", severity="warning")
+            return
+        
+        f.add_history("DEBATE", "Moved from ideas to ideating for debate")
+        f.save()
+        f.move_to_stage("ideating")
+        
+        refreshed = FeatureFile.find(f.slug)
+        self.selected_feature = refreshed
+        self._refresh_board(self.active_board)
+        self._update_detail_view()
+        
+        self.notify(f"Moved to ideating: {f.title}", severity="information")
+
     def action_approve(self) -> None:
         """Approve the selected feature (move to plan-inbox or complete it)."""
         f = self.selected_feature
@@ -2117,6 +2906,11 @@ class PipelineApp(App):
             f.add_history("DONE", "Approved as complete (TUI)")
             f.save()
             f.move_to_stage("done")
+            from scripts import execute_done_script
+            try:
+                execute_done_script(f, self._config)
+            except Exception as e:
+                self.notify(f"Done script failed: {e}", severity="warning")
             self.notify(f"Completed: {f.title}", severity="information")
         elif f.current_stage == "review":
             # Approve in review = pass review and go to final-human-approval
@@ -2227,8 +3021,8 @@ class PipelineApp(App):
                     return
                 feedback = _get_latest_feedback(f)
                 full_feedback = f"Human rejection: {reason}\n\nPrevious review feedback:\n{feedback}"
+                f.add_impl_review("FAIL", f"Human rejected from final-human-approval: {reason}", full_feedback)
                 f.add_history("REJECTED", f"Sent back to implementing: {reason}")
-                f.save()
                 f.move_to_stage("implementing")
                 self.notify(f"Sent back to implementing: {f.title}", severity="information")
                 refreshed = FeatureFile.find(f.slug)
@@ -2243,8 +3037,8 @@ class PipelineApp(App):
             if reason is None:
                 return  # Cancelled
             
-            # ideas and plan-inbox go to rejected
-            if f.current_stage in ("ideas", "plan-inbox"):
+            # ideas, ideating, and plan-inbox go to rejected
+            if f.current_stage in ("ideas", "ideating", "plan-inbox"):
                 f.add_history("REJECTED", f"Rejected: {reason}")
                 f.save()
                 f.move_to_stage("rejected")
@@ -2337,6 +3131,13 @@ class PipelineApp(App):
                 except Exception as e:
                     self.notify(f"Design doc update failed: {e}", severity="warning")
             
+            # Execute done script if configured
+            from scripts import execute_done_script
+            try:
+                execute_done_script(f, self._config)
+            except Exception as e:
+                self.notify(f"Done script failed: {e}", severity="warning")
+            
             self.notify(f"Promoted: {f.title} -> done", severity="information")
         else:
             self.notify(
@@ -2408,6 +3209,66 @@ class PipelineApp(App):
                     elapsed_secs = int(time.time() - self._implement_agent_status.started_at)
                     elapsed = f"{elapsed_secs // 60}m{elapsed_secs % 60}s"
                 feature.add_history("KILLED", f"Agent terminated by user after {elapsed}")
+
+    def action_run_script(self) -> None:
+        """Open modal to select and run a script."""
+        if not self._scripts:
+            self.notify("No scripts configured. Add scripts to .mad/scripts.json")
+            return
+        if self._script_status and self._script_status.running:
+            self.notify("A script is already running")
+            return
+        self.push_screen(RunScriptModal(self._scripts), self._on_script_selected)
+
+    def _on_script_selected(self, result: Optional[tuple[str, str]]) -> None:
+        """Handle the result from RunScriptModal."""
+        if result:
+            script_id, context = result
+            self._run_script_async(script_id, context)
+
+    @work(thread=True, exclusive=True, group="script")
+    def _run_script_async(self, script_id: str, context: str = "") -> None:
+        """Run a script in a background thread."""
+        script = next((s for s in self._scripts if s.id == script_id), None)
+        if not script:
+            self.app.call_from_thread(self.notify, f"Script '{script_id}' not found", severity="error")
+            return
+
+        self._script_status = ScriptStatus(script_id=script_id, context=context)
+        self._log_line(f"=== Running SCRIPT: {script.label} ===")
+        if context:
+            self._log_line(f"Context: {context}")
+        self._log_line("")
+
+        try:
+            exit_code = run_script(script, self._config, self._script_status, context)
+            severity = "information" if exit_code == 0 else "error"
+            self._log_line(f"=== Script '{script.label}' finished (exit code: {exit_code}) ===")
+            self._log_line("")
+            self.app.call_from_thread(
+                self.notify, f"Script '{script.label}' finished (exit code: {exit_code})", severity=severity
+            )
+        except Exception as e:
+            self._log_line(f"=== Script '{script.label}' ERROR: {e} ===")
+            self._log_line("")
+            self.app.call_from_thread(self.notify, f"Script error: {e}", severity="error")
+        finally:
+            self._script_status = None
+            # Push updated state to webui so it clears the "running" indicator
+            if self._server_client and self._server_client.connected:
+                features = self._load_features(self.active_board)
+                self._push_to_server(features[:])
+
+    def action_kill_script(self) -> None:
+        """Kill the currently running script."""
+        if not self._script_status or not self._script_status.running:
+            self.notify("No script is running", severity="warning")
+            return
+        if self._script_status._agent_status:
+            self._script_status._agent_status.kill_requested = True
+        self._script_status.kill_requested = True
+        self.notify("Kill requested for running script")
+        self._log_line(f"[user] Kill requested for script ({self._script_status.script_id})")
 
     def action_restart_agent(self) -> None:
         """Kill and restart the currently running agent."""
@@ -2587,6 +3448,11 @@ class PipelineApp(App):
             logger.info("[auto-plan] Skipping - planning already in progress")
             return
         
+        # Check if plan lock is held by another process
+        if self._pipeline_lock.check('plan'):
+            logger.info("[auto-plan] Skipping - plan lock held by another process")
+            return
+        
         now = time.time()
         if self._last_auto_plan_time is not None:
             elapsed = now - self._last_auto_plan_time
@@ -2598,9 +3464,9 @@ class PipelineApp(App):
         for board in self._config.boards:
             candidates = []
             stage_counts = {}
-            # Only include plan-inbox and reviewing-plan for auto-plan
+            # Include ideating (for debate), plan-inbox and reviewing-plan for auto-plan
             # Don't include "requested-input" (waiting for answers) or "approved" (ready for impl)
-            plan_stages = ["plan-inbox", "reviewing-plan"]
+            plan_stages = ["ideating", "plan-inbox", "reviewing-plan"]
             for s in plan_stages:
                 found = FeatureFile.list_all(board=board, stage=s)
                 candidates.extend(found)
@@ -2642,6 +3508,11 @@ class PipelineApp(App):
             logger.info("[auto-impl] Skipping - implementation already in progress")
             return
         
+        # Check if impl lock is held by another process
+        if self._pipeline_lock.check('impl'):
+            logger.info("[auto-impl] Skipping - impl lock held by another process")
+            return
+        
         now = time.time()
         if self._last_auto_implement_time is not None:
             elapsed = now - self._last_auto_implement_time
@@ -2667,12 +3538,20 @@ class PipelineApp(App):
                     return  # Only process one feature at a time
 
     def _auto_plan_feature(self, feature: FeatureFile) -> None:
-        """Auto-run planning on a feature."""
-        self._log_line(f"=== Auto-Planning: {feature.title} ===")
-        self._log_line(f"Stage: {feature.current_stage}")
-        self._log_line("")
-        self._plan_running = True
-        self._run_plan_async(feature)
+        """Auto-run planning or ideation on a feature."""
+        # Route to different handler based on stage
+        if feature.current_stage == "ideating":
+            self._log_line(f"=== Auto-Ideating: {feature.title} ===")
+            self._log_line(f"Stage: {feature.current_stage}")
+            self._log_line("")
+            self._plan_running = True
+            self._run_ideating_async(feature)
+        else:
+            self._log_line(f"=== Auto-Planning: {feature.title} ===")
+            self._log_line(f"Stage: {feature.current_stage}")
+            self._log_line("")
+            self._plan_running = True
+            self._run_plan_async(feature)
 
     def _auto_implement_feature(self, feature: FeatureFile) -> None:
         """Auto-run implementation on a feature."""
@@ -2811,6 +3690,23 @@ class PipelineApp(App):
     def _run_plan_async(self, feature: FeatureFile) -> None:
         """Run planning phase in background thread."""
         import traceback
+        
+        # Acquire plan lock
+        if not self._pipeline_lock.acquire('plan'):
+            info = self._pipeline_lock.check('plan')
+            if info:
+                self.app.call_from_thread(
+                    self._log_line,
+                    f"[plan] Skipped - locked by PID {info.pid} on {info.hostname}"
+                )
+            else:
+                self.app.call_from_thread(
+                    self._log_line,
+                    "[plan] Skipped - lock held by another process"
+                )
+            self._plan_running = False
+            return
+        
         self.running = True
         self._plan_running = True
         runner = AgentRunner(self._config)
@@ -2862,6 +3758,7 @@ class PipelineApp(App):
             self.running = False
             self._plan_running = False
             status.running = False
+            self._pipeline_lock.release('plan')
             restart = status.restart_requested
             status.restart_requested = False
             status.kill_requested = False
@@ -2874,16 +3771,80 @@ class PipelineApp(App):
                         self.app.call_from_thread(self._refresh_board, self.active_board)
                         self._run_plan_async(refreshed)
                         return
-                    elif stage in ("spec-writing", "implementing", "testing"):
-                        self.app.call_from_thread(self._log_line, f"[user] Restarting as implement agent for {feature.slug} (stage: {stage})")
-                        self.app.call_from_thread(self._refresh_board, self.active_board)
-                        self._run_implement_async(refreshed)
-                        return
+
+    @work(thread=True, exclusive=True, group="plan")
+    def _run_ideating_async(self, feature: FeatureFile) -> None:
+        """Run ideation phase in background thread."""
+        import traceback
+        
+        # Acquire plan lock
+        if not self._pipeline_lock.acquire('plan'):
+            info = self._pipeline_lock.check('plan')
+            if info:
+                self.app.call_from_thread(
+                    self._log_line,
+                    f"[ideating] Skipped - locked by PID {info.pid} on {info.hostname}"
+                )
+            else:
+                self.app.call_from_thread(
+                    self._log_line,
+                    "[ideating] Skipped - lock held by another process"
+                )
+            self._plan_running = False
+            return
+        
+        self.running = True
+        self._plan_running = True
+        runner = AgentRunner(self._config)
+        
+        status = self._plan_agent_status
+        status.lines = []
+        status.phase = ""
+        status.started_at = 0.0
+        status.agent = runner.agent.name
+        status.feature_slug = feature.slug
+        status.running = True
+        
+        try:
+            from phases import run_ideating
+            run_ideating(feature, runner, status=status)
+            self.app.call_from_thread(self._log_line, "=== Ideation complete ===")
             self.app.call_from_thread(self._on_plan_done, feature.slug)
+        except RateLimitError as e:
+            self.app.call_from_thread(self._log_line, f"=== Rate limited: {e} ===")
+            self.app.call_from_thread(self._handle_rate_limit, "plan")
+        except Exception as e:
+            tb = traceback.format_exc()
+            self.app.call_from_thread(self._log_line, f"=== Ideation failed: {e} ===")
+            self.app.call_from_thread(self._log_line, f"=== Traceback:\n{tb} ===")
+        finally:
+            self.running = False
+            self._plan_running = False
+            status.running = False
+            self._pipeline_lock.release('plan')
+            status.restart_requested = False
+            status.kill_requested = False
 
     @work(thread=True, exclusive=True, group="implement")
     def _run_implement_async(self, feature: FeatureFile) -> None:
         """Run implementation phase in background thread, starting from current stage."""
+        
+        # Acquire impl lock
+        if not self._pipeline_lock.acquire('impl'):
+            info = self._pipeline_lock.check('impl')
+            if info:
+                self.app.call_from_thread(
+                    self._log_line,
+                    f"[impl] Skipped - locked by PID {info.pid} on {info.hostname}"
+                )
+            else:
+                self.app.call_from_thread(
+                    self._log_line,
+                    "[impl] Skipped - lock held by another process"
+                )
+            self._implement_running = False
+            return
+        
         self.running = True
         self._implement_running = True
         runner = AgentRunner(self._config)
@@ -2949,6 +3910,7 @@ class PipelineApp(App):
             self.running = False
             self._implement_running = False
             status.running = False
+            self._pipeline_lock.release('impl')
             restart = status.restart_requested
             status.restart_requested = False
             status.kill_requested = False
@@ -3008,27 +3970,46 @@ class PipelineApp(App):
 
         self.push_screen(NewBoardModal(), callback=handle_new_board)
 
+    def action_edit_done_script(self) -> None:
+        """Open modal to edit the done script for the selected feature."""
+        f = self.selected_feature
+        if not f:
+            self.notify("No feature selected", severity="warning")
+            return
+
+        def handle_edit_done_script(result: str | None) -> None:
+            if result is None:
+                return  # Cancelled
+            f.set_done_script(result)
+            self.notify(f"Done script updated", severity="information")
+            self._update_detail_view()
+
+        self.push_screen(
+            EditDoneScriptModal(f.done_script, self._scripts),
+            callback=handle_edit_done_script,
+        )
+
     def action_new_feature(self) -> None:
         """Open modal to create a new feature."""
         boards = self._config.boards
         default = self.active_board or (boards[0] if boards else "")
 
-        def handle_new(result: tuple[str, str, str] | None) -> None:
+        def handle_new(result: tuple[str, str, str, str, str] | None) -> None:
             if result is None:
                 return  # Cancelled
-            board, title, desc = result
-            self._create_feature(board, title, desc)
+            board, title, desc, done_script, item_type = result
+            self._create_feature(board, title, desc, done_script, item_type)
 
         self.push_screen(
-            NewFeatureModal(boards, default),
+            NewFeatureModal(boards, default, self._scripts),
             callback=handle_new,
         )
 
     @work(thread=True, exclusive=True, group="create")
-    def _create_feature(self, board: str, title: str, desc: str) -> None:
+    def _create_feature(self, board: str, title: str, desc: str, done_script: str = "", item_type: str = "feature") -> None:
         """Create a feature file in a background thread, then hand off to interactive planning."""
         try:
-            feature = FeatureFile.create(board, title, desc)
+            feature = FeatureFile.create(board, title, desc, item_type=item_type, done_script=done_script)
             self.app.call_from_thread(
                 self._on_feature_created, feature.slug, board
             )
@@ -3063,47 +4044,36 @@ class PipelineApp(App):
 # ---------------------------------------------------------------------------
 
 
-def _acquire_lock() -> Path:
-    """Acquire a PID lockfile in .mad/. Exits if another instance is running."""
+def _acquire_lock() -> PipelineLock:
+    """Acquire a lock using PipelineLock. Exits if another instance is running."""
     config = Config()
-    lockfile = config.mad_dir / "pipeline.lock"
-    if lockfile.exists():
-        try:
-            old_pid = int(lockfile.read_text().strip())
-            # Check if the process is still alive
-            os.kill(old_pid, 0)
-            # Process exists — bail out
-            print(f"Another pipeline instance is already running (PID {old_pid}).")
-            print(f"If this is stale, remove {lockfile}")
-            sys.exit(1)
-        except (ValueError, ProcessLookupError):
-            # PID is invalid or process is dead — stale lock
-            pass
-        except PermissionError:
-            # Process exists but we can't signal it — it's running
-            print(f"Another pipeline instance is already running.")
-            sys.exit(1)
-    lockfile.write_text(str(os.getpid()))
-    return lockfile
+    lock = PipelineLock(config)
+    if not lock.acquire('tui'):
+        info = lock.check('tui')
+        if info:
+            print(f"Another pipeline instance is already running (PID {info.pid} on {info.hostname}).")
+            print(f"Started at {info.timestamp} by {info.username}")
+        else:
+            print("Another pipeline instance is already running.")
+        print(f"If this is stale, run: pipeline lock clear tui")
+        sys.exit(1)
+    return lock
 
 
-def _release_lock(lockfile: Path):
-    """Remove the lockfile if it's ours."""
+def _release_lock(lock: PipelineLock):
+    """Release the lock if owned by current process."""
     try:
-        if lockfile.exists():
-            pid = int(lockfile.read_text().strip())
-            if pid == os.getpid():
-                lockfile.unlink()
-    except Exception:
-        pass
+        lock.release('tui')
+    except Exception as e:
+        logger.error(f"Failed to release lock: {e}")
 
 
 def run_tui():
-    lockfile = _acquire_lock()
-    atexit.register(_release_lock, lockfile)
+    lock = _acquire_lock()
+    atexit.register(_release_lock, lock)
     app = PipelineApp()
     app.run()
-    _release_lock(lockfile)
+    _release_lock(lock)
 
 
 if __name__ == "__main__":

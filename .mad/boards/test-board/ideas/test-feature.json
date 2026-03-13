@@ -1,0 +1,26 @@
+{
+  "id": "2f1ca8ae",
+  "board": "test-board",
+  "title": "Test Feature",
+  "type": "feature",
+  "created": "2026-03-10T19:28Z",
+  "description": "Test desc",
+  "done_script": "",
+  "plan": "",
+  "plan_exploration_summary": "",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "ideation_summaries": [],
+  "Ideation": "",
+  "history": [
+    {
+      "ts": "2026-03-10T19:28Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [],
+  "impl_reviews": []
+}

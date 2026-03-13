@@ -1,0 +1,824 @@
+{
+  "id": "a1b2c311",
+  "board": "mad",
+  "title": "Skip re-planning when review fails due to system errors",
+  "type": "feature",
+  "created": "2026-03-09T09:00Z",
+  "description": "When a plan review fails due to a system error (API key failure, parse error, agent returning wrong format), the pipeline currently throws away the existing good plan and re-plans from scratch. Instead, detect system-level review failures (no valid JSON, auth errors, 'returned a plan instead of verdict') and retry the review directly without re-planning. Only go back to planning if we get a real FAIL verdict with substantive feedback.",
+  "plan": "# Plan: Skip re-planning when review fails due to system errors\n\n## Problem Analysis\n\nCurrently, when a plan review fails due to system errors (API key failures, parse errors, agent returning wrong format), the pipeline throws away the existing good plan and re-plans from scratch. The issue is in the review loop (lines 1074-1111 in phases.py) where ANY review failure triggers re-planning.\n\n## Solution Design\n\n### 1. Add System Error Detection Function\n\nAdd a new function to detect if a review failure was due to system errors:\n\n```python\ndef _is_system_error_in_latest_review(feature: FeatureFile) -> bool:\n    \"\"\"Check if the latest plan review failed due to a system error.\"\"\"\n    latest_review = feature.get_latest_plan_review()\n    if not latest_review:\n        return False\n    \n    feedback = latest_review.get('feedback', '').lower()\n    \n    # Check for system error patterns in feedback\n    system_error_patterns = [\n        'system error',\n        'returned a plan instead of a review verdict',\n        'api error',\n        'authentication error', \n        'invalid api key',\n        'rate limit',\n        'json parse error',\n        'malformed json',\n        'no valid json',\n        'empty output',\n        'network error',\n        'timeout'\n    ]\n    \n    return any(pattern in feedback for pattern in system_error_patterns)\n```\n\n### 2. Enhance _parse_verdict Error Detection\n\nUpdate the existing system error detection in `_parse_verdict()` (around line 459):\n\n```python\nif \"plan\" in result and \"verdict\" not in result and \"summary\" not in result:\n    logger.warning(\"Review agent returned a plan instead of a verdict \u2014 ignoring JSON\")\n    result = None\n    feedback = \"SYSTEM ERROR: Review agent returned a plan instead of a review verdict. This indicates an agent configuration or prompting issue, not a problem with the plan itself. The plan should be reviewed again without re-planning.\"\n```\n\n### 3. Add Exception Handling in run_plan_review\n\nWrap the `_run_phase` call to catch and classify system errors:\n\n```python\ndef run_plan_review(\n    feature: FeatureFile,\n    runner: AgentRunner,\n    feedback: str = \"\",\n    status: Optional[AgentStatus] = None,\n) -> tuple[str, str]:\n    \"\"\"Review the plan and return (verdict, feedback).\n    \n    If feedback is provided from a previous failed review, use it to improve the plan.\n    \"\"\"\n    runner = runner.for_phase(\"reviewing_plan\")\n\n    feedback_section = f\"## Previous Review Feedback (must address):\\n{feedback}\" if feedback else \"\"\n\n    prompt = _build_prompt(\"review-plan.md\", {\n        \"{title}\": feature.title,\n        \"{description}\": feature.get_section(\"Description\") or \"(none)\",\n        \"{plan}\": feature.plan or \"(none)\",\n        \"{feedback_section}\": feedback_section,\n    }, \"reviewing_plan\")\n\n    try:\n        output = _run_phase(\"reviewing_plan\", feature, runner, prompt, status=status,\n                            start_message=\"Starting plan review\")\n    except (RateLimitError, RuntimeError) as e:\n        # System errors from AgentRunner\n        error_msg = str(e)\n        if 'authentication error' in error_msg.lower() or 'api key' in error_msg.lower():\n            system_feedback = f\"SYSTEM ERROR: Authentication failure - {error_msg}. This is not a plan issue. Review should be retried after fixing API configuration.\"\n        elif isinstance(e, RateLimitError):\n            system_feedback = f\"SYSTEM ERROR: Rate limit exceeded - {error_msg}. This is not a plan issue. Review should be retried after rate limit clears.\"\n        else:\n            system_feedback = f\"SYSTEM ERROR: Agent execution failed - {error_msg}. This is not a plan issue. Review should be retried.\"\n        \n        # Add system error review record\n        feature.add_plan_review(\"FAIL\", \"System error during review\", system_feedback)\n        feature.add_history(\"PLAN_REVIEW_FAILED\", f\"System error: {error_msg}\")\n        feature.save()\n        return \"FAIL\", system_feedback\n\n    verdict, summary, review_feedback = _parse_verdict(output)\n\n    feature.add_plan_review(verdict, summary, review_feedback)\n    feature.add_history(\"PLAN_REVIEW\", f\"Verdict: {verdict} - {summary}\")\n    feature.save()\n    _git_commit(feature, \"plan review complete\")\n    _delete_checkpoint(feature)\n\n    return verdict, review_feedback\n```\n\n### 4. Update Review Loop Logic\n\nModify the review loop in `_run_pipeline_impl()` (lines 1074-1111):\n\n```python\n# Phase 0b: Plan review (with retries)\nif feature.current_stage == \"reviewing-plan\":\n    max_total_plan_reviews = 6\n    if len(feature.plan_reviews) >= max_total_plan_reviews:\n        console.print(\n            f\"[red]Plan has already been reviewed {len(feature.plan_reviews)} times total. \"\n            f\"Moving to final-human-approval for manual intervention.[/red]\"\n        )\n        feature.add_history(\"FINAL_HUMAN_APPROVAL\", f\"Plan review exhausted {len(feature.plan_reviews)} total reviews\")\n        feature.move_to_stage(\"final-human-approval\")\n        feature.save()\n        return\n\n    max_plan_review_attempts = 3\n    system_error_count = 0\n    \n    for attempt in range(1, max_plan_review_attempts + 1):\n        latest_plan_review = feature.get_latest_plan_review()\n        plan_feedback = latest_plan_review.get(\"feedback\", \"\") if latest_plan_review else \"\"\n        \n        verdict, plan_feedback = run_plan_review(\n            feature, runner, feedback=plan_feedback, status=status\n        )\n        \n        if verdict == \"PASS\":\n            feature.move_to_stage(\"approved\")\n            feature.add_history(\"PROMOTED\", \"Plan approved, moving to spec-writing\")\n            feature.save()\n            _git_commit(feature, \"plan approved\")\n            break\n        \n        # Check if this was a system error\n        if _is_system_error_in_latest_review(feature):\n            system_error_count += 1\n            if attempt < max_plan_review_attempts:\n                console.print(\n                    f\"[yellow]Plan review attempt {attempt}/{max_plan_review_attempts} failed due to system error. \"\n                    f\"Retrying review directly...[/yellow]\"\n                )\n                continue  # Retry review without re-planning\n            else:\n                # Exhausted retries with system errors\n                console.print(\n                    f\"[red]Plan review failed after {max_plan_review_attempts} attempts due to persistent system errors. \"\n                    f\"Moving to final-human-approval for manual intervention.[/red]\"\n                )\n                feature.add_history(\"FINAL_HUMAN_APPROVAL\", f\"Plan review exhausted retries due to system errors (system errors: {system_error_count}, total attempts: {attempt})\")\n                feature.move_to_stage(\"final-human-approval\")\n                feature.save()\n                return\n        else:\n            # Real plan failure - go back to planning\n            if attempt < max_plan_review_attempts:\n                console.print(\n                    f\"[yellow]Plan review attempt {attempt}/{max_plan_review_attempts} failed due to plan issues. \"\n                    f\"Sending back for re-planning...[/yellow]\"\n                )\n                # Go back to planning with feedback\n                feature.move_to_stage(\"plan-inbox\")\n                feature.add_history(\"PLAN_REVIEW\", \"Sending back for re-planning\")\n                feature.save()\n                plan_ok = run_planning(feature, runner, status=status)\n                if not plan_ok:\n                    # Questions raised during re-planning, cannot continue review loop\n                    return\n                # Plan produced - run_planning already moved to reviewing-plan\n    else:\n        # Exhausted retries with mix of errors\n        console.print(\n            f\"[red]Plan review failed after {max_plan_review_attempts} attempts. \"\n            f\"Moving to final-human-approval for manual intervention.[/red]\"\n        )\n        feature.add_history(\"FINAL_HUMAN_APPROVAL\", f\"Plan review exhausted retries (system errors: {system_error_count}, total attempts: {max_plan_review_attempts})\")\n        feature.move_to_stage(\"final-human-approval\")\n        feature.save()\n        return\n```\n\n### 5. Add Required Import\n\nAdd the missing import at the top of `pipeline/phases.py`:\n\n```python\nfrom runner import AgentRunner, RateLimitError\n```\n\n## Implementation Summary\n\n1. **pipeline/phases.py**:\n   - Add `RateLimitError` import\n   - Add `_is_system_error_in_latest_review()` function\n   - Enhance `_parse_verdict()` error messaging  \n   - Add exception handling to `run_plan_review()`\n   - Modify review loop to distinguish system errors from plan failures\n   - Add explicit handling when system errors exhaust retry attempts\n\n2. **No changes to existing callers** (phases.py:1077, tui.py:3582) since `run_plan_review` signature remains `tuple[str, str]`\n\n## Key Benefits\n\n- **Preserves good plans**: System errors no longer trigger unnecessary re-planning\n- **Clear error classification**: Distinguishes retryable system errors from legitimate plan issues  \n- **Robust retry logic**: Handles exhausted retries appropriately for different error types\n- **Non-breaking changes**: Existing callers continue to work without modification\n- **Enhanced monitoring**: Better tracking of system vs plan error counts\n\n## Addresses Review Feedback\n\n1. \u2705 **No caller updates needed**: `run_plan_review()` keeps returning `tuple[str, str]`\n2. \u2705 **Explicit handling for exhausted system errors**: Added dedicated logic and history tracking\n3. \u2705 **RateLimitError import**: Added explicit import statement in phases.py",
+  "impl_spec": "## Implementation Spec: Skip re-planning when review fails due to system errors\n\n### Task 1: Update import in pipeline/phases.py\n\n**File:** `pipeline/phases.py` line 22\n\n**Change:** Replace `from runner import AgentRunner` with `from runner import AgentRunner, RateLimitError`\n\n`RateLimitError` is defined in `runner.py` at line 44. No other dependencies.\n\n---\n\n### Task 2: Add `_is_system_error_in_latest_review()` function in pipeline/phases.py\n\n**File:** `pipeline/phases.py`\n\n**Where:** Add as a module-level function before `run_plan_review()` (around line 762).\n\n**Signature:** `def _is_system_error_in_latest_review(feature: FeatureFile) -> bool:`\n\n**Logic:** Call `feature.get_latest_plan_review()` (defined in `state.py` line 222). If None, return False. Otherwise get the `feedback` field, lowercase it, and check if any of these substrings are present:\n- `'system error'`\n- `'returned a plan instead of a review verdict'`\n- `'api error'`\n- `'authentication error'`\n- `'invalid api key'`\n- `'rate limit'`\n- `'json parse error'`\n- `'malformed json'`\n- `'no valid json'`\n- `'empty output'`\n- `'network error'`\n- `'timeout'`\n\nReturn `True` if any match, `False` otherwise.\n\n**Dependencies:** None for this task itself.\n\n---\n\n### Task 3: Update error message in `_parse_verdict()` for plan-shaped output\n\n**File:** `pipeline/phases.py` line 459\n\n**Old string:**\n`\"Review agent error: returned a plan instead of a review verdict. This is a system error, not a plan issue.\"`\n\n**New string:**\n`\"SYSTEM ERROR: Review agent returned a plan instead of a review verdict. This indicates an agent configuration or prompting issue, not a problem with the plan itself. The plan should be reviewed again without re-planning.\"`\n\n**Why:** Ensures `_is_system_error_in_latest_review()` correctly detects this as a system error via the `'system error'` and `'returned a plan instead of a review verdict'` patterns.\n\n**Dependencies:** Task 2.\n\n---\n\n### Task 4: Add exception handling in `run_plan_review()`\n\n**File:** `pipeline/phases.py` lines 784-785\n\n**Current code:**\n```python\noutput = _run_phase(\"reviewing_plan\", feature, runner, prompt, status=status,\n                    start_message=\"Starting plan review\")\n```\n\n**Change:** Wrap in `try/except (RateLimitError, RuntimeError) as e:`. In the except handler:\n1. Classify error: check if `'authentication error'` or `'api key'` in `str(e).lower()` for auth errors; check `isinstance(e, RateLimitError)` for rate limits; else generic failure.\n2. Build `system_feedback` string starting with `\"SYSTEM ERROR: \"` describing the specific failure.\n3. Call `feature.add_plan_review(\"FAIL\", \"System error during review\", system_feedback)`\n4. Call `feature.add_history(\"PLAN_REVIEW_FAILED\", f\"System error: {error_msg}\")`\n5. Call `feature.save()`\n6. Return `(\"FAIL\", system_feedback)`\n\nNormal path (no exception) remains exactly as-is after the try block.\n\n**Dependencies:** Task 1 (needs `RateLimitError`), Task 2 (feedback string must start with `SYSTEM ERROR:`).\n\n---\n\n### Task 5: Rewrite the review loop in `_run_pipeline_impl()`\n\n**File:** `pipeline/phases.py` lines 1112-1150\n\n**Changes:**\n\n1. Add `system_error_count = 0` before the loop.\n\n2. After a `FAIL` verdict, call `_is_system_error_in_latest_review(feature)` to branch:\n\n   **System error path:**\n   - Increment `system_error_count`\n   - If `attempt < max_plan_review_attempts`: print yellow warning, `continue` (retry review WITHOUT re-planning)\n   - If on last attempt: print red error, call `feature.add_history(\"FINAL_HUMAN_APPROVAL\", ...)` with system error count info, call `feature.move_to_stage(\"final-human-approval\")`, `feature.save()`, `return`\n\n   **Plan error path (existing logic):**\n   - If `attempt < max_plan_review_attempts`: print yellow warning, move to `plan-inbox`, add history, save, call `run_planning()`, return if questions raised\n   - (Last attempt falls through to `for...else`)\n\n3. Update `for...else` block (exhausted all attempts): include `system_error_count` in the history message: `f\"Plan review exhausted retries (system errors: {system_error_count}, total attempts: {max_plan_review_attempts})\"`\n\n**Result:** System errors never trigger re-planning. Real plan failures still trigger re-planning as before. Both kinds exhaust properly with appropriate `final-human-approval` escalation.\n\n**Dependencies:** Tasks 1-4 must be complete first.\n\n---\n\n### Files Modified\n\n- `pipeline/phases.py` only \u2014 all 5 tasks are in this single file.\n- No changes to `tui.py`, `runner.py`, `state.py`, or any other file.\n- `run_plan_review()` return type remains `tuple[str, str]` \u2014 existing callers unaffected.",
+  "test_spec": "## Test Spec: Skip re-planning when review fails due to system errors\n\n---\n\n### 1. Behaviors That MUST Be Verified\n\n#### 1.1 `_is_system_error_in_latest_review()` correctly classifies errors\n\n**Behavior:** The function returns `True` when the latest plan review's feedback contains any system error keyword, and `False` otherwise.\n\n**Success criteria:**\n- Returns `False` when there is no plan review at all (empty review list)\n- Returns `True` for each of the following patterns present in the feedback field (case-insensitive):\n  - `'system error'`\n  - `'returned a plan instead of a review verdict'`\n  - `'api error'`\n  - `'authentication error'`\n  - `'invalid api key'`\n  - `'rate limit'`\n  - `'json parse error'`\n  - `'malformed json'`\n  - `'no valid json'`\n  - `'empty output'`\n  - `'network error'`\n  - `'timeout'`\n- Returns `False` when feedback contains none of these patterns (e.g. real plan rejection like \"The acceptance criteria are incomplete\")\n- Returns `True` regardless of whether the keyword appears in upper or mixed case\n- Only examines the **latest** review, not older ones\n\n#### 1.2 `_parse_verdict()` sets SYSTEM ERROR prefix for plan-shaped output\n\n**Behavior:** When the review agent returns a JSON object that looks like a plan (has a \"plan\" key but no \"verdict\" or \"summary\" key), the feedback stored must start with `'SYSTEM ERROR:'`.\n\n**Success criteria:**\n- The warning is logged\n- The verdict stored is `FAIL`\n- The feedback string begins with `'SYSTEM ERROR:'` and contains the phrase `'returned a plan instead of a review verdict'`\n- This ensures `_is_system_error_in_latest_review()` will detect it as a system error\n\n#### 1.3 `run_plan_review()` catches `RateLimitError` and stores a SYSTEM ERROR record\n\n**Behavior:** When `_run_phase()` raises a `RateLimitError`, the function does not propagate the exception; instead it stores a FAIL review with a SYSTEM ERROR feedback string and returns `(\"FAIL\", system_feedback)`.\n\n**Success criteria:**\n- No exception is raised to the caller\n- A plan review record is added to the feature with verdict `FAIL`\n- The summary is `'System error during review'`\n- The feedback starts with `'SYSTEM ERROR: Rate limit exceeded'`\n- A history entry `PLAN_REVIEW_FAILED` is added with the error message\n- The feature is saved\n- Return value is `(\"FAIL\", <feedback_starting_with_SYSTEM_ERROR>)`\n\n#### 1.4 `run_plan_review()` catches `RuntimeError` with auth keywords and stores a SYSTEM ERROR record\n\n**Behavior:** When `_run_phase()` raises a `RuntimeError` whose message contains `'authentication error'` or `'api key'`, the feedback stored specifically mentions authentication failure.\n\n**Success criteria:**\n- No exception propagated\n- Feedback starts with `'SYSTEM ERROR: Authentication failure'`\n- History entry `PLAN_REVIEW_FAILED` recorded\n- Feature saved\n- Returns `(\"FAIL\", <feedback>)`\n\n#### 1.5 `run_plan_review()` catches generic `RuntimeError` and stores a SYSTEM ERROR record\n\n**Behavior:** When `_run_phase()` raises a `RuntimeError` unrelated to auth/rate-limit, a generic system error message is stored.\n\n**Success criteria:**\n- No exception propagated\n- Feedback starts with `'SYSTEM ERROR: Agent execution failed'`\n- History entry `PLAN_REVIEW_FAILED` recorded\n- Feature saved\n- Returns `(\"FAIL\", <feedback>)`\n\n#### 1.6 Review loop retries on system errors without re-planning\n\n**Behavior:** When a plan review returns FAIL due to a system error on attempt 1 or 2 (not the last attempt), the pipeline retries the review directly, without calling `run_planning()` again.\n\n**Success criteria:**\n- `run_planning()` is NOT called\n- The feature stage does NOT change to `plan-inbox` between attempts\n- A yellow console warning is printed mentioning the attempt number and that it is a system error\n- The review is attempted again (up to `max_plan_review_attempts` times)\n\n#### 1.7 System errors that exhaust all retries move to final-human-approval\n\n**Behavior:** If every attempt in the review loop fails due to system errors (all `max_plan_review_attempts` attempts), the feature is escalated to `final-human-approval` and the pipeline returns without re-planning.\n\n**Success criteria:**\n- Feature stage is `final-human-approval` after exhaustion\n- History entry `FINAL_HUMAN_APPROVAL` is recorded with a message that includes the `system_error_count` and total attempt count\n- `run_planning()` is NOT called at any point\n- A red console message is printed explaining the exhaustion\n- The pipeline function returns (does not continue to implementation)\n\n#### 1.8 Real plan failures still trigger re-planning\n\n**Behavior:** When a review fails for genuine plan-quality reasons (non-system-error feedback), the existing re-planning flow is triggered: the feature moves to `plan-inbox` and `run_planning()` is called.\n\n**Success criteria:**\n- `_is_system_error_in_latest_review()` returns `False`\n- Feature stage is set to `plan-inbox`\n- History entry `PLAN_REVIEW` is recorded noting re-planning\n- `run_planning()` is called with the feature\n- If `run_planning()` returns `False` (questions raised), the pipeline returns immediately\n- A yellow console warning is printed\n\n#### 1.9 A PASS verdict still advances the feature to approved\n\n**Behavior:** An unmodified happy-path: if the plan review passes, the feature moves to `approved` as before, regardless of the new system-error logic.\n\n**Success criteria:**\n- Feature stage is `approved`\n- History entry `PROMOTED` recorded\n- Feature is saved and git-committed\n- The loop exits immediately without further retries\n\n#### 1.10 `max_total_plan_reviews` guard still works\n\n**Behavior:** If the feature already has 6 or more total plan reviews (accumulated across all pipeline runs), it escalates to `final-human-approval` before attempting any new review.\n\n**Success criteria:**\n- No new review attempt is made\n- Feature moves to `final-human-approval`\n- History entry `FINAL_HUMAN_APPROVAL` recorded with total review count\n- Red console message printed\n- Pipeline returns immediately\n\n#### 1.11 Mixed errors (some system, some plan) exhaust via for-else block\n\n**Behavior:** If some attempts fail with system errors and some with plan errors, and all `max_plan_review_attempts` are exhausted without a PASS, the `for...else` block fires and moves the feature to `final-human-approval`.\n\n**Success criteria:**\n- Feature stage is `final-human-approval`\n- History message includes `system_error_count` (which is > 0 but < total attempts)\n- Red console message printed\n- Pipeline returns\n\n---\n\n### 2. Edge Cases\n\n#### 2.1 Empty feedback string on latest review\n- `_is_system_error_in_latest_review()` must return `False` when feedback is an empty string\n- The loop must treat this as a plan failure, not a system error\n\n#### 2.2 `get_latest_plan_review()` returns None (no reviews yet)\n- `_is_system_error_in_latest_review()` must return `False`\n- The loop must not crash\n\n#### 2.3 Feedback contains system error keyword as part of a longer word\n- e.g., feedback = \"the plan has no systemic error\" \u2014 `'system error'` is NOT a substring of `'systemic error'`; confirm no false positive\n- e.g., feedback = \"there was a timeout in the approach\" \u2014 `'timeout'` IS a substring; confirm true positive\n\n#### 2.4 `_run_phase()` raises an exception other than `RateLimitError` or `RuntimeError`\n- e.g., `ValueError` or `OSError` \u2014 these are NOT caught; they propagate normally\n- The test should confirm such errors are not silently swallowed\n\n#### 2.5 `run_planning()` raises an exception during re-planning\n- The existing behavior (exception propagates up) should be unchanged\n- The new code must not suppress exceptions from `run_planning()`\n\n#### 2.6 `max_plan_review_attempts` is exactly 1\n- On a single-attempt configuration, both system errors and plan failures should immediately escalate without looping\n- System error on attempt 1 (the only attempt) should go to `final-human-approval`\n- Plan failure on attempt 1 should go to `final-human-approval` via `for...else`\n\n#### 2.7 Second attempt passes after first attempt was a system error\n- System error on attempt 1, then PASS on attempt 2\n- Feature should reach `approved` stage, NOT `final-human-approval`\n- `run_planning()` should NOT have been called\n\n#### 2.8 Second attempt passes after first attempt was a real plan failure\n- Plan failure on attempt 1 triggers re-planning; then review passes on attempt 2\n- Feature should reach `approved` stage\n- `run_planning()` called exactly once\n\n#### 2.9 `feature.save()` failure inside exception handler\n- If saving fails after catching a `RateLimitError`, the function should still return `(\"FAIL\", system_feedback)` without masking the save error (or handle it gracefully \u2014 the test should confirm the error is not silently swallowed)\n\n---\n\n### 3. What Constitutes Failure\n\n#### 3.1 System error triggers re-planning\n- If `run_planning()` is called after a system error (i.e. `_is_system_error_in_latest_review()` returns `True`), the test FAILS\n- The plan must not be discarded or overwritten due to system failures\n\n#### 3.2 System error feedback missing SYSTEM ERROR prefix\n- If feedback stored in the plan review record does not start with `'SYSTEM ERROR:'`, `_is_system_error_in_latest_review()` may not detect it correctly \u2014 the test FAILS\n\n#### 3.3 Exception propagated from `run_plan_review()` for `RateLimitError` or `RuntimeError`\n- If a `RateLimitError` or `RuntimeError` escapes `run_plan_review()`, the test FAILS\n- The function must absorb these and return `(\"FAIL\", feedback)` instead\n\n#### 3.4 Exhausted system errors do not move to final-human-approval\n- If the feature remains in `reviewing-plan` or moves to any stage other than `final-human-approval` after exhausting retries due to system errors, the test FAILS\n\n#### 3.5 Real plan failure doesn't trigger re-planning\n- If a non-system-error FAIL verdict does NOT result in `run_planning()` being called (on non-last attempt), the test FAILS\n\n#### 3.6 History records missing or wrong\n- Missing `PLAN_REVIEW_FAILED` entry after a system error exception\n- Missing `FINAL_HUMAN_APPROVAL` entry when escalating\n- Missing `system_error_count` information in escalation history messages\n- Any of these constitute test failure\n\n#### 3.7 `system_error_count` not tracked correctly\n- If the count in the history message does not match the actual number of system-error failures observed in the loop, the test FAILS\n\n---\n\n### 4. Out of Scope\n\n- **UI/visual timing**: Do not assert on exact timing of console print output or rendering order\n- **Visual assertion on console colors**: The color codes (yellow/red) in console output are not a correctness requirement; only the presence of a message matters\n- **Performance benchmarks**: No assertions on how fast the loop runs or how quickly `_run_phase()` is called\n- **Git commit behavior**: Whether `_git_commit()` is called after a system error is out of scope (it is explicitly skipped in the exception path)\n- **`run_plan_review()` internals for the happy path**: The normal success path (no exception, parse succeeds) is covered by existing tests and need not be re-tested here\n- **Implementation details of `_run_phase()`**: How the phase runner works internally is not under test here; mock it\n- **Concurrent/parallel pipeline runs**: Race conditions between multiple pipelines operating on the same feature simultaneously are out of scope\n- **Database or file-system-level failures** (e.g., disk full during `feature.save()`): These are environmental failures and not the responsibility of this feature\n- **Changes to `tui.py` callers**: The TUI code path that calls `run_plan_review()` directly is not covered by this spec; it is covered by existing TUI tests",
+  "impl_notes": "Added integration tests for the review loop in _run_pipeline_impl that verify: (1) system errors trigger retry without re-planning, (2) system errors that exhaust all retries move to final-human-approval, (3) real plan failures still trigger re-planning, (4) PASS verdict advances feature to approved, (5) max_total_plan_reviews guard works, (6) mixed errors exhaust via for-else block, and (7) edge cases for second attempt scenarios. All 39 tests pass. Edge case 2.6 (max_plan_review_attempts=1) cannot be tested because it's a local variable.",
+  "history": [
+    {
+      "ts": "2026-03-09T09:00Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-09T15:39Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-09T16:37Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T16:39Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T16:39Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T16:42Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - The plan has a breaking API change that updates run_plan_review() to return a 3-t..."
+    },
+    {
+      "ts": "2026-03-09T16:42Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Specific issues to fix: 1) Update all callers of run_plan_review() to handle the new 3-..."
+    },
+    {
+      "ts": "2026-03-09T16:42Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T17:08Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T17:08Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T17:08Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T17:10Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-09T17:10Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-09T19:39Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-09T19:39Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-09T19:41Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-09T19:43Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-09T19:43Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T19:50Z",
+      "stage": "IMPLEMENTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: ystem errors, u..."
+    },
+    {
+      "ts": "2026-03-09T19:50Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T19:52Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T19:52Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T19:52Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T19:58Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-09T19:58Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T20:00Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - The implementation in phases.py is complete and correct (all 5 components: _is_sy..."
+    },
+    {
+      "ts": "2026-03-09T20:00Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T20:06Z",
+      "stage": "IMPLEMENTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: untimeError), V..."
+    },
+    {
+      "ts": "2026-03-09T20:06Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T20:07Z",
+      "stage": "IMPLEMENTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: untimeError), V..."
+    },
+    {
+      "ts": "2026-03-09T20:07Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T20:08Z",
+      "stage": "IMPLEMENTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: untimeError), V..."
+    },
+    {
+      "ts": "2026-03-09T20:08Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T20:09Z",
+      "stage": "IMPLEMENTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: untimeError), V..."
+    },
+    {
+      "ts": "2026-03-09T20:10Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T20:10Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T20:10Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T20:10Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T20:11Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T20:12Z",
+      "stage": "TESTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput:  exception hand..."
+    },
+    {
+      "ts": "2026-03-09T21:03Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T21:05Z",
+      "stage": "TESTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput:  exception hand..."
+    },
+    {
+      "ts": "2026-03-09T21:41Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T21:42Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-09T21:42Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T21:44Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation code is correct and complete, but tests have major coverage gaps: ..."
+    },
+    {
+      "ts": "2026-03-09T21:44Z",
+      "stage": "FIX_FEEDBACK",
+      "note": "Starting fix feedback"
+    },
+    {
+      "ts": "2026-03-09T21:45Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T21:57Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T21:57Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T21:57Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T21:58Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-09T21:58Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T21:58Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T21:58Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T21:59Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:00Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:00Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:01Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:01Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:02Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:02Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:03Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:03Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:04Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:04Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:05Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:06Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:06Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:07Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:08Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:08Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:09Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:09Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:10Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:10Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:11Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:11Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:12Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:12Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:13Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:13Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:14Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:14Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:15Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:15Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:17Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:17Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:18Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:18Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:19Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:19Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:20Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:20Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:21Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:21Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:22Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:22Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:23Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:23Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:25Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:25Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:26Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:26Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:27Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:27Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:28Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:28Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:29Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:29Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:30Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:30Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:32Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:32Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:33Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:33Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): atest_review() co..."
+    },
+    {
+      "ts": "2026-03-09T22:34Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:34Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T22:34Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:34Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T22:39Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:39Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T22:44Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:44Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T22:50Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:50Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T22:55Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T22:55Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T23:00Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T23:00Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T23:05Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T23:05Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T23:10Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T23:10Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T23:15Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T23:15Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T23:26Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T23:26Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T23:31Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T23:31Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T23:36Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T23:36Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T23:42Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T23:42Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T23:47Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T23:47Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T23:52Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T23:52Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-09T23:57Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T23:57Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 5pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-10T00:02Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-10T00:03Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation fully matches the plan. All 5 planned changes are correctly implem..."
+    },
+    {
+      "ts": "2026-03-10T00:03Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-09T16:42Z",
+      "verdict": "FAIL",
+      "summary": "The plan has a breaking API change that updates run_plan_review() to return a 3-tuple but fails to update callers in phases.py:1077 and tui.py:3582 which expect a 2-tuple.",
+      "feedback": "Specific issues to fix: 1) Update all callers of run_plan_review() to handle the new 3-tuple signature (phases.py:1077 and tui.py:3582) 2) Add explicit handling for what happens when system errors exhaust max_plan_review_attempts - currently undefined 3) Add explicit import statement for RateLimitError in phases.py if not already present"
+    },
+    {
+      "ts": "2026-03-09T17:10Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-09T20:00Z",
+      "verdict": "FAIL",
+      "summary": "The implementation in phases.py is complete and correct (all 5 components: _is_system_error_in_latest_review, _parse_verdict enhancement, run_plan_review exception handling, review loop logic, and RateLimitError import). However, no pytest tests exist for this feature \u2014 the test spec's 11 behaviors and edge cases are entirely untested.",
+      "feedback": "The implementation itself is solid and matches the plan precisely:\n_is_system_error_in_latest_review() at lines 855-878 checks all 12 required patterns with case-insensitive matching\n_parse_verdict() at lines 455-459 correctly sets 'SYSTEM ERROR:' prefix for plan-shaped output\nrun_plan_review() at lines 902-917 catches both RateLimitError and RuntimeError, classifies them, stores SYSTEM ERROR records, and returns ('FAIL', feedback) without propagating\nThe review loop at lines 1244-1306 correctly distinguishes system errors (retries without re-planning) from plan failures (triggers re-planning), and escalates to final-human-approval with system_error_count in history\nRateLimitError is imported at line 22\n\nHowever, the test spec (sections 1.1-1.11 plus 9 edge cases) is completely untested. The test_planning_questions.py file tests _validate_exploration_artifacts() and _check_question_antipatterns() \u2014 an entirely different feature \u2014 not the skip-replan feature. There is no test file for this feature at all.\n\nRequired: Create a test file (e.g., pipeline/test_skip_replan_on_system_errors.py) covering:\nAll patterns in _is_system_error_in_latest_review() (True/False cases, case-insensitivity, only latest review examined)\n_parse_verdict() setting SYSTEM ERROR prefix for plan-shaped JSON\nrun_plan_review() catching RateLimitError, auth RuntimeError, generic RuntimeError\nReview loop: system error retries without calling run_planning()\nSystem errors exhausting retries -> final-human-approval with system_error_count in history\nReal plan failures still trigger run_planning()\nPASS verdict advances to approved\nmax_total_plan_reviews guard (6 reviews -> final-human-approval)\nMixed errors exhausted via for-else\nEdge cases: empty feedback, None review, substring matching, non-caught exceptions (ValueError/OSError propagate), second attempt passes after system error"
+    },
+    {
+      "ts": "2026-03-09T21:44Z",
+      "verdict": "FAIL",
+      "summary": "Implementation code is correct and complete, but tests have major coverage gaps: the review loop logic (spec items 1.6-1.11) is not actually tested - only helper functions are verified in isolation, not the loop flow in _run_pipeline_impl.",
+      "feedback": "Implementation Code: CORRECT\n\nAll 5 plan items are properly implemented in phases.py:\n_is_system_error_in_latest_review() - correct, matches plan exactly\n_parse_verdict() SYSTEM ERROR prefix - correct\nrun_plan_review() exception handling - correct, catches RateLimitError and RuntimeError\nReview loop in _run_pipeline_impl() - correct, distinguishes system errors from plan failures\nRateLimitError import - present\n\nTest Coverage: INSUFFICIENT\n\nAll 31 tests pass, but the following test spec requirements are NOT covered:\n\nMissing: Spec 1.6 - Review loop retries on system errors without re-planning\nTestReviewLoopLogic::test_system_error_triggers_retry_without_replanning only verifies that _is_system_error_in_latest_review() returns True for a system error review. It does NOT test the actual loop behavior: it doesn't mock run_plan_review() and run_planning(), doesn't run _run_pipeline_impl(), and doesn't verify that run_planning() is NOT called.\n\nMissing: Spec 1.7 - System errors that exhaust all retries move to final-human-approval\nNo test runs the loop with all 3 attempts failing due to system errors and verifies the feature ends up in final-human-approval.\n\nMissing: Spec 1.8 - Real plan failures still trigger re-planning\nTestReviewLoopLogic::test_plan_failure_triggers_replanning only verifies _is_system_error_in_latest_review() returns False. It does NOT verify that run_planning() is actually called in the loop.\n\nMissing: Spec 1.9 - PASS verdict advances feature to approved\nNo test runs the loop with a PASS verdict and verifies feature.current_stage == 'approved'.\n\nMissing: Spec 1.10 - max_total_plan_reviews guard\nTestMaxTotalPlanReviewsGuard::test_6_reviews_moves_to_final_human_approval only checks len(feature.plan_reviews) == 6. It doesn't run the loop or verify the feature moves to final-human-approval.\n\nMissing: Spec 1.11 - Mixed errors exhaust via for-else block\nNo test covers the scenario where some attempts are system errors and some are plan failures.\n\nMissing: Edge cases 2.6, 2.7, 2.8\n2.6: max_plan_review_attempts is exactly 1 - not tested\n2.7: System error then PASS - test_pass_after_system_error_reaches_approved only tests data structures, not the loop\n2.8: Plan failure then PASS - test_pass_after_plan_failure_reaches_approved only tests data structures, not the loop\n\nRequired Fix\n\nAdd integration tests for the review loop that:\nMock run_plan_review() to return different verdicts on successive calls\nMock run_planning() to verify it is/isn't called\nCall _run_pipeline_impl() (or extract the loop section and test it directly)\nAssert on feature.current_stage after the loop completes\nAssert on run_planning.call_count to verify re-planning behavior\nAssert on history entries for proper tracking\n\nThe existing tests for _is_system_error_in_latest_review(), _parse_verdict(), and run_plan_review() exception handling are good and thorough. Only the loop integration tests are missing."
+    },
+    {
+      "ts": "2026-03-10T00:03Z",
+      "verdict": "PASS",
+      "summary": "Implementation fully matches the plan. All 5 planned changes are correctly implemented in phases.py: RateLimitError import, _is_system_error_in_latest_review(), _parse_verdict() SYSTEM ERROR prefix, run_plan_review() exception handling, and review loop logic. All 39 tests pass covering all 11 spec behaviors and key edge cases.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-09T14:58:56.914521",
+    "verdict": "PASS",
+    "results": {
+      "passed": 39,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 39 tests pass. Coverage is comprehensive: all 11 required behaviors (1.1-1.11) plus edge cases (2.1-2.5, 2.7-2.9) are tested. Only edge case 2.6 (max_plan_review_attempts=1) cannot be tested because max_plan_review_attempts is a local variable in _run_pipeline_impl. The tests verify: _is_system_error_in_latest_review() correctly classifies all 12 error patterns; _parse_verdict() sets SYSTEM ERROR prefix; run_plan_review() catches RateLimitError, auth errors, and generic RuntimeError; ValueError/OSError propagate correctly; review loop retries on system errors without re-planning; system errors exhausting retries moves to final-human-approval; real plan failures trigger re-planning; PASS verdict advances to approved; max_total_plan_reviews guard works; mixed errors exhaust via for-else block."
+  }
+}

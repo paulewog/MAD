@@ -1,0 +1,172 @@
+{
+  "id": "f0538977",
+  "board": "mad",
+  "title": "Make item types visible in the webui",
+  "type": "feature",
+  "created": "2026-03-08T13:56Z",
+  "description": "I can specify an item as a bug in the webui but cannot visiually distinguish it",
+  "plan": "## Plan: Make Item Types Visible in the WebUI\n\n### Overview\nCurrently, items can be specified as 'bug' or 'feature' in the webui but there are no visual indicators to distinguish between different item types. This plan implements accessible badges to show item types in all webui templates.\n\n### Implementation Steps\n\n#### 1. Backend Data Flow\n\n**Python Client (server_client.py)**\n- Modify `push_state()` method around line 168 in the feature_summaries dict\n- Add: `\"item_type\": f.item_type` to include the item type field\n- This ensures the Python client sends item type data to the Go server\n\n**Go Server (hub.go)**\n- Add `ItemType string \\`json:\"item_type\"\\`` field to the FeatureSummary struct around line 32\n- This receives and stores the item type from the Python client\n\n#### 2. Frontend Display\n\n**Template Updates (3 files need changes)**\n\nAll templates will use accessible badges with both color and text to support screen readers and colorblind users:\n\n**client.html**: \n- Locate feature card title rendering (line ~1125)\n- Add item type badge after title: `{{if .ItemType}}<span class=\"item-type-badge item-type-{{.ItemType}}\" aria-label=\"{{.ItemType}} item type\">[{{.ItemType | upper}}]</span>{{end}}`\n- Add CSS for badge styles with distinct colors and text\n\n**client_full2.html**:\n- Locate feature card title rendering (line ~638) \n- Add same item type badge logic as client.html\n- Add corresponding CSS for badge styles\n\n**index.html**:\n- Locate feature card title rendering (line ~791)\n- Add same item type badge logic as client.html  \n- Add corresponding CSS for badge styles\n\n**Note**: client_full.html appears incomplete/corrupted with no feature rendering, so no changes needed.\n\n#### 3. Styling and Accessibility\n\n**Badge Design**:\n- Use text labels: '[FEATURE]', '[BUG]', '[ENHANCEMENT]', '[TASK]'\n- Colors as secondary indicator: \n  - feature: #238636 (green)\n  - bug: #f85149 (red)\n  - enhancement: #1f6feb (blue)\n  - task: #8957e5 (purple)\n- Include aria-label for screen reader support\n- Small font size (0.7rem) to match existing badges\n\n**CSS Classes**:\n```css\n.item-type-badge {\n  padding: 0 4px;\n  border-radius: 3px;\n  font-size: 0.7rem;\n  font-weight: 600;\n  margin-left: 0.25rem;\n  color: white;\n}\n.item-type-feature { background: #238636; }\n.item-type-bug { background: #f85149; }\n.item-type-enhancement { background: #1f6feb; }\n.item-type-task { background: #8957e5; }\n```\n\n#### 4. Data Consistency\n\n**Lowercase Values**: Use lowercase item types ('feature', 'bug', 'enhancement', 'task') for consistency with existing Python codebase. The templates will uppercase them for display.\n\n**Default Handling**: Items without explicit type will default to 'feature' (handled by FeatureFile.item_type property).\n\n### Template Scope Clarification\n\nBased on analysis:\n- **client.html**: Full-featured template with complete badge system - NEEDS CHANGES\n- **client_full2.html**: Simpler template version - NEEDS CHANGES  \n- **index.html**: Multi-client overview template - NEEDS CHANGES\n- **client_full.html**: Incomplete/corrupted file with no feature rendering - NO CHANGES NEEDED\n\n### Testing Considerations\n\n- Verify badges appear for different item types\n- Test accessibility with screen readers\n- Confirm color contrast meets accessibility standards\n- Ensure layout doesn't break on mobile devices\n- Validate that new Go struct field doesn't break existing API consumers\n\nThis implementation provides clear visual distinction between item types while maintaining accessibility and consistency with the existing codebase design patterns.",
+  "impl_spec": "## Implementation Spec: Make Item Types Visible in the WebUI\n\n### Task 1: Add item_type to Python client state push\n**File**: `pipeline/server_client.py` line ~167\n**Approach**: Add `\"item_type\": f.item_type` to the feature_summaries dict, after the `\"done_script\"` entry at line 167.\n**Dependencies**: None\n**Details**: The `FeatureFile.item_type` property already exists in `state.py:80` and returns `\"feature\"` or `\"bug\"` (defaults to `\"feature\"`). Just include it in the dict sent to the server.\n\n### Task 2: Add ItemType field to Go FeatureSummary struct\n**File**: `server/hub.go` line ~51 (before closing brace of FeatureSummary)\n**Approach**: Add `ItemType string \\`json:\"item_type\"\\`` field to the FeatureSummary struct, after the `DoneScript` field at line 51.\n**Dependencies**: None\n**Details**: The field is a simple string populated from the JSON sent by the Python client. No additional Go logic needed.\n\n### Task 3: Add item type badge CSS and markup to client.html\n**File**: `server/templates/client.html`\n**Approach**: Two changes:\n1. **CSS** (after `.feature-card .title` styles around line 104): Add badge CSS classes.\n2. **Markup** (line 1125): Insert badge span after `{{.Title}}` and before the checkpoint span.\n**Dependencies**: Task 2\n**Details**:\n- Current line 1125: `<div class=\"title\">{{.Title}}{{if .Checkpoint}}...`\n- Change to: `<div class=\"title\">{{.Title}}{{if and .ItemType (ne .ItemType \"feature\")}} <span class=\"item-type-badge item-type-{{.ItemType}}\" aria-label=\"Item type: {{.ItemType}}\">{{.ItemType}}</span>{{end}}{{if .Checkpoint}}...`\n- CSS to add in `<style>` section:\n```css\n.item-type-badge {\n  padding: 0 4px;\n  border-radius: 3px;\n  font-size: 0.7rem;\n  font-weight: 600;\n  margin-left: 0.25rem;\n  color: white;\n  text-transform: uppercase;\n}\n.item-type-feature { background: #238636; }\n.item-type-bug { background: #f85149; }\n.item-type-enhancement { background: #1f6feb; }\n.item-type-task { background: #8957e5; }\n```\n- Note: Use CSS `text-transform: uppercase` instead of Go template `upper` filter (which doesn't exist in Go's html/template).\n- Only show badge for non-feature types (bug, enhancement, task) to reduce visual noise since feature is the default.\n\n### Task 4: Add item type badge CSS and markup to client_full2.html\n**File**: `server/templates/client_full2.html`\n**Approach**: Same pattern as Task 3.\n**Dependencies**: Task 2\n**Details**:\n- Current line 638: `<div class=\"title\">{{.Title}}{{if .DoneScript}} <span class=\"done-script-badge\"...`\n- Change to: `<div class=\"title\">{{.Title}}{{if and .ItemType (ne .ItemType \"feature\")}} <span class=\"item-type-badge item-type-{{.ItemType}}\" aria-label=\"Item type: {{.ItemType}}\">{{.ItemType}}</span>{{end}}{{if .DoneScript}}...`\n- Add same CSS block in `<style>` section after `.feature-card .title` styles around line 99.\n\n### Task 5: Add item type badge CSS and markup to index.html\n**File**: `server/templates/index.html`\n**Approach**: Same pattern as Task 3.\n**Dependencies**: Task 2\n**Details**:\n- Current line 791: `<div class=\"title\">{{.Title}}{{if .Checkpoint}}...`\n- Change to: `<div class=\"title\">{{.Title}}{{if and .ItemType (ne .ItemType \"feature\")}} <span class=\"item-type-badge item-type-{{.ItemType}}\" aria-label=\"Item type: {{.ItemType}}\">{{.ItemType}}</span>{{end}}{{if .Checkpoint}}...`\n- Add same CSS block in `<style>` section after `.feature-card .title` styles around line 185.\n\n### Implementation Order\n1. Tasks 1 and 2 (parallel \u2014 backend data flow, no dependencies between them)\n2. Tasks 3, 4, 5 (parallel \u2014 frontend templates, all depend on Task 2 for the Go struct field)\n\n### Key Technical Notes\n- Go's `html/template` does NOT support `| upper`. Use CSS `text-transform: uppercase` for display.\n- The `ItemType` field in Go is auto-populated from JSON `item_type` via struct tags.\n- Default is `\"feature\"` from Python side (`state.py:82`), so badge is hidden for default items using `ne .ItemType \"feature\"` condition.\n- Include `aria-label` attribute on badge spans for screen reader accessibility.\n- Existing badge patterns (checkpoint badge in client.html line 1125, done-script badge in client_full2.html line 638) provide implementation precedent for styling and placement.",
+  "test_spec": "## Test Specification: Make Item Types Visible in the WebUI\n\n### 1. Behaviors That MUST Be Verified\n\n#### 1.1 Backend Data Flow - Python Client\n- **Behavior**: When `push_state()` is called, the feature_summaries dict includes the `item_type` field for each feature.\n- **Success Criteria**: The JSON payload sent to the Go server contains `\"item_type\"` for every feature summary entry.\n- **Expected Output**: Features with type \"bug\" send `\"item_type\": \"bug\"`. Features with no explicit type send `\"item_type\": \"feature\"` (the default).\n\n#### 1.2 Backend Data Flow - Go Server Struct\n- **Behavior**: The `FeatureSummary` struct in hub.go has an `ItemType` field tagged with `json:\"item_type\"`.\n- **Success Criteria**: JSON unmarshaling of a payload containing `\"item_type\": \"bug\"` correctly populates the `ItemType` field on the Go struct.\n- **Expected Output**: `summary.ItemType == \"bug\"` after unmarshaling.\n\n#### 1.3 Go Struct Backward Compatibility\n- **Behavior**: Existing JSON payloads that do NOT contain `item_type` still unmarshal correctly.\n- **Success Criteria**: The `ItemType` field defaults to an empty string (Go zero value) when not present in JSON.\n- **Expected Output**: No error during unmarshaling; other fields unaffected.\n\n#### 1.4 Badge Rendering - Bug Items\n- **Behavior**: Items with `item_type` set to \"bug\" display a red [BUG] badge next to the title in all three templates (client.html, client_full2.html, index.html).\n- **Success Criteria**: The rendered HTML contains a `<span>` element with class `item-type-badge item-type-bug`, text content \"bug\" (uppercased via CSS), and an `aria-label` attribute.\n- **Expected Output**: Badge is visible with red (#f85149) background and white text.\n\n#### 1.5 Badge Rendering - Feature Items (Default)\n- **Behavior**: Items with `item_type` set to \"feature\" (the default) do NOT display a badge.\n- **Success Criteria**: No `item-type-badge` span is rendered when ItemType is \"feature\".\n- **Expected Output**: Title renders without any type badge, reducing visual noise for the common case.\n\n#### 1.6 Badge Rendering - Enhancement Items\n- **Behavior**: Items with `item_type` set to \"enhancement\" display a blue [ENHANCEMENT] badge.\n- **Success Criteria**: Badge span has class `item-type-enhancement` and aria-label includes \"enhancement\".\n- **Expected Output**: Blue (#1f6feb) badge with white uppercase text.\n\n#### 1.7 Badge Rendering - Task Items\n- **Behavior**: Items with `item_type` set to \"task\" display a purple [TASK] badge.\n- **Success Criteria**: Badge span has class `item-type-task` and aria-label includes \"task\".\n- **Expected Output**: Purple (#8957e5) badge with white uppercase text.\n\n#### 1.8 CSS text-transform\n- **Behavior**: Badge text is displayed in uppercase using CSS `text-transform: uppercase` rather than a Go template filter.\n- **Success Criteria**: The CSS rule `.item-type-badge` includes `text-transform: uppercase`. The template outputs the raw lowercase item type value.\n- **Expected Output**: Lowercase value in HTML source, uppercase rendering in browser.\n\n#### 1.9 Accessibility - aria-label\n- **Behavior**: Each badge span includes an `aria-label` attribute describing the item type.\n- **Success Criteria**: The `aria-label` attribute is present and contains the item type string (e.g., \"Item type: bug\").\n- **Expected Output**: Screen readers can announce the item type.\n\n#### 1.10 Template Consistency\n- **Behavior**: All three templates (client.html, client_full2.html, index.html) use the same badge markup pattern and CSS classes.\n- **Success Criteria**: The badge template logic, CSS class names, and CSS style definitions are identical across all three files.\n- **Expected Output**: Consistent appearance regardless of which template renders the page.\n\n### 2. Edge Cases\n\n#### 2.1 Empty ItemType Field\n- **Scenario**: A feature summary arrives with `item_type` set to an empty string.\n- **Expected Behavior**: No badge is rendered (the `{{if and .ItemType ...}}` condition evaluates to false for empty string in Go templates).\n\n#### 2.2 Missing ItemType in JSON\n- **Scenario**: An older Python client sends feature summaries without the `item_type` field.\n- **Expected Behavior**: Go struct `ItemType` defaults to empty string. No badge rendered. No errors.\n\n#### 2.3 Unknown ItemType Value\n- **Scenario**: An item has an unrecognized item_type like \"research\" or \"spike\".\n- **Expected Behavior**: A badge is still rendered (since it's not \"feature\" and not empty), but it will use the generic `.item-type-badge` styling without a specific color class. The badge text will show the unknown type uppercased.\n\n#### 2.4 Very Long ItemType String\n- **Scenario**: An item_type value is unusually long (e.g., 100+ characters).\n- **Expected Behavior**: The badge renders with the full text. Layout may wrap but should not break the card structure. This is an unlikely scenario since item types are controlled values.\n\n#### 2.5 Special Characters in ItemType\n- **Scenario**: An item_type contains HTML-special characters (e.g., `<script>`).\n- **Expected Behavior**: Go's html/template auto-escapes the value, preventing XSS. The badge displays the escaped text harmlessly.\n\n#### 2.6 Multiple Features with Different Types\n- **Scenario**: The board has a mix of bugs, features, enhancements, and tasks displayed simultaneously.\n- **Expected Behavior**: Each feature card shows the correct badge (or no badge for features). Different colored badges appear on different cards.\n\n### 3. What Constitutes Failure\n\n#### 3.1 Data Flow Failures\n- The Python client does NOT include `item_type` in the feature summary dict sent to the server.\n- The Go server fails to unmarshal JSON containing `item_type` (struct tag missing or mismatched).\n- Adding the new Go struct field causes existing tests to fail or breaks backward compatibility with payloads missing the field.\n\n#### 3.2 Rendering Failures\n- A badge appears for items with type \"feature\" (default type should be hidden).\n- No badge appears for items with type \"bug\", \"enhancement\", or \"task\".\n- The badge markup is missing the `aria-label` attribute.\n- CSS classes are inconsistent across templates (e.g., different class names or missing styles in one template).\n- Using Go template `| upper` filter instead of CSS `text-transform` (would cause template execution error since `upper` is not a built-in Go template function).\n\n#### 3.3 Regression Failures\n- Existing feature cards no longer render correctly after the changes.\n- The Go server returns errors when receiving state updates from the Python client.\n- Existing tests in `server_test.go`, `feature_summary_test.go`, or `hub_test.go` fail.\n- Layout of feature cards breaks on any template due to badge insertion.\n\n### 4. Out of Scope\n\n- **Visual/pixel-perfect testing**: Exact badge colors, font rendering, padding measurements are not verified programmatically.\n- **Performance benchmarks**: No timing tests for rendering speed with badges.\n- **Browser compatibility testing**: Not testing across different browsers or browser versions.\n- **Mobile responsiveness testing**: Badge appearance on small screens is not tested (plan notes this as a consideration but it's a visual concern).\n- **Screen reader integration testing**: Verifying `aria-label` presence is in scope, but actual screen reader behavior testing is not.\n- **client_full.html changes**: This file is explicitly excluded from changes per the plan (incomplete/corrupted).\n- **Adding new item types**: The system supports arbitrary string types; adding new type definitions is not part of this feature.\n- **TUI changes**: Only WebUI templates are in scope; the terminal UI is not affected.\n- **Database/persistence changes**: Item types are already stored in feature JSON files; no storage changes needed.",
+  "impl_notes": "Implemented item type badges in webui. Added item_type field to Python client (server_client.py) and Go server (hub.go). Added CSS and badge markup to client.html, client_full2.html, and index.html. Badges only display for non-feature types (bug, enhancement, task) using CSS text-transform for uppercase and aria-label for accessibility. Go code compiles and FeatureSummary tests pass.",
+  "history": [
+    {
+      "ts": "2026-03-08T13:56Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-08T20:05Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-08T20:11Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T20:13Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-08T20:13Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-08T20:15Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Plan is missing explicit Python client changes. The server_client.py push_state()..."
+    },
+    {
+      "ts": "2026-03-08T20:15Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Issues to fix:\n\nMissing Python client task: Add explicit step to modify server_client.p..."
+    },
+    {
+      "ts": "2026-03-08T20:15Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T20:19Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-08T20:19Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-08T20:21Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - Plan reviewed successfully. All components (Python client, Go server, 3 templates..."
+    },
+    {
+      "ts": "2026-03-08T20:21Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-08T20:21Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-08T20:21Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-08T20:23Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T20:24Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T20:24Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T20:31Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T20:31Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T20:31Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T20:37Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-08T20:37Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T20:39Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation is complete and correct. Backend data flow (Python server_client.p..."
+    },
+    {
+      "ts": "2026-03-08T20:39Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-09T00:49Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-08T20:15Z",
+      "verdict": "FAIL",
+      "summary": "Plan is missing explicit Python client changes. The server_client.py push_state() function does NOT send the item_type field to the server, even though FeatureFile.item_type exists. Additionally, the plan lacks accessibility considerations for color-only badges - badges need text labels, not just colors, for colorblind users.",
+      "feedback": "Issues to fix:\n\nMissing Python client task: Add explicit step to modify server_client.py push_state() to include \"item_type\": f.item_type in the feature_summaries dict (around line 168). The plan says 'Ensure the field is populated' but doesn't specify WHERE this happens.\n\nAccessibility for badges: The color-only badges (#1f6feb, #f85149, #238636, #8957e5) are not accessible. Add text labels inside badges like '[FEATURE]', '[BUG]', etc. for screen readers and colorblind users. Use aria-label or visible text.\n\nClarify template scope: Verify whether client.html, client_full.html, and client_full2.html all need identical changes or if some are duplicates/alternates.\n\nConsider lowercase type values: The plan uses 'Feature', 'Bug', 'Enhancement', 'Task' but the existing Python code uses lowercase 'feature', 'bug'. Recommend using lowercase for consistency with existing codebase."
+    },
+    {
+      "ts": "2026-03-08T20:21Z",
+      "verdict": "PASS",
+      "summary": "Plan reviewed successfully. All components (Python client, Go server, 3 templates, CSS, accessibility) are covered with clear implementation steps. Verified: item_type property exists in state.py (line 80), approximate line numbers are accurate, and existing badge patterns in templates provide clear implementation precedent.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-08T20:39Z",
+      "verdict": "PASS",
+      "summary": "Implementation is complete and correct. Backend data flow (Python server_client.py sends item_type, Go hub.go FeatureSummary struct receives it), all three templates (client.html, client_full2.html, index.html) have consistent badge markup with proper conditional rendering (hidden for 'feature' type), CSS text-transform uppercase, aria-label accessibility, and correct color classes. Go feature_summary tests pass.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-08T13:37:38.489624",
+    "verdict": "PASS",
+    "results": {
+      "passed": 678,
+      "failed": 102,
+      "errors": 0
+    },
+    "feedback": "Implementation verified complete. Go tests pass (all). Python tests have 102 failures but they are unrelated to item_type feature - caused by outdated test mocks and callback signature changes (on_idea_created now takes 5 args instead of 3). No dedicated tests exist for item_type field in either Python or Go test suites. Code inspection confirms: (1) Python push_state includes item_type at server_client.py:168, (2) Go FeatureSummary has ItemType field with json tag at hub.go:52, (3) Badge templates implemented correctly in all 3 templates with CSS text-transform: uppercase and aria-label for accessibility."
+  }
+}

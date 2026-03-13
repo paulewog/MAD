@@ -24,6 +24,12 @@ func TestFeatureSummarySerialization(t *testing.T) {
 				ImplSpec:    "Implementation specification",
 				TestSpec:    "Test specification",
 				ImplNotes:   "Implementation notes",
+				PlanReviews: []interface{}{
+					map[string]interface{}{"ts": "2025-01-01T10:00:00Z", "verdict": "PASS", "feedback": "Plan looks good"},
+				},
+				ImplReviews: []interface{}{
+					map[string]interface{}{"ts": "2025-01-02T10:00:00Z", "verdict": "FAIL", "feedback": "Missing error handling"},
+				},
 			},
 			checkFn: func(t *testing.T, original FeatureSummary, data []byte) {
 				var decoded FeatureSummary
@@ -41,6 +47,12 @@ func TestFeatureSummarySerialization(t *testing.T) {
 				}
 				if decoded.ImplNotes != original.ImplNotes {
 					t.Errorf("impl_notes = %q, want %q", decoded.ImplNotes, original.ImplNotes)
+				}
+				if len(decoded.PlanReviews) != len(original.PlanReviews) {
+					t.Errorf("plan_reviews length = %d, want %d", len(decoded.PlanReviews), len(original.PlanReviews))
+				}
+				if len(decoded.ImplReviews) != len(original.ImplReviews) {
+					t.Errorf("impl_reviews length = %d, want %d", len(decoded.ImplReviews), len(original.ImplReviews))
 				}
 			},
 		},
@@ -68,6 +80,40 @@ func TestFeatureSummarySerialization(t *testing.T) {
 				}
 				if _, has := decoded["impl_notes"]; has {
 					t.Error("impl_notes should be omitted for empty string")
+				}
+				if _, has := decoded["plan_reviews"]; has {
+					t.Error("plan_reviews should be omitted when nil")
+				}
+				if _, has := decoded["impl_reviews"]; has {
+					t.Error("impl_reviews should be omitted when nil")
+				}
+			},
+		},
+		{
+			name: "plan_reviews and impl_reviews serialize correctly",
+			feature: FeatureSummary{
+				Title: "Test Feature",
+				Stage: "plan-inbox",
+				Board: "default",
+				ID:    "f1",
+				PlanReviews: []interface{}{
+					map[string]interface{}{"ts": "2025-01-01T10:00:00Z", "verdict": "PASS", "feedback": "Plan looks good"},
+					map[string]interface{}{"ts": "2025-01-01T11:00:00Z", "verdict": "FAIL", "feedback": "Missing edge cases"},
+				},
+				ImplReviews: []interface{}{
+					map[string]interface{}{"ts": "2025-01-02T10:00:00Z", "verdict": "PASS", "feedback": "Implementation complete"},
+				},
+			},
+			checkFn: func(t *testing.T, original FeatureSummary, data []byte) {
+				var decoded FeatureSummary
+				if err := json.Unmarshal(data, &decoded); err != nil {
+					t.Fatalf("unmarshal failed: %v", err)
+				}
+				if len(decoded.PlanReviews) != 2 {
+					t.Errorf("plan_reviews length = %d, want 2", len(decoded.PlanReviews))
+				}
+				if len(decoded.ImplReviews) != 1 {
+					t.Errorf("impl_reviews length = %d, want 1", len(decoded.ImplReviews))
 				}
 			},
 		},
@@ -167,6 +213,12 @@ func TestFeatureSummaryFieldPreservation(t *testing.T) {
 		ImplSpec:    "Impl spec content",
 		TestSpec:    "Test spec content",
 		ImplNotes:   "Impl notes content",
+		PlanReviews: []interface{}{
+			map[string]interface{}{"ts": "2025-01-01T10:00:00Z", "verdict": "PASS", "feedback": "Plan looks good"},
+		},
+		ImplReviews: []interface{}{
+			map[string]interface{}{"ts": "2025-01-02T10:00:00Z", "verdict": "FAIL", "feedback": "Missing error handling"},
+		},
 	}
 
 	data, err := json.Marshal(original)
@@ -202,5 +254,11 @@ func TestFeatureSummaryFieldPreservation(t *testing.T) {
 	}
 	if decoded.ImplNotes != original.ImplNotes {
 		t.Errorf("impl_notes lost: got %q, want %q", decoded.ImplNotes, original.ImplNotes)
+	}
+	if len(decoded.PlanReviews) != len(original.PlanReviews) {
+		t.Errorf("plan_reviews length lost: got %d, want %d", len(decoded.PlanReviews), len(original.PlanReviews))
+	}
+	if len(decoded.ImplReviews) != len(original.ImplReviews) {
+		t.Errorf("impl_reviews length lost: got %d, want %d", len(decoded.ImplReviews), len(original.ImplReviews))
 	}
 }

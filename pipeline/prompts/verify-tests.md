@@ -2,6 +2,8 @@ Verify tests for the following implemented feature.
 
 Feature: {title}
 
+**Feature Data:** `{feature_file_path}`
+
 Test Spec (behaviors that must be verified):
 {test_spec}
 

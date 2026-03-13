@@ -501,11 +501,11 @@ func TestCreateIdeaUnauthorized(t *testing.T) {
 }
 
 func TestCreateIdeaUnauthorizedWrongDashboardKey(t *testing.T) {
-	cfg := testConfig("")
+	cfg := testConfig("", false)
 	cfg.DashboardKey = "correct-key"
 	hub, ts := startTestServerT(t, cfg)
 
-	conn := wsConnect(t, ts, "", "wrongkey-idea-client")
+	conn := wsConnect(t, ts, "correct-key", "wrongkey-idea-client")
 	defer conn.Close()
 	waitForClient(hub, "wrongkey-idea-client", 2*time.Second)
 

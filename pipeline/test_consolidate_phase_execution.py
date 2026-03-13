@@ -165,60 +165,220 @@ class TestParseVerdictHelper:
 
     def test_parse_verdict_json_format_pass(self):
         """Verify JSON format with verdict PASS is parsed correctly."""
-        output = '{"verdict": "PASS", "feedback": "Good job"}'
-        verdict, feedback = phases._parse_verdict(output)
+        output = '{"verdict": "PASS", "summary": "Looks good overall", "feedback": "Good job"}'
+        verdict, summary, feedback = phases._parse_verdict(output)
         assert verdict == "PASS"
+        assert "Looks good overall" in summary
         assert "Good job" in feedback
 
     def test_parse_verdict_json_format_fail(self):
         """Verify JSON format with verdict FAIL is parsed correctly."""
-        output = '{"verdict": "FAIL", "feedback": "Needs work"}'
-        verdict, feedback = phases._parse_verdict(output)
+        output = '{"verdict": "FAIL", "summary": "Issues found in implementation", "feedback": "Needs work"}'
+        verdict, summary, feedback = phases._parse_verdict(output)
         assert verdict == "FAIL"
+        assert "Issues found" in summary
         assert "Needs work" in feedback
 
     def test_parse_verdict_text_format(self):
         """Verify text format with VERDICT: prefix is parsed correctly when JSON parsing fails."""
-        output = '{ invalid json } \nVERDICT: PASS\nFEEDBACK: Looks good'
-        verdict, feedback = phases._parse_verdict(output)
+        output = '{ invalid json } \nVERDICT: PASS\nSUMMARY: Looks good overall\nFEEDBACK: Looks good'
+        verdict, summary, feedback = phases._parse_verdict(output)
         assert verdict == "PASS"
-        assert "Looks good" in feedback
+        assert "Looks good" in summary
 
     def test_parse_verdict_json_found_but_invalid_triggers_fallback(self):
         """Verify fallback to text parsing when JSON-like content is found but fails to parse."""
-        output = "Some text { invalid json } \nVERDICT: PASS\nFEEDBACK: Looks good"
-        verdict, feedback = phases._parse_verdict(output)
+        output = "Some text { invalid json } \nVERDICT: PASS\nSUMMARY: All good\nFEEDBACK: Looks good"
+        verdict, summary, feedback = phases._parse_verdict(output)
         assert verdict == "PASS"
+        assert "All good" in summary
 
     def test_parse_verdict_no_verdict_returns_fail(self):
         """Verify output with no VERDICT marker returns FAIL with full output as feedback."""
         output = "Just some plain text without verdict"
-        verdict, feedback = phases._parse_verdict(output)
+        verdict, summary, feedback = phases._parse_verdict(output)
         assert verdict == "FAIL"
         assert "plain text" in feedback
 
     def test_parse_verdict_malformed_json_fallback(self):
         """Verify fallback to text parsing when JSON is malformed."""
-        output = "Some text {bad json} \nVERDICT: PASS\nSome feedback text"
-        verdict, feedback = phases._parse_verdict(output)
+        output = "Some text {bad json} \nVERDICT: PASS\nSUMMARY: All good"
+        verdict, summary, feedback = phases._parse_verdict(output)
         assert verdict == "PASS"
 
     def test_parse_verdict_strips_markdown(self):
-        """Verify markdown formatting is stripped from feedback."""
-        output = '{"verdict": "PASS", "feedback": "**Bold text** and *italic*"}'
-        verdict, feedback = phases._parse_verdict(output)
+        """Verify markdown formatting is stripped from feedback and summary."""
+        output = '{"verdict": "PASS", "summary": "**Bold summary**", "feedback": "**Bold text** and *italic*"}'
+        verdict, summary, feedback = phases._parse_verdict(output)
         assert verdict == "PASS"
+        assert "**" not in summary
         assert "**" not in feedback
-        assert "*" not in feedback or "italic" not in feedback
 
     def test_parse_verdict_returns_tuple(self):
-        """Verify _parse_verdict returns tuple of (verdict, feedback)."""
-        output = '{"verdict": "PASS", "feedback": "test"}'
+        """Verify _parse_verdict returns tuple of (verdict, summary, feedback)."""
+        output = '{"verdict": "PASS", "summary": "Looks good", "feedback": "test"}'
         result = phases._parse_verdict(output)
         assert isinstance(result, tuple)
-        assert len(result) == 2
+        assert len(result) == 3
         assert result[0] in ("PASS", "FAIL")
         assert isinstance(result[1], str)
+        assert isinstance(result[2], str)
+
+
+class TestParseVerdictSummary:
+    """Test _parse_verdict() summary extraction and validation."""
+
+    def test_summary_extracted_from_json_pass(self):
+        """Verify summary is extracted from JSON on PASS."""
+        output = '{"verdict": "PASS", "summary": "Plan is well-structured", "feedback": null}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert verdict == "PASS"
+        assert summary == "Plan is well-structured"
+
+    def test_summary_extracted_from_json_fail(self):
+        """Verify summary is extracted from JSON on FAIL."""
+        output = '{"verdict": "FAIL", "summary": "Issues found", "feedback": "Fix X and Y"}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert verdict == "FAIL"
+        assert summary == "Issues found"
+        assert feedback == "Fix X and Y"
+
+    def test_summary_missing_in_json_uses_fallback(self):
+        """Verify fallback summary when summary is missing in JSON."""
+        output = '{"verdict": "PASS", "feedback": null}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert verdict == "PASS"
+        assert summary == "Review PASS - no summary provided"
+
+    def test_summary_empty_in_json_uses_fallback(self):
+        """Verify fallback summary when summary is empty in JSON."""
+        output = '{"verdict": "FAIL", "summary": "", "feedback": "Fix it"}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert verdict == "FAIL"
+        assert summary == "Review FAIL - no summary provided"
+
+    def test_summary_whitespace_only_uses_fallback(self):
+        """Verify fallback summary when summary is whitespace only."""
+        output = '{"verdict": "PASS", "summary": "   ", "feedback": null}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert verdict == "PASS"
+        assert summary == "Review PASS - no summary provided"
+
+    def test_summary_null_in_json_uses_fallback(self):
+        """Verify fallback summary when summary is null in JSON."""
+        output = '{"verdict": "PASS", "summary": null, "feedback": null}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert verdict == "PASS"
+        assert summary == "Review PASS - no summary provided"
+
+    def test_summary_zero_in_json_uses_fallback(self):
+        """Verify fallback summary when summary is 0 in JSON."""
+        output = '{"verdict": "PASS", "summary": 0, "feedback": null}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert verdict == "PASS"
+        assert summary == "Review PASS - no summary provided"
+
+    def test_summary_false_in_json_uses_fallback(self):
+        """Verify fallback summary when summary is false in JSON."""
+        output = '{"verdict": "PASS", "summary": false, "feedback": null}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert verdict == "PASS"
+        assert summary == "Review PASS - no summary provided"
+
+    def test_summary_zero_in_json_uses_fallback(self):
+        """Verify fallback summary when summary is 0 in JSON."""
+        output = '{"verdict": "PASS", "summary": 0, "feedback": null}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert verdict == "PASS"
+        assert summary == "Review PASS - no summary provided"
+
+    def test_summary_false_in_json_uses_fallback(self):
+        """Verify fallback summary when summary is false in JSON."""
+        output = '{"verdict": "PASS", "summary": false, "feedback": null}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert verdict == "PASS"
+        assert summary == "Review PASS - no summary provided"
+
+    def test_summary_truncated_at_500_chars(self):
+        """Verify summary is truncated to 500 chars."""
+        long_summary = "A" * 600
+        output = f'{{"verdict": "PASS", "summary": "{long_summary}", "feedback": null}}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert len(summary) == 500
+        assert summary.endswith("...")
+
+    def test_summary_exactly_500_chars_not_truncated(self):
+        """Verify summary at exactly 500 chars is NOT truncated."""
+        summary_500 = "A" * 500
+        output = f'{{"verdict": "PASS", "summary": "{summary_500}", "feedback": null}}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert len(summary) == 500
+        assert not summary.endswith("...")
+
+    def test_summary_501_chars_truncated(self):
+        """Verify summary at 501 chars is truncated to 500."""
+        summary_501 = "A" * 501
+        output = f'{{"verdict": "PASS", "summary": "{summary_501}", "feedback": null}}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert len(summary) == 500
+        assert summary.endswith("...")
+
+    def test_summary_strips_markdown(self):
+        """Verify markdown is stripped from summary."""
+        output = '{"verdict": "PASS", "summary": "**Bold** and *italic*", "feedback": null}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert "**" not in summary
+
+    def test_test_results_pass_generates_summary(self):
+        """Verify test_results PASS generates appropriate summary."""
+        output = '{"test_results": {"passed": 5, "failed": 0, "errors": 0}}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert verdict == "PASS"
+        assert "passed" in summary.lower() or "clean" in summary.lower()
+
+    def test_test_results_fail_generates_summary(self):
+        """Verify test_results FAIL generates appropriate summary."""
+        output = '{"test_results": {"passed": 3, "failed": 2, "errors": 0}}'
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert verdict == "FAIL"
+        assert "2" in summary or "fail" in summary.lower()
+
+    def test_regex_fallback_extracts_summary_line(self):
+        """Verify regex fallback extracts SUMMARY: line."""
+        output = "VERDICT: PASS\nSUMMARY: All good overall\nFEEDBACK: Minor note"
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert verdict == "PASS"
+        assert summary == "All good overall"
+
+    def test_regex_fallback_uses_first_sentence_of_feedback(self):
+        """Verify regex fallback uses first sentence of feedback when no SUMMARY."""
+        output = "VERDICT: FAIL\nFEEDBACK: Fix the bug in line 10. Also fix this other thing."
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert verdict == "FAIL"
+        assert "Fix the bug in line 10" in summary
+
+    def test_regex_fallback_no_summary_no_feedback_uses_fallback(self):
+        """Verify fallback when neither SUMMARY nor FEEDBACK present."""
+        output = "VERDICT: FAIL"
+        verdict, summary, feedback = phases._parse_verdict(output)
+        assert verdict == "FAIL"
+        assert summary == "Review FAIL - no summary provided"
+
+
+class TestPhaseConfigSummarySchema:
+    """Test PHASE_CONFIG output schemas include summary."""
+
+    def test_reviewing_plan_has_summary_in_schema(self):
+        """Verify reviewing_plan output_schema includes summary field."""
+        schema = phases.PHASE_CONFIG["reviewing_plan"]["output_schema"]
+        assert "summary" in schema
+        assert schema["summary"] == "string"
+
+    def test_review_impl_has_summary_in_schema(self):
+        """Verify review_impl output_schema includes summary field."""
+        schema = phases.PHASE_CONFIG["review_impl"]["output_schema"]
+        assert "summary" in schema
+        assert schema["summary"] == "string"
 
 
 class TestRunPhaseHelper:
@@ -487,16 +647,18 @@ class TestEdgeCasesEmptyNullInputs:
 
     def test_parse_verdict_empty_json_feedback(self):
         """Verify _parse_verdict handles empty feedback in JSON."""
-        output = '{"verdict": "PASS", "feedback": ""}'
-        verdict, feedback = phases._parse_verdict(output)
+        output = '{"verdict": "PASS", "summary": "Looks good", "feedback": ""}'
+        verdict, summary, feedback = phases._parse_verdict(output)
         assert verdict == "PASS"
+        assert "Looks good" in summary
         assert feedback == ""
 
     def test_parse_verdict_null_feedback_in_json(self):
         """Verify _parse_verdict handles null feedback in JSON."""
-        output = '{"verdict": "PASS", "feedback": null}'
-        verdict, feedback = phases._parse_verdict(output)
+        output = '{"verdict": "PASS", "summary": "Looks good", "feedback": null}'
+        verdict, summary, feedback = phases._parse_verdict(output)
         assert verdict == "PASS"
+        assert "Looks good" in summary
 
 
 class TestErrorConditions:
@@ -511,14 +673,14 @@ class TestErrorConditions:
     def test_parse_verdict_completely_malformed_json(self):
         """Verify _parse_verdict falls back to text parsing with malformed JSON."""
         output = "{{{{ invalid json }}]"
-        verdict, feedback = phases._parse_verdict(output)
+        verdict, summary, feedback = phases._parse_verdict(output)
         assert verdict == "FAIL"
         assert isinstance(feedback, str)
 
     def test_parse_verdict_only_pass_in_text(self):
         """Verify verdict returns PASS when VERDICT: marker present and JSON parsing fails."""
         output = "Some text {invalid} \nVERDICT: PASS\n"
-        verdict, feedback = phases._parse_verdict(output)
+        verdict, summary, feedback = phases._parse_verdict(output)
         assert verdict == "PASS"
 
 

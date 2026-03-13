@@ -1,0 +1,3 @@
+{
+  "summary": "The arrow keys bug has already been fixed in the current codebase. The root cause was that the original implementation queried StageHeader and FeatureItem separately and concatenated the results, which produced items grouped by type rather than in visual/DOM order. The fix uses a combined CSS selector `\"StageHeader, FeatureItem\"` in both `action_focus_previous()` and `action_focus_next()` methods, which returns items in proper DOM (visual) order. The fix includes wrap-around navigation and proper edge case handling (empty boards, single items, no current focus). There are 16 comprehensive unit tests in test_arrow_keys_navigation.py that verify the correct behavior. Since this is already resolved, this bug can be moved to done."
+}

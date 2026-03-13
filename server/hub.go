@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -29,22 +30,30 @@ type QuestionAnswer struct {
 }
 
 type FeatureSummary struct {
-	Title            string           `json:"title"`
-	Stage            string           `json:"stage"`
-	Board            string           `json:"board"`
-	Created          string           `json:"created"`
-	ID               string           `json:"id"`
-	Description      string           `json:"description,omitempty"`
-	History          []HistoryEntry   `json:"history,omitempty"`
-	Questions        []QuestionAnswer `json:"questions,omitempty"`
-	AvailableActions []string         `json:"available_actions,omitempty"`
-	ClientID         string           `json:"client_id,omitempty"`
-	Plan             string           `json:"plan,omitempty"`
-	ImplSpec         string           `json:"impl_spec,omitempty"`
-	TestSpec         string           `json:"test_spec,omitempty"`
-	ImplNotes        string           `json:"impl_notes,omitempty"`
-	TestResults      interface{}      `json:"test_results,omitempty"`
-	Checkpoint       interface{}      `json:"checkpoint,omitempty"`
+	Title                  string           `json:"title"`
+	Stage                  string           `json:"stage"`
+	Board                  string           `json:"board"`
+	Created                string           `json:"created"`
+	ID                     string           `json:"id"`
+	Slug                   string           `json:"slug,omitempty"`
+	Description            string           `json:"description,omitempty"`
+	History                []HistoryEntry   `json:"history,omitempty"`
+	Questions              []QuestionAnswer `json:"questions,omitempty"`
+	AvailableActions       []string         `json:"available_actions,omitempty"`
+	ClientID               string           `json:"client_id,omitempty"`
+	Plan                   string           `json:"plan,omitempty"`
+	PlanExplorationSummary string           `json:"plan_exploration_summary,omitempty"`
+	ImplSpec               string           `json:"impl_spec,omitempty"`
+	TestSpec               string           `json:"test_spec,omitempty"`
+	ImplNotes              string           `json:"impl_notes,omitempty"`
+	TestResults            interface{}      `json:"test_results,omitempty"`
+	Checkpoint             interface{}      `json:"checkpoint,omitempty"`
+	PlanReviews            []interface{}    `json:"plan_reviews,omitempty"`
+	ImplReviews            []interface{}    `json:"impl_reviews,omitempty"`
+	DoneScript             string           `json:"done_script,omitempty"`
+	ItemType               string           `json:"item_type,omitempty"`
+	Ideation               string           `json:"ideation,omitempty"`
+	IdeationSummaries      []string         `json:"ideation_summaries,omitempty"`
 }
 
 type LogEntry struct {
@@ -61,6 +70,48 @@ type AgentState struct {
 	Agent   string `json:"agent"`
 }
 
+type ScriptInfo struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+	Confirm     bool   `json:"confirm"`
+}
+
+type ScriptState struct {
+	ScriptID   string   `json:"script_id"`
+	Running    bool     `json:"running"`
+	Lines      []string `json:"lines"`
+	StartedAt  string   `json:"started_at,omitempty"`
+	FinishedAt string   `json:"finished_at,omitempty"`
+	ExitCode   *int     `json:"exit_code,omitempty"`
+}
+
+type pendingRequest struct {
+	result chan moveResult
+}
+
+type PhaseInfo struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+type PhaseAgentConfig struct {
+	Agent string `json:"agent"`
+	Model string `json:"model"`
+}
+
+type PipelineConfig struct {
+	DefaultAgent    string                      `json:"default_agent"`
+	AgentForPhase   map[string]PhaseAgentConfig `json:"agent_for_phase"`
+	AvailableAgents []string                    `json:"available_agents"`
+	Phases          []PhaseInfo                 `json:"phases"`
+}
+
+type moveResult struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
 type ClientState struct {
 	ClientID     string              `json:"client_id"`
 	Features     []FeatureSummary    `json:"features"`
@@ -72,6 +123,9 @@ type ClientState struct {
 	AutoPlan     bool                `json:"auto_plan"`
 	AutoImpl     bool                `json:"auto_impl"`
 	StageActions map[string][]string `json:"stage_actions,omitempty"`
+	Scripts      []ScriptInfo        `json:"scripts,omitempty"`
+	ScriptStatus *ScriptState        `json:"script_status,omitempty"`
+	Config       *PipelineConfig     `json:"config,omitempty"`
 }
 
 type Client struct {
@@ -84,12 +138,14 @@ type Client struct {
 }
 
 type Hub struct {
-	clients    map[string]*Client
-	register   chan *Client
-	unregister chan *Client
-	stop       chan struct{}
-	mu         sync.RWMutex
-	config     *Config
+	clients         map[string]*Client
+	pendingRequests map[string]*pendingRequest
+	clientRequests  map[string][]string
+	register        chan *Client
+	unregister      chan *Client
+	stop            chan struct{}
+	mu              sync.RWMutex
+	config          *Config
 }
 
 func (c *Client) closeChannel() {
@@ -103,11 +159,13 @@ func (c *Client) safeSend(msg []byte) {
 
 func NewHub(cfg *Config) *Hub {
 	return &Hub{
-		clients:    make(map[string]*Client),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
-		stop:       make(chan struct{}),
-		config:     cfg,
+		clients:         make(map[string]*Client),
+		pendingRequests: make(map[string]*pendingRequest),
+		clientRequests:  make(map[string][]string),
+		register:        make(chan *Client),
+		unregister:      make(chan *Client),
+		stop:            make(chan struct{}),
+		config:          cfg,
 	}
 }
 
@@ -142,6 +200,15 @@ func (h *Hub) Run() {
 				c.state.Connected = false
 				c.closeChannel()
 				delete(h.clients, client.clientID)
+			}
+			if reqIDs, ok := h.clientRequests[client.clientID]; ok {
+				for _, rid := range reqIDs {
+					if pr, ok := h.pendingRequests[rid]; ok {
+						pr.result <- moveResult{Success: false, Error: "client disconnected"}
+						delete(h.pendingRequests, rid)
+					}
+				}
+				delete(h.clientRequests, client.clientID)
 			}
 			h.mu.Unlock()
 		}
@@ -186,6 +253,39 @@ func (h *Hub) SendToClient(clientID string, msg []byte) error {
 	}
 	c.safeSend(msg)
 	return nil
+}
+
+func (h *Hub) CreateMoveRequest(clientID string) (string, <-chan moveResult) {
+	requestID := uuid.New().String()
+	pr := &pendingRequest{result: make(chan moveResult, 1)}
+	h.mu.Lock()
+	h.pendingRequests[requestID] = pr
+	h.clientRequests[clientID] = append(h.clientRequests[clientID], requestID)
+	h.mu.Unlock()
+	return requestID, pr.result
+}
+
+func (h *Hub) ResolveMoveRequest(requestID string, result moveResult) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pr, ok := h.pendingRequests[requestID]
+	if !ok {
+		log.Printf("ResolveMoveRequest: unknown request_id %s, ignoring", requestID)
+		return
+	}
+	pr.result <- result
+	delete(h.pendingRequests, requestID)
+	for cid, reqs := range h.clientRequests {
+		for i, rid := range reqs {
+			if rid == requestID {
+				h.clientRequests[cid] = append(reqs[:i], reqs[i+1:]...)
+				if len(h.clientRequests[cid]) == 0 {
+					delete(h.clientRequests, cid)
+				}
+				return
+			}
+		}
+	}
 }
 
 func (h *Hub) handleMessage(client *Client, message []byte) {
@@ -294,11 +394,52 @@ func (h *Hub) handleMessage(client *Client, message []byte) {
 				client.state.StageActions = sa
 			}
 		}
+		if raw, ok := msg["scripts"]; ok {
+			var scripts []ScriptInfo
+			if err := json.Unmarshal(raw, &scripts); err == nil {
+				client.state.Scripts = scripts
+			}
+		}
+		if raw, ok := msg["script_status"]; ok {
+			var ss ScriptState
+			if err := json.Unmarshal(raw, &ss); err == nil {
+				client.state.ScriptStatus = &ss
+			} else {
+				client.state.ScriptStatus = nil
+			}
+		} else {
+			client.state.ScriptStatus = nil
+		}
+		if raw, ok := msg["config"]; ok {
+			var cfg PipelineConfig
+			if err := json.Unmarshal(raw, &cfg); err == nil {
+				client.state.Config = &cfg
+			}
+		}
 		client.state.LastSeen = time.Now()
 		h.mu.Unlock()
 
 	case "disconnect":
 		h.unregister <- client
+
+	case "move_result":
+		var requestID string
+		if raw, ok := msg["request_id"]; ok {
+			json.Unmarshal(raw, &requestID)
+		}
+		var success bool
+		if raw, ok := msg["success"]; ok {
+			json.Unmarshal(raw, &success)
+		}
+		var errMsg string
+		if raw, ok := msg["error"]; ok {
+			json.Unmarshal(raw, &errMsg)
+		}
+		if requestID != "" {
+			h.ResolveMoveRequest(requestID, moveResult{Success: success, Error: errMsg})
+		} else {
+			log.Printf("move_result from client %s missing request_id, ignoring", client.clientID)
+		}
 
 	default:
 		log.Printf("discarding malformed message from client %s", client.clientID)

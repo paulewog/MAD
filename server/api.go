@@ -9,12 +9,14 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
 var stageOrder = []string{
 	"ideas",
+	"ideating",
 	"plan-inbox",
 	"reviewing-plan",
 	"requested-input",
@@ -26,6 +28,15 @@ var stageOrder = []string{
 	"final-human-approval",
 	"done",
 	"rejected",
+}
+
+func isValidStage(stage string) bool {
+	for _, s := range stageOrder {
+		if s == stage {
+			return true
+		}
+	}
+	return false
 }
 
 func boardsFromClients(clients []ClientState) []string {
@@ -52,12 +63,24 @@ type StageGroup struct {
 	Features []FeatureSummary
 }
 
+func lastModifiedTime(f FeatureSummary) string {
+	if len(f.History) > 0 {
+		return f.History[len(f.History)-1].Timestamp
+	}
+	return f.Created
+}
+
 // groupFeaturesByStage returns features organized by stage in canonical order.
 // Stages with zero features are included so the UI can show empty columns.
 func groupFeaturesByStage(features []FeatureSummary) []StageGroup {
 	byStage := make(map[string][]FeatureSummary)
 	for _, f := range features {
 		byStage[f.Stage] = append(byStage[f.Stage], f)
+	}
+	for _, feats := range byStage {
+		sort.Slice(feats, func(i, j int) bool {
+			return lastModifiedTime(feats[i]) > lastModifiedTime(feats[j])
+		})
 	}
 	groups := make([]StageGroup, 0, len(stageOrder))
 	for _, s := range stageOrder {
@@ -92,8 +115,8 @@ var upgrader = websocket.Upgrader{
 // checkAnyAuth returns true if the request is authenticated by either API key or dashboard key.
 // Used for endpoints that can be accessed by both API clients and dashboard users.
 func checkAnyAuth(r *http.Request, cfg *Config) bool {
-	// If neither key is configured, allow all
-	if cfg.APIKey == "" && cfg.DashboardKey == "" {
+	// If unauthenticated access is explicitly allowed, permit all
+	if cfg.AllowUnauthenticatedAccess {
 		return true
 	}
 	// Check API key (only if configured)
@@ -109,7 +132,7 @@ func checkAnyAuth(r *http.Request, cfg *Config) bool {
 
 func checkAPIAuth(r *http.Request, apiKey string) bool {
 	if apiKey == "" {
-		return true
+		return false
 	}
 	// Check ?key= query parameter
 	if r.URL.Query().Get("key") == apiKey {
@@ -130,7 +153,7 @@ func checkAPIAuth(r *http.Request, apiKey string) bool {
 
 func checkDashboardAuth(r *http.Request, dashboardKey string) bool {
 	if dashboardKey == "" {
-		return true
+		return false
 	}
 	return r.URL.Query().Get("key") == dashboardKey
 }
@@ -150,6 +173,18 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 		"toJSON": func(v interface{}) string {
 			b, _ := json.Marshal(v)
 			return string(b)
+		},
+		"escapeAttr": func(s string) template.HTMLAttr {
+			r := strings.NewReplacer(
+				`&`, `&amp;`,
+				`"`, `&quot;`,
+				`'`, `&#39;`,
+				`<`, `&lt;`,
+				`>`, `&gt;`,
+				"\n", `&#10;`,
+				"\r", `&#13;`,
+			)
+			return template.HTMLAttr(r.Replace(s))
 		},
 		"uniqueBoards": func(features []FeatureSummary) string {
 			seen := map[string]bool{}
@@ -247,8 +282,24 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 					serveAutoMode(w, r, hub, cfg, clientID)
 					return
 				}
+				if sub == "set-agent-for-phase" {
+					serveSetAgentForPhase(w, r, hub, cfg, clientID)
+					return
+				}
+				if sub == "config" {
+					serveClientConfig(w, r, hub, cfg, clientID)
+					return
+				}
+				if sub == "run-script" {
+					serveRunScript(w, r, hub, cfg, clientID)
+					return
+				}
 				if sub == "ideas" {
 					serveCreateIdea(w, r, hub, cfg, clientID)
+					return
+				}
+				if sub == "scripts" {
+					serveScripts(w, r, hub, cfg, clientID)
 					return
 				}
 				// Match features/{fid}/answers, features/{fid}/start-agent, or features/{fid}/move
@@ -265,6 +316,22 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 					}
 					if len(featureParts) == 2 && featureParts[1] == "move" && featureID != "" {
 						serveMoveFeature(w, r, hub, cfg, clientID, featureID)
+						return
+					}
+					if len(featureParts) == 2 && featureParts[1] == "edit-description" && featureID != "" {
+						serveEditDescription(w, r, hub, cfg, clientID, featureID)
+						return
+					}
+					if len(featureParts) == 2 && featureParts[1] == "edit-done-script" && featureID != "" {
+						serveEditDoneScript(w, r, hub, cfg, clientID, featureID)
+						return
+					}
+					if len(featureParts) == 2 && featureParts[1] == "edit-title" && featureID != "" {
+						serveEditTitle(w, r, hub, cfg, clientID, featureID)
+						return
+					}
+					if len(featureParts) == 2 && featureParts[1] == "edit-type" && featureID != "" {
+						serveEditItemType(w, r, hub, cfg, clientID, featureID)
 						return
 					}
 				}
@@ -338,10 +405,20 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 			}
 		}
 		log.Printf("/api/board: total %d features across all clients", len(allFeatures))
+		activeSlugs := map[string]bool{}
+		for _, c := range clients {
+			if c.PlanAgent.Running && c.PlanAgent.Feature != "" {
+				activeSlugs[c.PlanAgent.Feature] = true
+			}
+			if c.ImplAgent.Running && c.ImplAgent.Feature != "" {
+				activeSlugs[c.ImplAgent.Feature] = true
+			}
+		}
 		w.Header().Set("Content-Type", "text/html")
 		data := map[string]interface{}{
 			"StageGroups": groupFeaturesByStage(allFeatures),
 			"Key":         r.URL.Query().Get("key"),
+			"ActiveSlugs": activeSlugs,
 		}
 		if err := tmpl.ExecuteTemplate(w, "board_fragment", data); err != nil {
 			log.Printf("template error: %v", err)
@@ -377,16 +454,7 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 	// WebSocket endpoint
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		// Auth via query param or header
-		authorized := false
-		if cfg.APIKey == "" {
-			authorized = true
-		} else {
-			if r.URL.Query().Get("api_key") == cfg.APIKey {
-				authorized = true
-			} else if checkAPIAuth(r, cfg.APIKey) {
-				authorized = true
-			}
-		}
+		authorized := checkAnyAuth(r, cfg)
 		if !authorized {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
@@ -525,6 +593,148 @@ func serveAutoMode(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config
 		"type":    "set_auto_mode",
 		"mode":    req.Mode,
 		"enabled": req.Enabled,
+	})
+	if err := hub.SendToClient(clientID, msg); err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func serveSetAgentForPhase(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !checkAnyAuth(r, cfg) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1*1024*1024))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+	var req struct {
+		Phase string `json:"phase"`
+		Agent string `json:"agent"`
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if req.Phase == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phase is required"})
+		return
+	}
+	if req.Agent == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "agent is required"})
+		return
+	}
+
+	state, ok := hub.GetClient(clientID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
+		return
+	}
+	if !state.Connected {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "client not connected"})
+		return
+	}
+
+	// Validate phase against client's config
+	if state.Config != nil && len(state.Config.Phases) > 0 {
+		validPhase := false
+		for _, p := range state.Config.Phases {
+			if p.Key == req.Phase {
+				validPhase = true
+				break
+			}
+		}
+		if !validPhase {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid phase"})
+			return
+		}
+	} else {
+		// No config yet - can't validate phase
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "client config not available"})
+		return
+	}
+
+	// Validate agent against client's available agents (allow "default")
+	if req.Agent != "default" && state.Config != nil && len(state.Config.AvailableAgents) > 0 {
+		validAgent := false
+		for _, a := range state.Config.AvailableAgents {
+			if a == req.Agent {
+				validAgent = true
+				break
+			}
+		}
+		if !validAgent {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid agent"})
+			return
+		}
+	}
+
+	msg, _ := json.Marshal(map[string]interface{}{
+		"type":  "set_agent_for_phase",
+		"phase": req.Phase,
+		"agent": req.Agent,
+		"model": req.Model,
+	})
+	if err := hub.SendToClient(clientID, msg); err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func serveRunScript(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !checkAnyAuth(r, cfg) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1*1024*1024))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+	var req struct {
+		ScriptID string `json:"script_id"`
+		Context  string `json:"context"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if req.ScriptID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "script_id required"})
+		return
+	}
+
+	state, ok := hub.GetClient(clientID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
+		return
+	}
+	if !state.Connected {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "client not connected"})
+		return
+	}
+
+	msg, _ := json.Marshal(map[string]interface{}{
+		"type":      "run_script",
+		"script_id": req.ScriptID,
+		"context":   req.Context,
 	})
 	if err := hub.SendToClient(clientID, msg); err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
@@ -695,12 +905,34 @@ func serveClientPage(w http.ResponseWriter, r *http.Request, hub *Hub, tmpl *tem
 		"Authenticated": authenticated,
 		"ShowKeyModal":  showKeyModal,
 		"Boards":        boardsFromClients([]ClientState{*state}),
+		"Config":        state.Config,
 	}
 	w.Header().Set("Content-Type", "text/html")
 	if err := tmpl.ExecuteTemplate(w, "client.html", data); err != nil {
 		log.Printf("template error: %v", err)
 		http.Error(w, "internal server error", 500)
 	}
+}
+
+func serveClientConfig(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !checkAnyAuth(r, cfg) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	state, ok := hub.GetClient(clientID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
+		return
+	}
+	if state.Config == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{})
+		return
+	}
+	writeJSON(w, http.StatusOK, state.Config)
 }
 
 func serveClientJSON(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string) {
@@ -734,6 +966,7 @@ type createIdeaData struct {
 	Board       string `json:"board"`
 	Description string `json:"description"`
 	Type        string `json:"type"`
+	DoneScript  string `json:"done_script"`
 }
 
 func serveCreateIdea(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string) {
@@ -787,6 +1020,7 @@ func serveCreateIdea(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Conf
 		"board":       idea.Board,
 		"description": idea.Description,
 		"item_type":   ideaType,
+		"done_script": idea.DoneScript,
 	})
 	if err := hub.SendToClient(clientID, msg); err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
@@ -796,8 +1030,28 @@ func serveCreateIdea(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Conf
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func serveScripts(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !checkAnyAuth(r, cfg) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	state, ok := hub.GetClient(clientID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, state.Scripts)
+}
+
 type moveFeatureData struct {
 	TargetStage string `json:"target_stage"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 func serveMoveFeature(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string, featureID string) {
@@ -827,6 +1081,11 @@ func serveMoveFeature(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Con
 		return
 	}
 
+	if !isValidStage(req.TargetStage) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid target stage"})
+		return
+	}
+
 	state, ok := hub.GetClient(clientID)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
@@ -849,27 +1108,298 @@ func serveMoveFeature(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Con
 		return
 	}
 
-	validStage := false
-	for _, s := range stageOrder {
-		if s == req.TargetStage {
-			validStage = true
+	requestID, resultCh := hub.CreateMoveRequest(clientID)
+
+	payload := map[string]interface{}{
+		"type":         "move_feature",
+		"feature_id":   featureID,
+		"target_stage": req.TargetStage,
+		"request_id":   requestID,
+	}
+	if req.Reason != "" {
+		payload["reason"] = req.Reason
+	}
+	msg, _ := json.Marshal(payload)
+	if err := hub.SendToClient(clientID, msg); err != nil {
+		hub.ResolveMoveRequest(requestID, moveResult{Success: false, Error: err.Error()})
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.Success {
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		} else {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": result.Error})
+		}
+	case <-time.After(hub.config.MoveTimeout):
+		hub.ResolveMoveRequest(requestID, moveResult{Success: false, Error: "timeout"})
+		writeJSON(w, http.StatusGatewayTimeout, map[string]string{"error": "move timed out"})
+	}
+}
+
+func serveEditDescription(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string, featureID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !checkAnyAuth(r, cfg) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1*1024*1024))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+
+	var req struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	state, ok := hub.GetClient(clientID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
+		return
+	}
+	if !state.Connected {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "client not connected"})
+		return
+	}
+
+	var feature *FeatureSummary
+	var found bool
+	for _, f := range state.Features {
+		if f.ID == featureID {
+			feature = &f
+			found = true
 			break
 		}
 	}
-	if !validStage {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid target stage"})
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "feature not found"})
+		return
+	}
+	if feature.Stage != "ideas" {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "can only edit description in ideas stage"})
 		return
 	}
 
 	msg, _ := json.Marshal(map[string]interface{}{
-		"type":         "move_feature",
-		"feature_id":   featureID,
-		"target_stage": req.TargetStage,
+		"type":        "edit_description",
+		"feature_id":  featureID,
+		"description": req.Description,
 	})
 	if err := hub.SendToClient(clientID, msg); err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+type editDoneScriptRequest struct {
+	DoneScript string `json:"done_script"`
+}
+
+func serveEditDoneScript(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string, featureID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !checkAnyAuth(r, cfg) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1*1024*1024))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+
+	var req editDoneScriptRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	state, ok := hub.GetClient(clientID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
+		return
+	}
+	if !state.Connected {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "client not connected"})
+		return
+	}
+
+	var found bool
+	for _, f := range state.Features {
+		if f.ID == featureID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "feature not found"})
+		return
+	}
+
+	msg, _ := json.Marshal(map[string]interface{}{
+		"type":        "edit_done_script",
+		"feature_id":  featureID,
+		"done_script": req.DoneScript,
+	})
+	if err := hub.SendToClient(clientID, msg); err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+type editTitleRequest struct {
+	Title string `json:"title"`
+}
+
+func serveEditTitle(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string, featureID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !checkAnyAuth(r, cfg) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1*1024*1024))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+
+	var req editTitleRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	state, ok := hub.GetClient(clientID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
+		return
+	}
+	if !state.Connected {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "client not connected"})
+		return
+	}
+
+	var feature *FeatureSummary
+	var found bool
+	for _, f := range state.Features {
+		if f.ID == featureID {
+			feature = &f
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "feature not found"})
+		return
+	}
+	if feature.Stage != "ideas" {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "can only edit title in ideas stage"})
+		return
+	}
+
+	msg, _ := json.Marshal(map[string]interface{}{
+		"type":       "edit_title",
+		"feature_id": featureID,
+		"title":      req.Title,
+	})
+	if err := hub.SendToClient(clientID, msg); err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+type editItemTypeRequest struct {
+	ItemType string `json:"type"`
+}
+
+func serveEditItemType(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string, featureID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !checkAnyAuth(r, cfg) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1*1024*1024))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+
+	var req editItemTypeRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	if req.ItemType != "feature" && req.ItemType != "bug" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "type must be 'feature' or 'bug'"})
+		return
+	}
+
+	state, ok := hub.GetClient(clientID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
+		return
+	}
+	if !state.Connected {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "client not connected"})
+		return
+	}
+
+	var featureItemType *FeatureSummary
+	var found bool
+	for _, f := range state.Features {
+		if f.ID == featureID {
+			featureItemType = &f
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "feature not found"})
+		return
+	}
+	if featureItemType.Stage != "ideas" {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "can only edit type in ideas stage"})
+		return
+	}
+
+	msg, _ := json.Marshal(map[string]interface{}{
+		"type":       "edit_item_type",
+		"feature_id": featureID,
+		"item_type":  req.ItemType,
+	})
+	if err := hub.SendToClient(clientID, msg); err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

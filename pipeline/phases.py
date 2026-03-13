@@ -5,38 +5,25 @@ headless agent call, updates the feature file, and moves it to the next stage.
 """
 
 import datetime
+import json
 import logging
+import re
 import subprocess
 from pathlib import Path
 from typing import Optional
 
+import json5
+import jsonschema
 from rich.console import Console
 from rich.panel import Panel
 
 from agent_status import AgentStatus
 from config import Config, get_mad_dir
-from runner import AgentRunner
+from runner import AgentRunner, RateLimitError
 from state import FeatureFile
 
 logger = logging.getLogger("pipeline")
-_logging_initialized = False
 
-
-def _ensure_logging():
-    global _logging_initialized
-    if _logging_initialized:
-        return
-    _logging_initialized = True
-    try:
-        config = Config()
-        log_dir = (config.code_path / ".mad" / "logs" if config.code_path else get_mad_dir() / "logs")
-        log_dir.mkdir(parents=True, exist_ok=True)
-        handler = logging.FileHandler(log_dir / "pipeline.log")
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
-    except Exception:
-        pass
 
 # Redirect console.print to logger to avoid cluttering terminal
 class _LogConsole:
@@ -83,6 +70,7 @@ PHASE_CONFIG = {
         "template": "review-plan.md",
         "output_schema": {
             "verdict": "string",
+            "summary": "string",
             "feedback": "string | null",
         },
     },
@@ -142,13 +130,91 @@ PHASE_CONFIG = {
         "template": "review-impl.md",
         "output_schema": {
             "verdict": "string",
+            "summary": "string",
             "feedback": "string | null",
+        },
+    },
+    "ideating": {
+        "runner_phase": "ideating",
+        "history_tag": "IDEATING",
+        "status_label": "ideating",
+        "template": "ideating.md",
+        "output_schema": {
+            "summary": "string",
         },
     },
 }
 
 
 assert all(cfg["history_tag"].replace("_", "").isalpha() for cfg in PHASE_CONFIG.values()), "Invalid history_tag in PHASE_CONFIG"
+
+PHASE_SCHEMAS = {
+    "planning": {
+        "type": "object",
+        "properties": {
+            "questions": {"type": ["array", "null"]},
+            "plan": {"type": ["string", "null"]},
+        },
+    },
+    "reviewing_plan": {
+        "type": "object",
+        "required": ["verdict"],
+        "properties": {
+            "verdict": {"type": "string"},
+            "summary": {"type": "string"},
+            "feedback": {"type": ["string", "null"]},
+        },
+    },
+    "review_impl": {
+        "type": "object",
+        "required": ["verdict"],
+        "properties": {
+            "verdict": {"type": "string"},
+            "summary": {"type": "string"},
+            "feedback": {"type": ["string", "null"]},
+        },
+    },
+    "spec_impl": {
+        "type": "object",
+        "required": ["implementation_spec"],
+        "properties": {
+            "implementation_spec": {"type": "string"},
+        },
+    },
+    "spec_test": {
+        "type": "object",
+        "required": ["test_spec"],
+        "properties": {
+            "test_spec": {"type": "string"},
+        },
+    },
+    "implementing": {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "files_changed": {"type": "array"},
+        },
+    },
+    "fix_feedback": {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "files_changed": {"type": "array"},
+        },
+    },
+}
+
+
+def _validate_schema(result: dict, schema: dict, field: str) -> None:
+    """Validate parsed JSON against a schema, logging a warning on mismatch.
+    
+    This performs graceful degradation - it logs a warning but never blocks
+    the pipeline over a schema mismatch.
+    """
+    try:
+        jsonschema.validate(instance=result, schema=schema)
+    except jsonschema.ValidationError as e:
+        logger.warning(f"Schema validation failed for field '{field}': {e.message}")
 
 
 def _build_prompt(template_name: str, replacements: dict[str, str], phase_key: Optional[str] = None) -> str:
@@ -197,7 +263,6 @@ def _run_phase(
     Raises:
         RuntimeError: If runner.headless() returns empty output
     """
-    _ensure_logging()
     config = PHASE_CONFIG[phase_key]
 
     if not skip_history_start:
@@ -233,74 +298,191 @@ def _run_phase(
     return output
 
 
-def _parse_json_output(output: str, field: str):
+def _extract_json_robust(text: str) -> list[str]:
+    """Extract JSON blocks from text using brace-counting algorithm.
+    
+    This function correctly handles:
+    - Arbitrary nesting depth
+    - Escaped braces inside strings
+    - Multiple JSON objects in mixed content
+    
+    Args:
+        text: The text to search for JSON blocks
+        
+    Returns:
+        List of raw string candidates (JSON blocks) found in the text
+    """
+    if not text:
+        return []
+    
+    candidates = []
+    text_len = len(text)
+    i = 0
+    
+    while i < text_len:
+        if text[i] == '{':
+            depth = 1
+            start = i
+            i += 1
+            in_string = False
+            escape_next = False
+            
+            while i < text_len and depth > 0:
+                char = text[i]
+                
+                if escape_next:
+                    escape_next = False
+                    i += 1
+                    continue
+                
+                if char == '\\':
+                    escape_next = True
+                    i += 1
+                    continue
+                
+                if char == '"':
+                    in_string = not in_string
+                elif not in_string:
+                    if char == '{':
+                        depth += 1
+                    elif char == '}':
+                        depth -= 1
+                
+                i += 1
+            
+            if depth == 0:
+                candidates.append(text[start:i])
+        else:
+            i += 1
+    
+    return candidates
+
+
+def _parse_json_output(output: str, field: str, schema: dict = None):
     """Parse JSON output from agent and extract a specific field.
 
     Args:
         output: The raw output from the agent (JSON string)
         field: The field name to extract (e.g., "implementation_spec", "test_spec")
+        schema: Optional JSON Schema for validation
 
     Returns:
         The extracted field value as a parsed object (dict/list) if valid JSON,
         or as a string if not valid JSON, or empty string if not found
     """
-    import json
-    import re
-
     if not output or not output.strip():
         return ""
 
-    # Try direct JSON parse first (output file should be pure JSON)
+    output_stripped = output.strip()
+
+    # Step 1: Try direct json.loads()
     try:
-        result = json.loads(output.strip())
-        if field in result and result[field]:
+        result = json.loads(output_stripped)
+        if isinstance(result, dict) and field in result and result[field]:
+            if schema:
+                _validate_schema(result, schema, field)
             return result[field]
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, ValueError):
         pass
 
-    # Fallback: regex extraction
+    # Step 2: Try json5.loads() for relaxed parsing
     try:
-        json_match = re.search(r'\{[\s\S]*\}', output)
-        if json_match:
-            result = json.loads(json_match.group())
-            if field in result and result[field]:
-                return result[field]
-    except (json.JSONDecodeError, AttributeError, TypeError):
+        result = json5.loads(output_stripped)
+        if isinstance(result, dict) and field in result and result[field]:
+            if schema:
+                _validate_schema(result, schema, field)
+            return result[field]
+    except (json.JSONDecodeError, ValueError):
         pass
+
+    # Step 3: Extract and parse candidates using brace-counting
+    candidates = _extract_json_robust(output)
+    for candidate in reversed(candidates):
+        # Try json.loads first
+        try:
+            result = json.loads(candidate)
+            if isinstance(result, dict) and field in result and result[field]:
+                if schema:
+                    _validate_schema(result, schema, field)
+                return result[field]
+        except (json.JSONDecodeError, ValueError):
+            pass
+        
+        # Try json5.loads()
+        try:
+            result = json5.loads(candidate)
+            if isinstance(result, dict) and field in result and result[field]:
+                if schema:
+                    _validate_schema(result, schema, field)
+                return result[field]
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Step 4: Log warning on complete failure
+    logger.warning(f"JSON parsing failed for field '{field}'. Output preview: {output_stripped[:200]}")
 
     return ""
 
 
-def _parse_verdict(output: str) -> tuple[str, str]:
-    """Parse verdict and feedback from review output.
+def _parse_verdict(output: str) -> tuple[str, str, str]:
+    """Parse verdict, summary, and feedback from review output.
     
     Tries JSON first, falls back to text parsing.
-    Returns (verdict, feedback) where verdict is 'PASS' or 'FAIL'.
+    Returns (verdict, summary, feedback) where verdict is 'PASS' or 'FAIL'.
     """
-    import json
-    import re
-    
     verdict = "FAIL"
+    summary = ""
     feedback = output.strip()
     
-    # Try to parse JSON - direct parse first, then regex fallback
+    # Try to parse JSON - direct parse first, then robust extraction fallback
     result = None
     json_parsed = False
     try:
         result = json.loads(output.strip())
     except json.JSONDecodeError:
         try:
-            json_match = re.search(r'\{[\s\S]*\}', output)
-            if json_match:
-                result = json.loads(json_match.group())
-        except (json.JSONDecodeError, AttributeError):
-            pass
+            result = json5.loads(output.strip())
+        except (json.JSONDecodeError, ValueError):
+            candidates = _extract_json_robust(output)
+            for candidate in reversed(candidates):
+                try:
+                    parsed = json.loads(candidate)
+                    if isinstance(parsed, dict):
+                        result = parsed
+                        break
+                except json.JSONDecodeError:
+                    pass
+                try:
+                    parsed = json5.loads(candidate)
+                    if isinstance(parsed, dict):
+                        result = parsed
+                        break
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
+    if result is not None:
+        # Reject plan-shaped output: only if it has "plan" but NOT "verdict" AND NOT other review fields
+        if "plan" in result and "verdict" not in result and "summary" not in result:
+            logger.warning("Review agent returned a plan instead of a verdict — ignoring JSON")
+            result = None
+            feedback = "SYSTEM ERROR: Review agent returned a plan instead of a review verdict. This indicates an agent configuration or prompting issue, not a problem with the plan itself. The plan should be reviewed again without re-planning."
 
     if result is not None:
         if "verdict" in result:
             json_parsed = True
             if "PASS" in result["verdict"].upper():
                 verdict = "PASS"
+            summary_raw = result.get("summary")
+            if summary_raw is None or summary_raw == 0 or summary_raw is False:
+                summary = f"Review {verdict} - no summary provided"
+                logger.warning(f"Review verdict parsed but summary was missing or empty")
+            else:
+                summary = str(summary_raw).strip()
+                if not summary:
+                    summary = f"Review {verdict} - no summary provided"
+                    logger.warning(f"Review verdict parsed but summary was missing or empty")
+            if len(summary) > 500:
+                summary = summary[:497] + "..."
             if "feedback" in result and result["feedback"]:
                 feedback = str(result["feedback"])
             elif "feedback" in result:
@@ -312,8 +494,10 @@ def _parse_verdict(output: str) -> tuple[str, str]:
             failed_count = test_results.get("failed", 0) + test_results.get("errors", 0)
             if tests_pass is True or (test_results and failed_count == 0):
                 verdict = "PASS"
+                summary = "Tests passed - all checks clean"
                 feedback = ""
             else:
+                summary = f"Tests failed - {failed_count} failure(s)"
                 feedback = json.dumps(result, indent=2)
 
     if not json_parsed:
@@ -321,16 +505,34 @@ def _parse_verdict(output: str) -> tuple[str, str]:
         if verdict_match:
             if "PASS" in verdict_match.group(1).upper():
                 verdict = "PASS"
+        summary_match = re.search(r"\*?\*?SUMMARY\*?\*?:\s*(.+?)(?=\n\*?\*?FEEDBACK|$)", output, re.DOTALL | re.IGNORECASE)
+        if summary_match:
+            summary = summary_match.group(1).strip()
         feedback_match = re.search(r"\*?\*?FEEDBACK\*?\*?:\s*(.+)", output, re.DOTALL)
         if feedback_match:
             feedback = feedback_match.group(1).strip()
         elif verdict == "FAIL":
             verdict_pos = output.upper().find("VERDICT:")
             if verdict_pos >= 0:
-                feedback = output[verdict_pos + 8:].strip()
+                after_verdict = output[verdict_pos + 8:].strip()
+                if after_verdict and after_verdict.upper() not in ("PASS", "FAIL"):
+                    feedback = after_verdict
+        if not summary:
+            if feedback and not re.match(r'^VERDICT:\s*(PASS|FAIL)\s*$', feedback.strip(), re.IGNORECASE):
+                first_sentence = feedback.split('. ')[0]
+                if len(first_sentence) > 500:
+                    first_sentence = first_sentence[:497] + "..."
+                summary = first_sentence
+            else:
+                summary = f"Review {verdict} - no summary provided"
+                logger.warning(f"Review verdict parsed but summary was missing or empty")
     
+    if len(summary) > 500:
+        summary = summary[:497] + "..."
+    
+    summary = _strip_markdown(summary)
     feedback = _strip_markdown(feedback)
-    return verdict, feedback
+    return verdict, summary, feedback
 
 
 def _git_commit(feature: FeatureFile, stage: str) -> None:
@@ -415,6 +617,239 @@ def _get_latest_feedback(feature: FeatureFile) -> str:
     return "No previous feedback available."
 
 
+def _validate_exploration_artifacts(agent_output: str) -> tuple[bool, str]:
+    """Return (True, '') if output shows exploration evidence, else (False, reason).
+    
+    Handles empty strings and outputs without questions gracefully.
+    """
+    if not agent_output or not agent_output.strip():
+        return True, ''
+    
+    import json
+    import json5
+    result = None
+    try:
+        result = json.loads(agent_output.strip())
+    except (json.JSONDecodeError, ValueError):
+        try:
+            result = json5.loads(agent_output.strip())
+        except (json.JSONDecodeError, ValueError):
+            pass
+    
+    if result is None:
+        import re
+        json_blocks = re.findall(r'```(?:json)?\s*([\s\S]*?)\s*```', agent_output)
+        for block in json_blocks:
+            try:
+                result = json.loads(block.strip())
+                break
+            except json.JSONDecodeError:
+                try:
+                    result = json5.loads(block.strip())
+                    break
+                except (json.JSONDecodeError, ValueError):
+                    pass
+    
+    if result is None:
+        return True, ''
+    
+    if not isinstance(result, dict):
+        return True, ''
+    
+    questions = result.get("questions")
+    if not questions or not isinstance(questions, list) or len(questions) == 0:
+        return True, ''
+    
+    # Check for exploration_summary field (new approach)
+    exploration_summary = result.get("exploration_summary")
+    if exploration_summary and isinstance(exploration_summary, str) and len(exploration_summary.strip()) > 0:
+        return True, ''
+    
+    # Fall back to old phrase-based check (for backwards compatibility)
+    exploration_indicators = [
+        'i searched for', 'i found in the code', 'reading the file', 'looking at the',
+        'exploring the codebase', 'using grep', 'using read', 'using glob',
+        'grep results', 'file contents', 'i read', 'i looked at', 'the code shows',
+        'in the source', 'searching for', 'found in', 'read the'
+    ]
+    output_lower = agent_output.lower()
+    if any(ind in output_lower for ind in exploration_indicators):
+        return True, ''
+    
+    # Instead of failing, just warn - log a warning but don't block
+    logger.warning("Agent asked questions without exploration_summary or evidence of exploration. Allowing to continue.")
+    return True, ''
+
+
+def _check_question_antipatterns(questions: list) -> tuple[bool, str]:
+    """Return (True, '') if questions look legitimate, else (False, reason)."""
+    antipatterns = [
+        (r'does this happen.*all.*items?', 'Item scope can be determined by reading code paths'),
+        (r'what.*steps.*to.*reproduce', 'Reproduction steps can be inferred from error location and code flow'),
+        (r'what.*operating system', 'OS-specific issues should be evident from error messages or code'),
+        (r'does.*work.*different.*phase', 'Phase-specific behaviour can be found by reading the code'),
+        (r'can you.*describe.*steps', 'Reproduction steps can be inferred from code'),
+    ]
+    for q in questions:
+        text = q.get('question', '').lower()
+        for pattern, reason in antipatterns:
+            if re.search(pattern, text):
+                return False, f"Question '{q.get('question', '')}' is a generic anti-pattern: {reason}"
+    return True, ''
+
+
+def run_ideating(
+    feature: FeatureFile,
+    runner: AgentRunner,
+    status: Optional[AgentStatus] = None,
+) -> None:
+    """Run the ideation debate process for the feature.
+    
+    Executes multiple rounds of debate based on config, then synthesizes into final Ideation.
+    """
+    config = Config()
+    rounds = config.ideating_rounds
+    
+    if not rounds:
+        logger.warning("[ideating] No ideating rounds configured, skipping")
+        return
+    
+    logger.info(f"[ideating] Starting ideation for: {feature.title}")
+    feature.add_history("IDEATING", "Starting ideation debate")
+    feature.save()
+    
+    conversations_dir = config.boards_dir / feature.board / ".conversations"
+    conversations_dir.mkdir(parents=True, exist_ok=True)
+    
+    existing_convos = list(conversations_dir.glob(f"{feature.slug}.ideating.*"))
+    next_num = 1
+    if existing_convos:
+        nums = []
+        for f in existing_convos:
+            try:
+                nums.append(int(f.name.split(".")[-1]))
+            except ValueError:
+                pass
+        if nums:
+            next_num = max(nums) + 1
+    
+    current_round = 1
+    summaries = []
+    full_outputs = []
+    
+    for round_config in rounds:
+        round_cli = round_config.cli
+        round_model = round_config.model
+        
+        round_runner = runner.for_cli_model(round_cli, round_model)
+        
+        is_proposer = (current_round == 1)
+        if is_proposer:
+            role_instruction = "Generate initial ideas and approach for this feature. Be thorough and explore different angles."
+            previous_discussion = ""
+        else:
+            if current_round % 2 == 1:
+                role_instruction = "Refine and improve upon the previous critique. Address the points raised and provide a better approach."
+            else:
+                role_instruction = "Critique the previous proposal. Find weaknesses, gaps, and areas that need more thought."
+            
+            previous_discussion = "\n\n".join([
+                f"Round {i+1}: {s}" for i, s in enumerate(summaries)
+            ])
+        
+        summaries_text = f"Previous contributions:\n" + "\n".join([f"- {s}" for s in summaries]) if summaries else "This is the first round - no previous discussion."
+        
+        transcript_paths_text = "\n".join([
+            f"- Full transcript: {conversations_dir / f'{feature.slug}.ideating.{i+1}'}"
+            for i in range(len(full_outputs))
+        ]) if full_outputs else "No full transcripts yet."
+        
+        previous_ideation = f"\n\n## Existing Ideation\n{feature.Ideation}" if feature.Ideation else ""
+        
+        prompt = _build_prompt("ideating.md", {
+            "{title}": feature.title,
+            "{description}": feature.description,
+            "{previous_ideation}": previous_ideation,
+            "{role_instruction}": role_instruction,
+            "{discussion_summary}": summaries_text,
+            "{full_transcripts}": transcript_paths_text,
+            "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
+        })
+        
+        feature.add_history("IDEATING", f"Starting round {current_round} ({round_cli}/{round_model or 'default'})")
+        feature.save()
+        
+        if status is not None:
+            status.phase = f"ideating round {current_round}"
+            status.agent = round_cli
+        
+        output = runner.headless(
+            prompt,
+            status=status,
+            phase_key="ideating",
+            output_schema={"summary": "string"},
+        )
+        
+        if not output or not output.strip():
+            logger.error(f"[ideating] Empty output for round {current_round}")
+            feature.add_history("IDEATING", f"Round {current_round} failed: empty output")
+            feature.save()
+            raise RuntimeError(f"Ideation round {current_round} produced empty output")
+        
+        full_output_path = conversations_dir / f"{feature.slug}.ideating.{next_num}"
+        full_output_path.write_text(output)
+        full_outputs.append(output)
+        next_num += 1
+        
+        try:
+            result = json.loads(output)
+            summary = result.get("summary", "")[:500]
+        except json.JSONDecodeError:
+            summary = output[:500]
+        
+        feature.add_ideation_summary(summary)
+        summaries.append(summary)
+        
+        current_round += 1
+    
+    compact_prompt = _build_prompt("compact.md", {
+        "{summaries}": "\n\n".join([f"## Round {i+1}\n{s}" for i, s in enumerate(summaries)]),
+        "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
+    })
+    
+    logger.info(f"[ideating] Running synthesis for: {feature.title}")
+    feature.add_history("IDEATING", "Running synthesis")
+    feature.save()
+    
+    if status is not None:
+        status.phase = "ideating synthesis"
+    
+    synthesis_runner = runner.for_cli_model(rounds[-1].cli, rounds[-1].model)
+    
+    synthesis_output = synthesis_runner.headless(
+        compact_prompt,
+        status=status,
+        phase_key="ideating",
+        output_schema={"Ideation": "string"},
+    )
+    
+    if synthesis_output and synthesis_output.strip():
+        try:
+            result = json.loads(synthesis_output)
+            ideation = result.get("Ideation", "")
+        except json.JSONDecodeError:
+            ideation = synthesis_output
+        
+        feature.set_Ideation(ideation)
+    
+    feature.add_history("IDEATING", "Ideation complete")
+    feature.save()
+    
+    feature.move_to_stage("ideas")
+    
+    logger.info(f"[ideating] Completed: {feature.title}")
+
+
 def run_planning(
     feature: FeatureFile,
     runner: AgentRunner,
@@ -445,6 +880,10 @@ def run_planning(
     if latest_feedback and latest_feedback != "No previous feedback available.":
         feedback_context = f"\n\n## Previous Review Feedback (you MUST address these issues):\n{latest_feedback}\n"
 
+    previous_plan_context = ""
+    if feature.plan and feature.plan.strip():
+        previous_plan_context = f"\n\n## Previous Plan (refine rather than rewrite):\n{feature.plan}\n"
+
     template = "plan-bug.md" if feature.item_type == "bug" else "plan-headless.md"
     prompt = _build_prompt(template, {
         "{title}": feature.title,
@@ -452,6 +891,9 @@ def run_planning(
         "{feature_slug}": feature.slug,
         "{feature_id}": feature.id,
         "{phase}": "planning",
+        "{previous_plan}": previous_plan_context,
+        "{ideation_synthesis}": feature.Ideation or "(no ideation)",
+        "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
     }, "planning")
     
     if questions_context:
@@ -464,35 +906,97 @@ def run_planning(
                         start_message="Starting planning", skip_history_start=True)
 
     # Try to parse JSON output for questions and plan
-    import json
-    import re
-
-    # Try direct JSON parse first, then regex fallback
+    # Try direct JSON parse first, then robust extraction fallback
     result = None
     try:
         result = json.loads(output.strip())
     except json.JSONDecodeError:
-        json_match = re.search(r'\{[\s\S]*\}', output)
-        if json_match:
-            try:
-                result = json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
+        try:
+            result = json5.loads(output.strip())
+        except (json.JSONDecodeError, ValueError):
+            candidates = _extract_json_robust(output)
+            for candidate in reversed(candidates):
+                try:
+                    result = json.loads(candidate)
+                    break
+                except json.JSONDecodeError:
+                    pass
+                try:
+                    result = json5.loads(candidate)
+                    break
+                except (json.JSONDecodeError, ValueError):
+                    pass
 
     if result:
+        # Validate exploration before accepting questions
+        if "questions" in result and isinstance(result["questions"], list) and result["questions"]:
+            is_valid, err = _validate_exploration_artifacts(output)
+            if not is_valid:
+                feature.add_history("PLANNING", f"FAILED: {err}")
+                feature.save()
+                logger.warning(f"[planning] Exploration validation failed for {feature.title}: {err}")
+                raise RuntimeError(f"Planning validation failed: {err}")
+
+            is_valid, err = _check_question_antipatterns(result["questions"])
+            if not is_valid:
+                feature.add_history("PLANNING", f"FAILED: {err}")
+                feature.save()
+                logger.warning(f"[planning] Anti-pattern question detected for {feature.title}: {err}")
+                raise RuntimeError(f"Planning validation failed: {err}")
+
         # Handle questions - must be a list
         if "questions" in result and isinstance(result["questions"], list) and result["questions"]:
             questions = result["questions"]
-            feature.set_questions(questions)
-            feature.add_history("PLANNING", f"Questions raised via {runner.agent.name}")
-            feature.save()
-            feature.move_to_stage("requested-input")
-            console.print(f"[yellow]Plan has {len(questions)} questions for human. Moving to requested-input.[/yellow]")
-            return False
+            # Get existing answered questions to preserve
+            existing_answers = {q.get("question"): q.get("answer") for q in feature.questions if q.get("answer")}
+            # Merge new questions with existing answers
+            merged_questions = []
+            for q in questions:
+                q_text = q.get("question", "")
+                prev_answer = existing_answers.get(q_text, "")
+                merged_questions.append({
+                    "question": q_text,
+                    "answer": prev_answer
+                })
+            feature._data["questions"] = merged_questions
+            feature._save()
+            
+            # Check if all questions have answers - if so, skip to reviewing-plan
+            unanswered = [q for q in merged_questions if not q.get("answer")]
+            if not unanswered:
+                # All questions answered, continue with plan if available
+                if "plan" in result and isinstance(result.get("plan"), str) and result["plan"]:
+                    feature.set_plan(result["plan"])
+                    if "exploration_summary" in result and isinstance(result.get("exploration_summary"), str):
+                        feature.set_plan_exploration_summary(result["exploration_summary"])
+                    feature.add_history("PLANNING", f"Plan generated via {runner.agent.name} (questions answered)")
+                    feature.save()
+                    feature.move_to_stage("reviewing-plan")
+                    _git_commit(feature, "planning complete")
+                    _delete_checkpoint(feature)
+                    console.print("[green]All questions answered. Plan generated. Moving to reviewing-plan.[/green]")
+                    return True
+                else:
+                    # No plan yet but questions answered - this shouldn't happen normally
+                    feature.add_history("PLANNING", f"All questions answered via {runner.agent.name}")
+                    feature.save()
+                    console.print("[yellow]All questions answered but no plan yet. Will need another planning run.[/yellow]")
+                    return False
+            else:
+                # Has unanswered questions - move to requested-input
+                feature.add_history("PLANNING", f"Questions raised via {runner.agent.name}")
+                if "exploration_summary" in result and isinstance(result.get("exploration_summary"), str):
+                    feature.set_plan_exploration_summary(result["exploration_summary"])
+                feature.save()
+                feature.move_to_stage("requested-input")
+                console.print(f"[yellow]Plan has {len(unanswered)} unanswered questions. Moving to requested-input.[/yellow]")
+                return False
 
         # Handle plan - must be a string
         if "plan" in result and isinstance(result.get("plan"), str) and result["plan"]:
             feature.set_plan(result["plan"])
+            if "exploration_summary" in result and isinstance(result.get("exploration_summary"), str):
+                feature.set_plan_exploration_summary(result["exploration_summary"])
             feature.add_history("PLANNING", f"Plan generated via {runner.agent.name}")
             feature.save()
             feature.move_to_stage("reviewing-plan")
@@ -522,6 +1026,32 @@ def run_planning(
     return True
 
 
+def _is_system_error_in_latest_review(feature: FeatureFile) -> bool:
+    """Check if the latest plan review failed due to a system error."""
+    latest_review = feature.get_latest_plan_review()
+    if not latest_review:
+        return False
+    
+    feedback = latest_review.get('feedback', '').lower()
+    
+    system_error_patterns = [
+        'system error',
+        'returned a plan instead of a review verdict',
+        'api error',
+        'authentication error', 
+        'invalid api key',
+        'rate limit',
+        'json parse error',
+        'malformed json',
+        'no valid json',
+        'empty output',
+        'network error',
+        'timeout'
+    ]
+    
+    return any(pattern in feedback for pattern in system_error_patterns)
+
+
 def run_plan_review(
     feature: FeatureFile,
     runner: AgentRunner,
@@ -541,15 +1071,30 @@ def run_plan_review(
         "{description}": feature.get_section("Description") or "(none)",
         "{plan}": feature.plan or "(none)",
         "{feedback_section}": feedback_section,
+        "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
     }, "reviewing_plan")
 
-    output = _run_phase("reviewing_plan", feature, runner, prompt, status=status,
-                        start_message="Starting plan review")
+    try:
+        output = _run_phase("reviewing_plan", feature, runner, prompt, status=status,
+                            start_message="Starting plan review")
+    except (RateLimitError, RuntimeError) as e:
+        error_msg = str(e)
+        if 'authentication error' in error_msg.lower() or 'api key' in error_msg.lower():
+            system_feedback = f"SYSTEM ERROR: Authentication failure - {error_msg}. This is not a plan issue. Review should be retried after fixing API configuration."
+        elif isinstance(e, RateLimitError):
+            system_feedback = f"SYSTEM ERROR: Rate limit exceeded - {error_msg}. This is not a plan issue. Review should be retried after rate limit clears."
+        else:
+            system_feedback = f"SYSTEM ERROR: Agent execution failed - {error_msg}. This is not a plan issue. Review should be retried."
+        
+        feature.add_plan_review("FAIL", "System error during review", system_feedback)
+        feature.add_history("PLAN_REVIEW_FAILED", f"System error: {error_msg}")
+        feature.save()
+        return "FAIL", system_feedback
 
-    verdict, review_feedback = _parse_verdict(output)
+    verdict, summary, review_feedback = _parse_verdict(output)
 
-    feature.add_plan_review(verdict, review_feedback)
-    feature.add_history("PLAN_REVIEW", f"Verdict: {verdict}")
+    feature.add_plan_review(verdict, summary, review_feedback)
+    feature.add_history("PLAN_REVIEW", f"Verdict: {verdict} - {summary}")
     feature.save()
     _git_commit(feature, "plan review complete")
     _delete_checkpoint(feature)
@@ -577,12 +1122,13 @@ def run_spec_writing(
         "{feature_slug}": feature.slug,
         "{feature_id}": feature.id,
         "{phase}": "spec-implementation",
+        "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
     }, "spec_impl")
 
     output = _run_phase("spec_impl", feature, runner, impl_prompt, status=status)
     
     # Parse JSON output
-    impl_spec = _parse_json_output(output, "implementation_spec")
+    impl_spec = _parse_json_output(output, "implementation_spec", PHASE_SCHEMAS.get("spec_impl"))
     if not impl_spec:
         impl_spec = output.strip()
     feature.set_impl_spec(impl_spec)
@@ -595,12 +1141,13 @@ def run_spec_writing(
         "{feature_slug}": feature.slug,
         "{feature_id}": feature.id,
         "{phase}": "spec-test",
+        "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
     }, "spec_test")
 
     output = _run_phase("spec_test", feature, runner, test_prompt, status=status, skip_history_start=True)
     
     # Parse JSON output
-    test_spec = _parse_json_output(output, "test_spec")
+    test_spec = _parse_json_output(output, "test_spec", PHASE_SCHEMAS.get("spec_test"))
     if not test_spec:
         test_spec = output.strip()
     feature.set_test_spec(test_spec)
@@ -631,6 +1178,7 @@ def run_implementing(
         "{feature_slug}": feature.slug,
         "{feature_id}": feature.id,
         "{phase}": "implementing",
+        "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
     }, "implementing")
 
     latest_feedback = _get_latest_feedback(feature)
@@ -639,7 +1187,7 @@ def run_implementing(
     
     output = _run_phase("implementing", feature, runner, prompt, status=status,
                         start_message="Starting implementation")
-    summary = _parse_json_output(output, "summary")
+    summary = _parse_json_output(output, "summary", PHASE_SCHEMAS.get("implementing"))
     impl_notes = _strip_markdown(str(summary)) if summary else _strip_markdown(output.strip())
     feature.set_impl_notes(impl_notes)
     feature.add_history("IMPLEMENTING", f"Implementation completed via {runner.agent.name}")
@@ -677,13 +1225,14 @@ def run_fix_feedback(
         "{feature_slug}": feature.slug,
         "{feature_id}": feature.id,
         "{phase}": "fix-feedback",
+        "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
     }, "fix_feedback")
 
     output = _run_phase("fix_feedback", feature, runner, prompt, status=status,
                         start_message="Starting fix feedback")
 
     existing_notes = feature.impl_notes or ""
-    summary = _parse_json_output(output, "summary")
+    summary = _parse_json_output(output, "summary", PHASE_SCHEMAS.get("fix_feedback"))
     fix_summary = _strip_markdown(str(summary)) if summary else _strip_markdown(output.strip())
     updated = f"{existing_notes}\n\nFix Feedback\n\n{fix_summary}"
     feature.set_impl_notes(updated)
@@ -717,23 +1266,39 @@ def run_verify_tests(
         "{feature_slug}": feature.slug,
         "{feature_id}": feature.id,
         "{phase}": "verifying-tests",
+        "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
     }, "testing")
 
     output = _run_phase("testing", feature, runner, prompt, status=status,
                         start_message="Starting test verification")
 
-    verdict, feedback = _parse_verdict(output)
+    verdict, summary, feedback = _parse_verdict(output)
     
     test_results = {}
     try:
         result = json.loads(output.strip())
     except json.JSONDecodeError:
         try:
-            json_match = re.search(r'\{[\s\S]*\}', output)
-            if json_match:
-                result = json.loads(json_match.group())
-        except (json.JSONDecodeError, AttributeError):
-            result = None
+            result = json5.loads(output.strip())
+        except (json.JSONDecodeError, ValueError):
+            candidates = _extract_json_robust(output)
+            for candidate in reversed(candidates):
+                try:
+                    parsed = json.loads(candidate)
+                    if isinstance(parsed, dict):
+                        result = parsed
+                        break
+                except json.JSONDecodeError:
+                    pass
+                try:
+                    parsed = json5.loads(candidate)
+                    if isinstance(parsed, dict):
+                        result = parsed
+                        break
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            else:
+                result = None
     
     if result and "test_results" in result:
         test_results = result.get("test_results", {})
@@ -774,15 +1339,16 @@ def run_review_impl(
         "{plan}": feature.plan or "(no plan)",
         "{test_spec}": _spec_to_string(feature.test_spec) or "(no test spec)",
         "{impl_notes}": _spec_to_string(feature.impl_notes) or "(no impl notes)",
+        "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
     }, "review_impl")
 
     output = _run_phase("review_impl", feature, runner, prompt, status=status,
                         start_message="Starting review")
 
-    verdict, feedback = _parse_verdict(output)
+    verdict, summary, feedback = _parse_verdict(output)
 
-    feature.add_impl_review(verdict, feedback)
-    feature.add_history("REVIEW", f"Verdict: {verdict}")
+    feature.add_impl_review(verdict, summary, feedback)
+    feature.add_history("REVIEW", f"Verdict: {verdict} - {summary}")
 
     if verdict == "PASS":
         feature.save()
@@ -845,10 +1411,24 @@ def _run_pipeline_impl(
     
     # Phase 0b: Plan review (with retries)
     if feature.current_stage == "reviewing-plan":
+        max_total_plan_reviews = 6
+        if len(feature.plan_reviews) >= max_total_plan_reviews:
+            console.print(
+                f"[red]Plan has already been reviewed {len(feature.plan_reviews)} times total. "
+                f"Moving to final-human-approval for manual intervention.[/red]"
+            )
+            feature.add_history("FINAL_HUMAN_APPROVAL", f"Plan review exhausted {len(feature.plan_reviews)} total reviews")
+            feature.move_to_stage("final-human-approval")
+            feature.save()
+            return
+
         max_plan_review_attempts = 3
+        system_error_count = 0
+        
         for attempt in range(1, max_plan_review_attempts + 1):
             latest_plan_review = feature.get_latest_plan_review()
             plan_feedback = latest_plan_review.get("feedback", "") if latest_plan_review else ""
+            
             verdict, plan_feedback = run_plan_review(
                 feature, runner, feedback=plan_feedback, status=status
             )
@@ -860,27 +1440,48 @@ def _run_pipeline_impl(
                 _git_commit(feature, "plan approved")
                 break
             
-            if attempt < max_plan_review_attempts:
-                console.print(
-                    f"[yellow]Plan review attempt {attempt}/{max_plan_review_attempts} failed. "
-                    f"Retrying...[/yellow]"
-                )
-                # Go back to planning with feedback
-                feature.move_to_stage("plan-inbox")
-                feature.add_history("PLAN_REVIEW", "Sending back for re-planning")
-                feature.save()
-                plan_ok = run_planning(feature, runner, status=status)
-                if not plan_ok:
-                    # Questions raised during re-planning, cannot continue review loop
+            # Check if this was a system error
+            if _is_system_error_in_latest_review(feature):
+                system_error_count += 1
+                if attempt < max_plan_review_attempts:
+                    console.print(
+                        f"[yellow]Plan review attempt {attempt}/{max_plan_review_attempts} failed due to system error. "
+                        f"Retrying review directly...[/yellow]"
+                    )
+                    continue  # Retry review without re-planning
+                else:
+                    # Exhausted retries with system errors
+                    console.print(
+                        f"[red]Plan review failed after {max_plan_review_attempts} attempts due to persistent system errors. "
+                        f"Moving to final-human-approval for manual intervention.[/red]"
+                    )
+                    feature.add_history("FINAL_HUMAN_APPROVAL", f"Plan review exhausted retries due to system errors (system errors: {system_error_count}, total attempts: {attempt})")
+                    feature.move_to_stage("final-human-approval")
+                    feature.save()
                     return
-                # Plan produced - run_planning already moved to reviewing-plan
+            else:
+                # Real plan failure - go back to planning
+                if attempt < max_plan_review_attempts:
+                    console.print(
+                        f"[yellow]Plan review attempt {attempt}/{max_plan_review_attempts} failed due to plan issues. "
+                        f"Sending back for re-planning...[/yellow]"
+                    )
+                    # Go back to planning with feedback
+                    feature.move_to_stage("plan-inbox")
+                    feature.add_history("PLAN_REVIEW", "Sending back for re-planning")
+                    feature.save()
+                    plan_ok = run_planning(feature, runner, status=status)
+                    if not plan_ok:
+                        # Questions raised during re-planning, cannot continue review loop
+                        return
+                    # Plan produced - run_planning already moved to reviewing-plan
         else:
             # Exhausted retries
             console.print(
                 f"[red]Plan review failed after {max_plan_review_attempts} attempts. "
                 f"Moving to final-human-approval for manual intervention.[/red]"
             )
-            feature.add_history("FINAL_HUMAN_APPROVAL", "Plan review exhausted retries")
+            feature.add_history("FINAL_HUMAN_APPROVAL", f"Plan review exhausted retries (system errors: {system_error_count}, total attempts: {max_plan_review_attempts})")
             feature.move_to_stage("final-human-approval")
             feature.save()
             return

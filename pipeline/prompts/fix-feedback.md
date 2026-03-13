@@ -2,6 +2,8 @@ You are an AI coding agent tasked with fixing specific issues found in a code re
 
 ## Feature: {title}
 
+**Feature Data:** `{feature_file_path}`
+
 ### Original Plan:
 {plan}
 
@@ -13,6 +15,19 @@ You are an AI coding agent tasked with fixing specific issues found in a code re
 
 ### Current Implementation:
 {impl_notes}
+
+---
+
+## Modifying Feature Files
+
+IMPORTANT: Use the `pipeline edit-feature` CLI to modify feature JSON files instead of direct JSON editing:
+
+- Set impl_notes: `pipeline edit-feature <slug> set-field impl_notes "Implementation notes..."`
+- Set content from file: `pipeline edit-feature <slug> set-field <field_name> --file /path/to/content.md`
+
+Available fields: title, description, plan, impl_spec, test_spec, impl_notes, type, design_ref, done_script, questions
+
+This prevents JSON corruption and ensures proper validation.
 
 ---
 

@@ -15,16 +15,21 @@ Usage:
     pipeline agent use <name>
 """
 
+import logging
 import sys
 from pathlib import Path
 
 import click
+import json
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
+logger = logging.getLogger("pipeline")
+
 from config import Config
+from lock import PipelineLock, PipelineLockError
 from phases import run_pipeline, run_planning, run_pipeline_from_implementing, run_verify_tests
 from runner import AgentRunner
 from schedule import (
@@ -40,6 +45,58 @@ from schedule import (
 from state import STAGES, FeatureFile
 
 console = Console()
+
+FIELD_SETTERS = {
+    "title": "set_title",
+    "description": "set_description",
+    "plan": "set_plan",
+    "impl_spec": "set_impl_spec",
+    "test_spec": "set_test_spec",
+    "impl_notes": "set_impl_notes",
+    "type": "set_item_type",
+    "design_ref": "set_design_ref",
+    "done_script": "set_done_script",
+    "questions": "set_questions",
+}
+
+FIELD_GETTERS = {
+    "title": "title",
+    "description": "description",
+    "plan": "plan",
+    "impl_spec": "impl_spec",
+    "test_spec": "test_spec",
+    "impl_notes": "impl_notes",
+    "type": "item_type",
+    "design_ref": "design_ref",
+    "done_script": "done_script",
+    "questions": "questions",
+}
+
+
+def _read_input(value, stdin_flag, file_path):
+    """Read input from value, stdin, or file based on which source is specified."""
+    if file_path:
+        try:
+            return Path(file_path).read_text()
+        except FileNotFoundError:
+            console.print(f"[red]File not found:[/red] {file_path}")
+            sys.exit(1)
+        except PermissionError:
+            console.print(f"[red]Permission denied:[/red] {file_path}")
+            sys.exit(1)
+        except Exception as e:
+            console.print(f"[red]Error reading file:[/red] {e}")
+            sys.exit(1)
+    
+    if stdin_flag:
+        content = sys.stdin.read()
+        return content
+    
+    if value is not None:
+        return value
+    
+    console.print("[red]Error:[/red] No value provided. Use argument, --stdin, or --file.")
+    sys.exit(1)
 
 
 def get_config() -> Config:
@@ -187,14 +244,6 @@ def review(feature_id: str):
 
 
 # ---------------------------------------------------------------------------
-# pipeline approve
-# ---------------------------------------------------------------------------
-
-# (removed - plan-awaiting-human stage was removed)
-    console.print(f"[dim]Run the pipeline with: pipeline run {feature.slug}[/dim]")
-
-
-# ---------------------------------------------------------------------------
 # pipeline design-ref
 # ---------------------------------------------------------------------------
 
@@ -302,6 +351,13 @@ def done(feature_id: str):
         except Exception as e:
             console.print(f"[yellow]Warning:[/yellow] Design doc update failed: {e}")
 
+    # Execute done script if configured
+    from scripts import execute_done_script
+    try:
+        execute_done_script(feature, get_config())
+    except Exception as e:
+        console.print(f"[yellow]Warning:[/yellow] Done script execution failed: {e}")
+
     console.print(f"[green]Done:[/green] {feature.title}")
 
 
@@ -311,13 +367,15 @@ def done(feature_id: str):
 
 @cli.command("run")
 @click.argument("feature_id", required=False, default=None)
-def run_feature(feature_id: str):
+@click.option("--force", is_flag=True, help="Override existing pipeline lock")
+def run_feature(feature_id: str, force: bool):
     """Run the full automated pipeline on a feature.
 
     If no feature_id given, picks the oldest approved feature.
     """
     config = get_config()
     runner = AgentRunner(config)
+    lock = PipelineLock(config)
 
     if feature_id:
         feature = find_feature_or_exit(feature_id)
@@ -340,6 +398,14 @@ def run_feature(feature_id: str):
             f"not 'approved'. Proceeding anyway."
         )
 
+    if not lock.acquire("impl", force=force):
+        info = lock.check("impl")
+        if info:
+            console.print(f"[red]Error:[/red] Pipeline locked by PID {info.pid} on {info.hostname} since {info.timestamp} (user: {info.username})")
+        else:
+            console.print(f"[red]Error:[/red] Pipeline is locked")
+        sys.exit(1)
+    
     run_store = RunStore()
     run = RunRecord.create_manual(feature_id=feature.id, feature_slug=feature.slug)
     run_store.save(run)
@@ -354,6 +420,7 @@ def run_feature(feature_id: str):
         raise
     finally:
         run_store.save(run)
+        lock.release("impl")
 
 
 @cli.command("restart")
@@ -362,7 +429,8 @@ def run_feature(feature_id: str):
               type=click.Choice(["spec-writing", "implementing", "testing", "review"]),
               default="implementing",
               help="Phase to restart from (default: implementing)")
-def restart_feature(feature_id: str, from_phase: str):
+@click.option("--force", is_flag=True, help="Override existing pipeline lock")
+def restart_feature(feature_id: str, from_phase: str, force: bool):
     """Restart pipeline from a specific phase.
     
     Use this to resume a stuck feature or re-run from a specific stage.
@@ -380,7 +448,16 @@ def restart_feature(feature_id: str, from_phase: str):
     
     config = get_config()
     runner = AgentRunner(config)
+    lock = PipelineLock(config)
     feature = find_feature_or_exit(feature_id)
+    
+    if not lock.acquire("impl", force=force):
+        info = lock.check("impl")
+        if info:
+            console.print(f"[red]Error:[/red] Pipeline locked by PID {info.pid} on {info.hostname} since {info.timestamp} (user: {info.username})")
+        else:
+            console.print(f"[red]Error:[/red] Pipeline is locked")
+        sys.exit(1)
     
     console.print(f"[bold]Restarting from:[/bold] {from_phase}")
     console.print(f"[dim]Current stage: {feature.current_stage}[/dim]")
@@ -433,12 +510,14 @@ def restart_feature(feature_id: str, from_phase: str):
         raise
     finally:
         run_store.save(run)
+        lock.release("impl")
 
 
-@click.command()
+@cli.command()
 @click.option("--all", "run_all", is_flag=True, help="Run all approved features once")
 @click.option("--interval", default=30, help="Polling interval in seconds (only with --all)")
-def auto(run_all: bool, interval: int):
+@click.option("--force", is_flag=True, help="Override existing pipeline lock")
+def auto(run_all: bool, interval: int, force: bool):
     """Run the pipeline automatically on approved features.
     
     Without --all: runs continuously, monitoring for new approved features.
@@ -446,15 +525,11 @@ def auto(run_all: bool, interval: int):
     
     Press Ctrl+C to stop the continuous loop.
     """
-    """Run the pipeline automatically on approved features in a loop.
-    
-    Continuously monitors for approved features and runs them through
-    the pipeline automatically. Press Ctrl+C to stop.
-    """
     import time
     
     config = get_config()
     runner = AgentRunner(config)
+    lock = PipelineLock(config)
     processed_slugs: set[str] = set()
     
     def process_features():
@@ -469,6 +544,15 @@ def auto(run_all: bool, interval: int):
                 if f.slug in processed_slugs:
                     continue
                 
+                # Check lock
+                if not force and lock.check('impl'):
+                    console.print(f"[dim]Skipping {f.title} - locked by another process[/dim]")
+                    continue
+                
+                if not lock.acquire('impl', force=force):
+                    console.print(f"[dim]Skipping {f.title} - could not acquire lock[/dim]")
+                    continue
+                
                 processed_slugs.add(f.slug)
                 console.print(f"\n[bold cyan]Resuming:[/bold cyan] {f.title} (in implementing)")
                 
@@ -479,6 +563,8 @@ def auto(run_all: bool, interval: int):
                 except Exception as e:
                     console.print(f"[red]Failed:[/red] {e}")
                     processed_slugs.discard(f.slug)
+                finally:
+                    lock.release('impl')
                 
                 return True
             
@@ -486,6 +572,15 @@ def auto(run_all: bool, interval: int):
             review = FeatureFile.list_all(board=board, stage="review")
             for f in review:
                 if f.slug in processed_slugs:
+                    continue
+                
+                # Check lock
+                if not force and lock.check('impl'):
+                    console.print(f"[dim]Skipping {f.title} - locked by another process[/dim]")
+                    continue
+                
+                if not lock.acquire('impl', force=force):
+                    console.print(f"[dim]Skipping {f.title} - could not acquire lock[/dim]")
                     continue
                 
                 processed_slugs.add(f.slug)
@@ -502,15 +597,57 @@ def auto(run_all: bool, interval: int):
                 except Exception as e:
                     console.print(f"[red]Failed:[/red] {e}")
                     processed_slugs.discard(f.slug)
+                finally:
+                    lock.release('impl')
                 
                 return True
             
-            # 3. approved - fresh features starting the pipeline
+            # 3. ideating - run ideation debate, move back to ideas
+            ideating = FeatureFile.list_all(board=board, stage="ideating")
+            logger.info(f"[auto] Checking {board}/ideating: found {len(ideating)} items")
+            for f in ideating:
+                if f.slug in processed_slugs:
+                    continue
+                
+                # Check lock
+                if not force and lock.check('impl'):
+                    console.print(f"[dim]Skipping {f.title} - locked by another process[/dim]")
+                    continue
+                
+                if not lock.acquire('impl', force=force):
+                    console.print(f"[dim]Skipping {f.title} - could not acquire lock[/dim]")
+                    continue
+                
+                processed_slugs.add(f.slug)
+                console.print(f"\n[bold cyan]Ideating:[/bold cyan] {f.title}")
+                
+                try:
+                    from phases import run_ideating
+                    run_ideating(f, runner)
+                    console.print(f"[green]Ideation complete:[/green] {f.title}")
+                except Exception as e:
+                    console.print(f"[red]Failed:[/red] {e}")
+                    processed_slugs.discard(f.slug)
+                finally:
+                    lock.release('impl')
+                
+                return True
+            
+            # 4. approved - fresh features starting the pipeline
             approved = FeatureFile.list_all(board=board, stage="approved")
             for f in approved:
                 if f.slug in processed_slugs:
                     continue
                 if f.current_stage != "approved":
+                    continue
+                
+                # Check lock
+                if not force and lock.check('impl'):
+                    console.print(f"[dim]Skipping {f.title} - locked by another process[/dim]")
+                    continue
+                
+                if not lock.acquire('impl', force=force):
+                    console.print(f"[dim]Skipping {f.title} - could not acquire lock[/dim]")
                     continue
                 
                 processed_slugs.add(f.slug)
@@ -522,6 +659,8 @@ def auto(run_all: bool, interval: int):
                 except Exception as e:
                     console.print(f"[red]Failed:[/red] {e}")
                     processed_slugs.discard(f.slug)
+                finally:
+                    lock.release('impl')
                 
                 return True
         return False
@@ -550,6 +689,68 @@ def auto(run_all: bool, interval: int):
             
     except KeyboardInterrupt:
         console.print("\n[yellow]Auto-run stopped.[/yellow]")
+
+
+# ---------------------------------------------------------------------------
+# pipeline lock
+# ---------------------------------------------------------------------------
+
+@cli.group('lock')
+def lock_group():
+    """Manage pipeline locks."""
+    pass
+
+
+@lock_group.command('status')
+def lock_status():
+    """Show the current lock state for plan and impl phases."""
+    config = get_config()
+    lock = PipelineLock(config)
+    
+    from datetime import datetime
+    
+    console.print(Panel(
+        "[bold]Pipeline Lock Status[/bold]",
+        border_style="cyan",
+    ))
+    
+    for phase in ['plan', 'impl', 'tui']:
+        info = lock.check(phase)
+        if info:
+            try:
+                lock_time = datetime.fromisoformat(info.timestamp)
+                age = datetime.now() - lock_time
+                age_str = f"{int(age.total_seconds() // 60)}m"
+            except ValueError:
+                age_str = "unknown"
+            
+            console.print(f"[bold]{phase.upper()}:[/bold] Locked by PID {info.pid} on {info.hostname}")
+            console.print(f"  Started: {info.timestamp} (age: {age_str})")
+            console.print(f"  User: {info.username}")
+        else:
+            console.print(f"[bold]{phase.upper()}:[/bold] [green]Free[/green]")
+        console.print()
+
+
+@lock_group.command('clear')
+@click.argument('phase', type=click.Choice(['plan', 'impl', 'tui', 'all']))
+def lock_clear(phase: str):
+    """Force-clear the lock for a phase."""
+    config = get_config()
+    lock = PipelineLock(config)
+    
+    phases_to_clear = ['plan', 'impl', 'tui'] if phase == 'all' else [phase]
+    
+    for p in phases_to_clear:
+        lock_path = lock._lock_path(p)
+        if lock_path.exists():
+            try:
+                lock_path.unlink()
+                console.print(f"[green]Cleared lock for '{p}'[/green]")
+            except Exception as e:
+                console.print(f"[red]Failed to clear lock for '{p}': {e}[/red]")
+        else:
+            console.print(f"[dim]No lock file for '{p}'[/dim]")
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +826,157 @@ def agent_use(name: str):
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
         sys.exit(1)
+
+
+@agent.command("set-model")
+@click.argument("phase")
+@click.argument("model")
+def agent_set_model(phase: str, model: str):
+    """Set model override for a phase."""
+    config = get_config()
+    phase_cfg = config.agent_for_phase.get(phase)
+    agent_name = phase_cfg.agent if phase_cfg else config.current_agent_name
+    config.set_agent_for_phase(phase, agent_name, model=model)
+    console.print(f"[green]Set model for {phase} to {model}[/green]")
+
+
+@agent.command("clear-model")
+@click.argument("phase")
+def agent_clear_model(phase: str):
+    """Clear model override for a phase."""
+    config = get_config()
+    phase_cfg = config.agent_for_phase.get(phase)
+    agent_name = phase_cfg.agent if phase_cfg else config.current_agent_name
+    config.set_agent_for_phase(phase, agent_name, model=None)
+    console.print(f"[green]Cleared model override for {phase}[/green]")
+
+
+# ---------------------------------------------------------------------------
+# pipeline edit-feature
+# ---------------------------------------------------------------------------
+
+@cli.group("edit-feature")
+@click.argument("slug")
+@click.pass_context
+def edit_feature(ctx, slug: str):
+    """Modify feature JSON files using structured commands.
+    
+    Examples:
+    
+        pipeline edit-feature myfeature set-field title "New Title"
+        pipeline edit-feature myfeature get-field plan
+    """
+    feature = find_feature_or_exit(slug)
+    ctx.obj = {"feature": feature}
+
+
+@edit_feature.command("set-field")
+@click.argument("field_name")
+@click.argument("value", required=False)
+@click.option("--stdin", is_flag=True, help="Read value from stdin")
+@click.option("--file", "file_path", type=click.Path(), help="Read value from file")
+@click.pass_context
+def set_field(ctx, field_name: str, value: str, stdin: bool, file_path: str):
+    """Set a field on a feature file.
+    
+    Examples:
+    
+        pipeline edit-feature myfeature set-field title "New Title"
+        echo "multi-line content" | pipeline edit-feature myfeature set-field plan --stdin
+        pipeline edit-feature myfeature set-field impl_spec --file /path/to/spec.md
+    """
+    feature = ctx.obj["feature"]
+    
+    if field_name not in FIELD_SETTERS:
+        console.print(f"[red]Invalid field:[/red] {field_name}")
+        console.print(f"[dim]Supported fields: {', '.join(FIELD_SETTERS.keys())}[/dim]")
+        sys.exit(1)
+    
+    content = _read_input(value, stdin, file_path)
+    
+    try:
+        if field_name == "questions":
+            parsed = json.loads(content)
+            if not isinstance(parsed, list):
+                console.print("[red]Error:[/red] questions must be a JSON array")
+                sys.exit(1)
+            for item in parsed:
+                if not isinstance(item, dict) or "question" not in item:
+                    console.print("[red]Error:[/red] each question must be a dict with 'question' key")
+                    sys.exit(1)
+            getattr(feature, FIELD_SETTERS[field_name])(parsed)
+        else:
+            getattr(feature, FIELD_SETTERS[field_name])(content)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+    
+    console.print(f"[green]Set {field_name} on {feature.slug}[/green]")
+
+
+@edit_feature.command("get-field")
+@click.argument("field_name")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+@click.pass_context
+def get_field(ctx, field_name: str, json_output: bool):
+    """Get a field value from a feature file.
+    
+    Examples:
+    
+        pipeline edit-feature myfeature get-field plan
+        pipeline edit-feature myfeature get-field plan --json
+    """
+    feature = ctx.obj["feature"]
+    
+    if field_name not in FIELD_GETTERS:
+        console.print(f"[red]Invalid field:[/red] {field_name}")
+        console.print(f"[dim]Supported fields: {', '.join(FIELD_GETTERS.keys())}[/dim]")
+        sys.exit(1)
+    
+    val = getattr(feature, FIELD_GETTERS[field_name])
+    
+    if json_output:
+        print(json.dumps(val))
+    else:
+        if isinstance(val, (dict, list)):
+            print(json.dumps(val, indent=2))
+        else:
+            print(val)
+
+
+@edit_feature.command("set-test-results")
+@click.argument("json_data", required=False)
+@click.option("--stdin", is_flag=True, help="Read JSON from stdin")
+@click.pass_context
+def set_test_results(ctx, json_data: str, stdin: bool):
+    """Set test results on a feature file.
+    
+    Examples:
+    
+        pipeline edit-feature myfeature set-test-results '{"passed": 5, "failed": 1, "details": "..."}'
+        echo '{"passed": 3}' | pipeline edit-feature myfeature set-test-results --stdin
+    """
+    feature = ctx.obj["feature"]
+    
+    if stdin:
+        content = sys.stdin.read()
+    elif json_data:
+        content = json_data
+    else:
+        console.print("[red]Error:[/red] Provide JSON data as argument or use --stdin")
+        sys.exit(1)
+    
+    try:
+        parsed = json.loads(content)
+        if not isinstance(parsed, dict):
+            console.print("[red]Error:[/red] test results must be a JSON object")
+            sys.exit(1)
+        feature.set_test_results(parsed)
+    except json.JSONDecodeError as e:
+        console.print(f"[red]Invalid JSON:[/red] {e}")
+        sys.exit(1)
+    
+    console.print(f"[green]Set test_results on {feature.slug}[/green]")
 
 
 # ---------------------------------------------------------------------------

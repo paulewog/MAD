@@ -1,27 +1,31 @@
 {
-  "id": "4367baf0",
+  "id": "977b4e38",
   "board": "testboard",
   "title": "Test Feature",
   "type": "feature",
-  "created": "2026-03-07T19:31Z",
+  "created": "2026-03-10T19:28Z",
   "description": "Description",
+  "done_script": "",
   "plan": "",
+  "plan_exploration_summary": "",
   "impl_spec": "",
   "test_spec": "",
-  "impl_notes": "\n\n### Fix Feedback\n\nfixed",
+  "impl_notes": "\n\nFix Feedback\n\nfixed",
+  "ideation_summaries": [],
+  "Ideation": "",
   "history": [
     {
-      "ts": "2026-03-07T19:31Z",
+      "ts": "2026-03-10T19:28Z",
       "stage": "IDEAS",
       "note": "Idea created"
     },
     {
-      "ts": "2026-03-07T19:31Z",
+      "ts": "2026-03-10T19:28Z",
       "stage": "FIX_FEEDBACK",
-      "note": "Fixed issues per review feedback via <MagicMock name='mock.for_phase().agent.name' id='134189293002272'>"
+      "note": "Fixed issues per review feedback via <MagicMock name='mock.for_phase().agent.name' id='1256482781..."
     },
     {
-      "ts": "2026-03-07T19:31Z",
+      "ts": "2026-03-10T19:28Z",
       "stage": "TESTING",
       "note": "Moved to testing phase after fixing feedback"
     }
@@ -30,9 +34,10 @@
   "plan_reviews": [],
   "impl_reviews": [
     {
-      "ts": "2026-03-07T19:31Z",
+      "ts": "2026-03-10T19:28Z",
       "verdict": "FAIL",
-      "feedback": "Bug in login function"
+      "summary": "Bug in login function",
+      "feedback": "Fix it"
     }
   ]
 }

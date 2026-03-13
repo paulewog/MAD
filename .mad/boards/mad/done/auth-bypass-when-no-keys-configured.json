@@ -1,0 +1,432 @@
+{
+  "id": "a1b2c307",
+  "board": "mad",
+  "title": "Auth bypass when no API keys configured",
+  "type": "bug",
+  "created": "2026-03-08T06:00Z",
+  "description": "server/api.go checkAnyAuth() returns true if both APIKey and DashboardKey are empty, leaving the server fully open by default. Combined with WebSocket access to push state changes, this is a security gap on any networked deployment. Should require explicit opt-in for unauthenticated access or require keys to be set.",
+  "plan": "Root Cause Analysis:\nThe authentication system has multiple bypass vulnerabilities where all authentication functions (checkAnyAuth, checkAPIAuth, checkDashboardAuth) return true when their respective keys are empty. The WebSocket endpoint also independently checks for empty API key and allows access. While there is an existing MAD_ALLOW_NO_AUTH environment variable that prevents server startup when no keys are configured, this setting is not propagated to runtime authentication decisions.\n\nFix Approach:\n1. Add AllowUnauthenticatedAccess field to Config struct to capture the MAD_ALLOW_NO_AUTH=1 setting\n2. Update loadConfig() to set this field based on the environment variable  \n3. Fix checkAnyAuth() to check cfg.AllowUnauthenticatedAccess instead of just empty keys\n4. Fix checkAPIAuth() and checkDashboardAuth() to not return true for empty keys\n5. Fix WebSocket endpoint (lines 447-448) to use checkAnyAuth() instead of direct cfg.APIKey check\n6. Ensure all authentication functions consistently respect the explicit opt-in for unauthenticated access\n\nVerification Steps:\n1. Verify existing behavior: server refuses to start when MAD_ALLOW_NO_AUTH is not set and no keys configured (already implemented in config.go lines 43-45)\n2. Test that when MAD_ALLOW_NO_AUTH=1, server starts and allows unauthenticated access\n3. Test that when keys are configured, authentication is properly enforced\n4. Test WebSocket endpoint authentication works consistently with other endpoints\n5. Test that empty keys no longer automatically grant access without explicit opt-in\n\nFiles to Modify:\n- server/config.go: Add AllowUnauthenticatedAccess field and set it in loadConfig()\n- server/api.go: Update checkAnyAuth(), checkAPIAuth(), checkDashboardAuth(), and WebSocket endpoint",
+  "impl_spec": "## Implementation Tasks for Auth Bypass Fix\n\n### Task 1: Add AllowUnauthenticatedAccess field to Config struct\n**File:** server/config.go\n**Action:** Modify Config struct on line 11-17\n**Details:** Add new boolean field `AllowUnauthenticatedAccess bool` to the Config struct\n**Dependencies:** None\n\n### Task 2: Update loadConfig() to set AllowUnauthenticatedAccess field\n**File:** server/config.go\n**Action:** Modify loadConfig() function around lines 19-61\n**Details:** \n- Add line to set `cfg.AllowUnauthenticatedAccess = os.Getenv(\"MAD_ALLOW_NO_AUTH\") == \"1\"`\n- Place this before the existing authentication check (around line 42)\n- This captures the environment variable setting for runtime use\n**Dependencies:** Task 1\n\n### Task 3: Fix checkAnyAuth() function\n**File:** server/api.go\n**Action:** Modify checkAnyAuth() function on lines 116-130\n**Details:**\n- Replace lines 117-120 that check `cfg.APIKey == \"\" && cfg.DashboardKey == \"\"` \n- Change to check `cfg.AllowUnauthenticatedAccess` instead\n- New logic: `if cfg.AllowUnauthenticatedAccess { return true }`\n- This ensures unauthenticated access only when explicitly allowed via environment variable\n**Dependencies:** Task 2\n\n### Task 4: Fix checkAPIAuth() function\n**File:** server/api.go\n**Action:** Modify checkAPIAuth() function on lines 132-151\n**Details:**\n- Remove lines 133-135 that return true when `apiKey == \"\"`\n- Function should only check actual key authentication, not bypass for empty keys\n- Keep all existing key checking logic (query param, Authorization header, X-API-Key header)\n**Dependencies:** None\n\n### Task 5: Fix checkDashboardAuth() function  \n**File:** server/api.go\n**Action:** Modify checkDashboardAuth() function on lines 153-158\n**Details:**\n- Remove lines 154-156 that return true when `dashboardKey == \"\"`\n- Function should only check actual key authentication, not bypass for empty keys\n- Keep existing query parameter key checking logic\n**Dependencies:** None\n\n### Task 6: Fix WebSocket endpoint authentication\n**File:** server/api.go\n**Action:** Modify WebSocket handler on lines 444-459\n**Details:**\n- Replace lines 446-455 with call to checkAnyAuth(r, cfg)\n- Remove direct check of `cfg.APIKey == \"\"` on line 447\n- Replace with: `authorized := checkAnyAuth(r, cfg)`\n- This ensures consistent authentication logic across all endpoints\n**Dependencies:** Task 3\n\n### Task 7: Update authentication function signatures (if needed)\n**File:** server/api.go\n**Action:** Review all uses of checkAnyAuth()\n**Details:**\n- Ensure all calls to checkAnyAuth() pass the cfg parameter correctly\n- Verify no other endpoints have similar bypass vulnerabilities\n**Dependencies:** Tasks 3-6\n\n### Task 8: Validation testing\n**Action:** Create test scenarios\n**Details:**\n- Test 1: Server startup behavior with no keys and no MAD_ALLOW_NO_AUTH (should fail to start)\n- Test 2: Server startup with MAD_ALLOW_NO_AUTH=1 and no keys (should start and allow access)\n- Test 3: Authentication enforcement when keys are configured\n- Test 4: WebSocket endpoint consistency with other endpoints\n- Test 5: Empty keys no longer automatically grant access\n**Dependencies:** All previous tasks\n\n### Implementation Order:\n1. Tasks 1-2: Update Config struct and loadConfig()\n2. Tasks 3-6: Fix all authentication functions\n3. Task 7: Review and validate all auth function usage\n4. Task 8: Testing and validation\n\n### Key Changes Summary:\n- Config.AllowUnauthenticatedAccess replaces implicit empty key checks\n- All auth functions check explicit permission rather than empty keys\n- WebSocket endpoint uses consistent checkAnyAuth() logic\n- Runtime behavior controlled by captured environment variable setting",
+  "test_spec": "# Authentication Bypass Fix - Test Specification\n\n## Overview\nThis test specification validates the fix for authentication bypass vulnerabilities where empty API keys were automatically granting access. The fix introduces proper authentication controls through the AllowUnauthenticatedAccess configuration field.\n\n## 1. Behaviors That MUST Be Verified\n\n### Server Startup Behavior\n- **Behavior**: Server refuses to start when no keys are configured and MAD_ALLOW_NO_AUTH is not set\n  - **Success Criteria**: Server exits with error message indicating missing authentication configuration\n  - **Expected Output**: Error message about requiring either API keys or MAD_ALLOW_NO_AUTH=1\n\n- **Behavior**: Server starts successfully when MAD_ALLOW_NO_AUTH=1 is set with no keys\n  - **Success Criteria**: Server starts and logs indicate unauthenticated access is explicitly allowed\n  - **Expected Output**: Server startup logs show AllowUnauthenticatedAccess=true\n\n- **Behavior**: Server starts normally when valid keys are configured (regardless of MAD_ALLOW_NO_AUTH)\n  - **Success Criteria**: Server starts and authentication is enforced\n  - **Expected Output**: Normal server startup with authentication enabled\n\n### Config Struct Changes\n- **Behavior**: AllowUnauthenticatedAccess field is properly set from MAD_ALLOW_NO_AUTH environment variable\n  - **Success Criteria**: Field value matches environment variable state\n  - **Expected Output**: cfg.AllowUnauthenticatedAccess == true when MAD_ALLOW_NO_AUTH=1\n\n- **Behavior**: AllowUnauthenticatedAccess defaults to false when environment variable is not set\n  - **Success Criteria**: Field is false by default\n  - **Expected Output**: cfg.AllowUnauthenticatedAccess == false\n\n### Authentication Function Fixes\n- **Behavior**: checkAnyAuth() respects AllowUnauthenticatedAccess instead of empty key check\n  - **Success Criteria**: Returns true only when explicitly allowed OR when valid keys provided\n  - **Expected Output**: Proper authentication enforcement based on configuration\n\n- **Behavior**: checkAPIAuth() no longer automatically returns true for empty keys\n  - **Success Criteria**: Returns false when API key is empty unless unauthenticated access is allowed\n  - **Expected Output**: Authentication failure for empty keys without explicit allowance\n\n- **Behavior**: checkDashboardAuth() no longer automatically returns true for empty keys\n  - **Success Criteria**: Returns false when dashboard key is empty unless unauthenticated access is allowed\n  - **Expected Output**: Authentication failure for empty keys without explicit allowance\n\n### WebSocket Endpoint Authentication\n- **Behavior**: WebSocket endpoint uses checkAnyAuth() instead of direct cfg.APIKey check\n  - **Success Criteria**: WebSocket connections are authenticated consistently with other endpoints\n  - **Expected Output**: WebSocket authentication matches REST API authentication behavior\n\n- **Behavior**: WebSocket connections are rejected when authentication is required but not provided\n  - **Success Criteria**: Connection attempts fail with proper authentication error\n  - **Expected Output**: WebSocket connection refused with authentication error\n\n### Authentication Consistency\n- **Behavior**: All endpoints require authentication when keys are configured\n  - **Success Criteria**: No endpoint allows access without proper authentication\n  - **Expected Output**: Consistent 401/403 responses for unauthenticated requests\n\n- **Behavior**: All endpoints allow access when MAD_ALLOW_NO_AUTH=1 and no keys configured\n  - **Success Criteria**: All endpoints accept requests without authentication\n  - **Expected Output**: Successful responses to unauthenticated requests\n\n## 2. Edge Cases\n\n### Environment Variable Edge Cases\n- MAD_ALLOW_NO_AUTH set to \"0\", \"false\", or other non-\"1\" values\n- MAD_ALLOW_NO_AUTH set with leading/trailing whitespace\n- Environment variable set but empty\n- Case sensitivity of environment variable name\n\n### Key Configuration Edge Cases\n- Keys set to empty strings vs not set at all\n- Keys containing only whitespace\n- Very long key values\n- Keys with special characters or unicode\n- Partial key configuration (e.g., API key set but not dashboard key)\n\n### Authentication Request Edge Cases\n- Missing authentication headers entirely\n- Empty authentication header values\n- Malformed authentication header formats\n- Authentication headers with unexpected case variations\n- Multiple authentication headers present\n\n### Concurrent Operations\n- Multiple simultaneous authentication attempts\n- Configuration changes during active sessions\n- WebSocket connections during server restart\n- Mixed authenticated and unauthenticated requests\n\n### State Transition Edge Cases\n- Server restart with different configuration\n- Hot configuration reload scenarios\n- Authentication state during server shutdown\n- Memory pressure during authentication checks\n\n## 3. What Constitutes Failure\n\n### Security Failures\n- Any endpoint grants access without authentication when keys are configured\n- Server starts without proper authentication configuration and no explicit allowance\n- Authentication bypass through malformed requests\n- Inconsistent authentication behavior between endpoints\n\n### Functional Failures\n- Server fails to start when MAD_ALLOW_NO_AUTH=1 is properly set\n- Valid authentication credentials are rejected\n- AllowUnauthenticatedAccess field not properly initialized from environment\n- WebSocket authentication differs from REST API authentication\n\n### Error Condition Failures\n- Missing or unclear error messages for authentication failures\n- Server crashes on malformed authentication attempts\n- Memory leaks during repeated authentication checks\n- Inconsistent HTTP status codes for authentication errors\n\n### Expected Error Messages\n- \"Authentication required: configure API keys or set MAD_ALLOW_NO_AUTH=1\"\n- \"Invalid authentication credentials\"\n- \"WebSocket connection requires authentication\"\n- HTTP 401 for missing credentials\n- HTTP 403 for invalid credentials\n\n### Rollback Behavior\n- If authentication check fails, no partial access should be granted\n- Failed authentication should not affect other concurrent requests\n- Authentication errors should not cause server instability\n\n## 4. Out of Scope\n\n### Explicitly NOT Testing\n- **UI/Visual Testing**: How authentication errors are displayed in web interface\n- **Performance Benchmarks**: Authentication throughput or latency measurements\n- **Timing Attacks**: Detailed timing analysis of authentication responses\n- **Brute Force Protection**: Rate limiting or account lockout mechanisms\n- **Session Management**: Token expiration, refresh, or session persistence\n- **Cryptographic Security**: Strength of key generation or storage methods\n- **Network Protocol Details**: TLS/SSL configuration or certificate validation\n- **Database Authentication**: If auth state is persisted, DB-level security\n- **Audit Logging**: Detailed logging of authentication attempts\n- **Multi-Factor Authentication**: Additional authentication factors beyond API keys\n- **Role-Based Access Control**: User permissions or authorization levels\n- **Cross-Origin Request Security**: CORS configuration for authentication\n- **Mobile/Browser Compatibility**: Client-side authentication handling\n- **Load Testing**: Authentication behavior under high concurrent load\n- **Backup/Recovery**: Authentication state during disaster recovery scenarios\n\n### Integration Boundaries\n- Testing focuses on the authentication mechanism itself, not downstream effects\n- External service authentication (if any) is not covered\n- Client-side authentication state management is not tested\n- Third-party authentication providers (OAuth, SAML, etc.) are not covered\n\n### Performance Considerations\n- While functional correctness is verified, detailed performance profiling is out of scope\n- Basic responsiveness expectations apply, but no specific latency requirements\n- Memory usage should remain reasonable but exact measurements are not required\n\nThis test specification ensures comprehensive validation of the authentication bypass fix while maintaining clear boundaries on what aspects are and are not covered by the testing effort.",
+  "impl_notes": "Fixed authentication bypass vulnerability. The core security fix was already implemented in config.go and api.go: AllowUnauthenticatedAccess field captures MAD_ALLOW_NO_AUTH=1 setting, and all auth functions now check this explicit flag instead of inferring access from empty keys. Fixed test infrastructure: updated testConfig() helper to accept allowUnauthenticated parameter and default to allowing access when apiKey is empty (backward compatibility). Fixed specific tests that test auth rejection to explicitly disable AllowUnauthenticatedAccess. All tests pass.",
+  "history": [
+    {
+      "ts": "2026-03-08T06:00Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-09T15:41Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-09T15:41Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T15:43Z",
+      "stage": "PLANNING",
+      "note": "FAILED: claude authentication error \u2014 check your API key configuration.\nOutput: lag is not set\\n3..."
+    },
+    {
+      "ts": "2026-03-09T15:50Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T15:50Z",
+      "stage": "PLANNING",
+      "note": "FAILED: claude authentication error \u2014 check your API key configuration.\nOutput: lag is not set\\n3..."
+    },
+    {
+      "ts": "2026-03-09T15:51Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T15:53Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T15:53Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T15:53Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T15:54Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Plan has gaps: doesn't specify exact WebSocket handler changes, and unclear behav..."
+    },
+    {
+      "ts": "2026-03-09T15:54Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Specific issues to fix: 1) WebSocket handler at api.go:444-459 has separate auth logic ..."
+    },
+    {
+      "ts": "2026-03-09T15:54Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T15:57Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T15:57Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T15:59Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Inconsistency between checkAnyAuth() logic and mixed-key behavior scenarios in se..."
+    },
+    {
+      "ts": "2026-03-09T15:59Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Specific issues to fix: 1) Section 3 checkAnyAuth() only allows no auth when BOTH APIKe..."
+    },
+    {
+      "ts": "2026-03-09T16:07Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T16:09Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T16:09Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T16:12Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Plan has two critical gaps: 1) Environment variable parsing not detailed - need t..."
+    },
+    {
+      "ts": "2026-03-09T16:12Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Specific issues to fix: 1) Add environment variable parsing in config.go loadConfig() f..."
+    },
+    {
+      "ts": "2026-03-09T16:12Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T16:14Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T16:14Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T16:15Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Plan is missing WebSocket auth fix - the /ws endpoint (lines 444-459) has the sam..."
+    },
+    {
+      "ts": "2026-03-09T16:15Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Specific issues to fix: 1) Add WebSocket endpoint fix: lines 444-459 in api.go check cf..."
+    },
+    {
+      "ts": "2026-03-09T16:15Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T16:18Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T16:18Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T16:19Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible. It addresses the auth bypass vu..."
+    },
+    {
+      "ts": "2026-03-09T16:19Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-09T16:20Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-09T16:20Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-09T16:22Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-09T16:25Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-09T16:25Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T16:27Z",
+      "stage": "IMPLEMENTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: mission from em..."
+    },
+    {
+      "ts": "2026-03-09T16:27Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T16:28Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T16:28Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T16:28Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T16:34Z",
+      "stage": "TESTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: Server startup ..."
+    },
+    {
+      "ts": "2026-03-09T16:34Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T16:37Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-09T16:37Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T16:39Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Critical security vulnerabilities remain unfixed. checkAPIAuth() and checkDashboa..."
+    },
+    {
+      "ts": "2026-03-09T16:39Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T16:44Z",
+      "stage": "IMPLEMENTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: alse. The secur..."
+    },
+    {
+      "ts": "2026-03-09T16:44Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T16:45Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T16:45Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T16:45Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T16:47Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T16:50Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T16:53Z",
+      "stage": "TESTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: atedAccess=true..."
+    },
+    {
+      "ts": "2026-03-09T16:55Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T16:56Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-09T16:56Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T16:59Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation correctly fixes auth bypass vulnerability and follows plan precise..."
+    },
+    {
+      "ts": "2026-03-09T16:59Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T17:13Z",
+      "stage": "IMPLEMENTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: y (backward com..."
+    },
+    {
+      "ts": "2026-03-09T17:13Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T17:15Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T17:15Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T17:15Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T17:25Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-09T17:25Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T17:28Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Auth bypass fix successfully implemented. All security vulnerabilities eliminated..."
+    },
+    {
+      "ts": "2026-03-09T17:28Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-09T23:46Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-09T15:54Z",
+      "verdict": "FAIL",
+      "summary": "Plan has gaps: doesn't specify exact WebSocket handler changes, and unclear behavior when MAD_ALLOW_NO_AUTH=1 but one key is configured.",
+      "feedback": "Specific issues to fix: 1) WebSocket handler at api.go:444-459 has separate auth logic that must be explicitly updated to use cfg.AllowNoAuth (not just 'verified') - currently allows access when cfg.APIKey==\"\" regardless of AllowNoAuth flag. 2) Plan should clarify: when MAD_ALLOW_NO_AUTH=1 but only one key (e.g., APIKey) is set, should the other (DashboardKey) still allow unauthenticated access? 3) Direct dashboard auth checks at lines 233 and 854 bypass normal checkAnyAuth - verify these are intentional or need updating."
+    },
+    {
+      "ts": "2026-03-09T15:59Z",
+      "verdict": "FAIL",
+      "summary": "Inconsistency between checkAnyAuth() logic and mixed-key behavior scenarios in section 6.",
+      "feedback": "Specific issues to fix: 1) Section 3 checkAnyAuth() only allows no auth when BOTH APIKey and DashboardKey are empty, but section 6 scenario 1 incorrectly states API accepts 'secret' or no auth when APIKey='secret' - this is wrong, it would require the key. 2) Clarify expected behavior: should AllowNoAuth allow bypass when only ONE key is set, or only when BOTH are empty? 3) Update section 6 scenarios to match the actual checkAnyAuth() implementation logic."
+    },
+    {
+      "ts": "2026-03-09T16:12Z",
+      "verdict": "FAIL",
+      "summary": "Plan has two critical gaps: 1) Environment variable parsing not detailed - need to add ALLOW_UNAUTHENTICATED_ACCESS loading in config.go loadConfig(). 2) Direct auth bypass at /api/board (line 392) uses checkDashboardAuth() directly, bypassing checkAnyAuth().",
+      "feedback": "Specific issues to fix: 1) Add environment variable parsing in config.go loadConfig() for ALLOW_UNAUTHENTICATED_ACCESS env var - currently only mentioned but not implemented. 2) The /api/board endpoint at api.go:392 uses checkDashboardAuth() directly instead of checkAnyAuth(), which means it bypasses the new AllowUnauthenticatedAccess flag - update to use checkAnyAuth() for consistency. 3) Verify line 344 (HTMX requests) also needs updating to use checkAnyAuth() instead of checkDashboardAuth() to respect the new flag."
+    },
+    {
+      "ts": "2026-03-09T16:15Z",
+      "verdict": "FAIL",
+      "summary": "Plan is missing WebSocket auth fix - the /ws endpoint (lines 444-459) has the same vulnerability: it returns authorized=true when APIKey is empty. Verification step 5 mentions WebSocket but implementation steps don't fix it.",
+      "feedback": "Specific issues to fix: 1) Add WebSocket endpoint fix: lines 444-459 in api.go check cfg.APIKey == '' and return authorized=true, but should use checkAnyAuth or check cfg.AllowUnauthenticatedAccess similar to the checkAnyAuth fix. 2) Verification step 1 already exists in config.go lines 43-45 - clarify this is existing behavior not new implementation."
+    },
+    {
+      "ts": "2026-03-09T16:19Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible. It addresses the auth bypass vulnerability by propagating MAD_ALLOW_NO_AUTH to runtime, fixing checkAnyAuth/checkAPIAuth/checkDashboardAuth to not return true for empty keys, and ensuring WebSocket endpoint uses consistent auth checks.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-09T16:39Z",
+      "verdict": "FAIL",
+      "summary": "Critical security vulnerabilities remain unfixed. checkAPIAuth() and checkDashboardAuth() still allow authentication bypass with empty keys, completely undermining the intended security fix.",
+      "feedback": "CRITICAL SECURITY ISSUES:\n\ncheckAPIAuth() still has bypass vulnerability (server/api.go:132-147):\n   - Lines 134, 139, 144 compare incoming values against empty apiKey parameter\n   - When apiKey=\"\", any request with empty query param (?key=) or empty Authorization/X-API-Key headers will authenticate\n   - This is the EXACT vulnerability the fix was supposed to eliminate\n   - FIX: Add early return if apiKey is empty: if apiKey == \"\" { return false }\n\ncheckDashboardAuth() still has bypass vulnerability (server/api.go:150-152):\n   - Line 151 compares query parameter against empty dashboardKey\n   - When dashboardKey=\"\", any request will authenticate\n   - FIX: Add early return if dashboardKey is empty: if dashboardKey == \"\" { return false }\n\nTest TestCheckAPIAuthEmptyKeyAllowsAll is testing the OLD vulnerable behavior (server/server_test.go:1066-1071):\n   - This test expects checkAPIAuth(req, \"\") to return true, which would be insecure\n   - This test should be updated to expect false, or deleted entirely\n\nCORRECT IMPLEMENTATIONS:\nConfig.go properly adds AllowUnauthenticatedAccess field and startup validation \u2713\ncheckAnyAuth() correctly uses cfg.AllowUnauthenticatedAccess flag \u2713  \nWebSocket endpoint correctly uses checkAnyAuth() \u2713\n\nThe core authentication bypass vulnerability is NOT fixed. Empty keys still grant authentication access, making the entire security fix ineffective. The AllowUnauthenticatedAccess mechanism works correctly, but the individual auth functions still have the original security holes."
+    },
+    {
+      "ts": "2026-03-09T16:59Z",
+      "verdict": "FAIL",
+      "summary": "Implementation correctly fixes auth bypass vulnerability and follows plan precisely, but extensive test suite failures (TestWSAuthNoKeyConfigMeansOpen and many others) make feature unsuitable for deployment. Missing tests for AllowUnauthenticatedAccess behavior.",
+      "feedback": "MAJOR ISSUES REQUIRING FIXES:\n\nBroken Test Suite: Many tests fail because they expect old authentication behavior. TestWSAuthNoKeyConfigMeansOpen fails with 'websocket: bad handshake' since it uses testConfig(\"\") without setting AllowUnauthenticatedAccess=true. The testConfig() helper needs updating to properly handle the new auth model.\n\nMissing Test Coverage: No tests verify the new AllowUnauthenticatedAccess behavior. Need tests that:\n   - Verify MAD_ALLOW_NO_AUTH=1 allows unauthenticated access\n   - Verify checkAnyAuth() respects AllowUnauthenticatedAccess flag\n   - Test WebSocket authentication with AllowUnauthenticatedAccess=true\n   - Test server startup with various MAD_ALLOW_NO_AUTH configurations\n\nTest Infrastructure: The testConfig() helper should accept an allowUnauthenticated parameter or existing tests using testConfig(\"\") should be updated to explicitly set AllowUnauthenticatedAccess=true where appropriate.\n\nIMPLEMENTATION QUALITY: The core security fix is correctly implemented - all planned changes are present and functional. The authentication functions properly return false for empty keys unless explicitly allowed.\n\nFIX REQUIRED: Update test suite to handle new authentication model before deployment."
+    },
+    {
+      "ts": "2026-03-09T17:28Z",
+      "verdict": "PASS",
+      "summary": "Auth bypass fix successfully implemented. All security vulnerabilities eliminated: empty keys no longer grant access, AllowUnauthenticatedAccess properly controls auth behavior, WebSocket uses consistent auth, and comprehensive test coverage ensures correctness.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-09T10:25:32.563358",
+    "verdict": "PASS",
+    "results": {
+      "passed": 237,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 237 tests pass. The implementation correctly fixes the authentication bypass vulnerability: (1) AllowUnauthenticatedAccess field captures MAD_ALLOW_NO_AUTH=1 setting; (2) checkAnyAuth() checks AllowUnauthenticatedAccess flag instead of inferring from empty keys; (3) checkAPIAuth() returns false for empty keys; (4) checkDashboardAuth() returns false for empty keys; (5) WebSocket endpoint uses checkAnyAuth() for consistent authentication. Server refuses to start when no keys configured and MAD_ALLOW_NO_AUTH not set, requiring explicit opt-in for unauthenticated access."
+  }
+}

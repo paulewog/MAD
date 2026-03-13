@@ -7,6 +7,9 @@ import select
 import subprocess
 import time
 import logging
+import threading
+import errno
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
@@ -30,7 +33,7 @@ def _ensure_logging():
         config = Config()
         log_dir = (config.code_path / ".mad" / "logs" if config.code_path else get_mad_dir() / "logs")
         log_dir.mkdir(parents=True, exist_ok=True)
-        handler = logging.FileHandler(log_dir / "runner.log")
+        handler = RotatingFileHandler(log_dir / "runner.log", maxBytes=5*1024*1024, backupCount=5)
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
@@ -47,8 +50,10 @@ class AgentRunner:
     """Runs the configured AI agent in interactive or headless mode."""
 
     def __init__(self, config: Config, agent_name: str = None, workdir: Path = None):
+        self._status_lock = threading.RLock()
         self._config = config
         self._agent_name = agent_name
+        self._agent_config_override: Optional[AgentConfig] = None
         if workdir is not None:
             self._workdir = workdir
         else:
@@ -60,6 +65,8 @@ class AgentRunner:
 
     @property
     def agent(self) -> AgentConfig:
+        if self._agent_config_override:
+            return self._agent_config_override
         if self._agent_name:
             return self._config.agents.get(self._agent_name, self._config.current_agent)
         return self._config.current_agent
@@ -70,8 +77,28 @@ class AgentRunner:
 
     def for_phase(self, phase: str) -> "AgentRunner":
         """Create a new runner configured for a specific phase."""
-        agent_name = self._config.agent_for_phase.get(phase)
-        return AgentRunner(self._config, agent_name, self._workdir)
+        agent_config = self._config.get_agent_for_phase(phase)
+        runner = AgentRunner(self._config, agent_config.name, self._workdir)
+        runner._agent_config_override = agent_config
+        return runner
+
+    def for_cli_model(self, cli: str, model: Optional[str] = None) -> "AgentRunner":
+        """Create a new runner with specific CLI and optional model override."""
+        base_agent = self._config.agents.get(cli, self._config.current_agent)
+        if model:
+            runner = AgentRunner(self._config, cli, self._workdir)
+            runner._agent_config_override = AgentConfig(
+                name=base_agent.name,
+                command=base_agent.command,
+                headless_flag=base_agent.headless_flag,
+                headless_extra_flags=base_agent.headless_extra_flags,
+                model_flag=base_agent.model_flag,
+                model=model,
+            )
+        else:
+            runner = AgentRunner(self._config, cli, self._workdir)
+            runner._agent_config_override = base_agent
+        return runner
 
     def _build_completion_block(self, output_path: Path, marker_path: Path, schema: dict) -> str:
         """Build the output/completion instructions block appended to every prompt."""
@@ -203,18 +230,22 @@ When you have finished all work:
             logger.info(f"[runner] Interactive instructions for '{item_name}': {len(full_message)} chars")
             logger.info(f"[runner] Instructions preview: {full_message[:200]}...")
             
-            console.print(f"[dim].tmp/{item_name}.instructions contains the task. Just talk to kilo naturally![/dim]")
+            console.print(f"[dim].tmp/{item_name}.instructions contains the task. Just talk to opencode naturally![/dim]")
             
-            # Build command: kilo uses --prompt, claude uses positional arg for interactive TUI
-            if self.agent.command == "kilo":
+            # Build command: opencode uses --prompt, claude uses positional arg for interactive TUI
+            if self.agent.command == "opencode":
                 cmd = [self.agent.command, "--prompt", f"Read {instructions_path} and follow the instructions exactly."]
             else:
                 # claude: positional arg opens TUI with context
                 cmd = [self.agent.command, f"Read {instructions_path} and follow the instructions exactly."]
         else:
-            console.print(f"[dim]Just talk to kilo naturally![/dim]")
+            console.print(f"[dim]Just talk to opencode naturally![/dim]")
             cmd = [self.agent.command]
         
+        # Add model flag if configured
+        if self.agent.model:
+            cmd.extend([self.agent.model_flag, self.agent.model])
+
         # Use subprocess.run with shell=False for proper argument handling
         subprocess.run(cmd, cwd=str(workdir), env=env)
 
@@ -254,6 +285,14 @@ When you have finished all work:
             for f in tmp_dir.glob(f"{item_name}.instructions*"):
                 f.unlink()
             
+            # Set up output and marker paths
+            output_path = tmp_dir / f"{item_name}.output.json"
+            marker_path = tmp_dir / f"{item_name}.complete"
+            
+            # Clean up old output and marker files from previous runs
+            output_path.unlink(missing_ok=True)
+            marker_path.unlink(missing_ok=True)
+            
             full_prompt = self._prepend_context(prompt)
             
             # Read checkpoint if it exists
@@ -261,13 +300,6 @@ When you have finished all work:
             if checkpoint_context:
                 full_prompt += checkpoint_context
             
-            # Set up output and marker paths
-            output_path = tmp_dir / f"{item_name}.output.json"
-            marker_path = tmp_dir / f"{item_name}.complete"
-
-            # Delete any existing marker file before starting
-            marker_path.unlink(missing_ok=True)
-
             if phase_key and output_schema:
                 full_prompt += self._build_completion_block(output_path, marker_path, output_schema)
             else:
@@ -283,12 +315,12 @@ When you have finished all work:
             logger.info(f"[runner] Instructions preview: {full_prompt[:200]}...")
             
             # Build command:
-            # For kilo: "kilo run --format json --auto <message>"
+            # For opencode: "opencode run --format json <message>"
             # For claude: "claude -p <message> --dangerously-skip-permissions"
             cmd = [self.agent.command]
             
-            if self.agent.command == "kilo":
-                # kilo: run comes first, then flags, then message
+            if self.agent.command == "opencode":
+                # opencode: run comes first, then flags, then message
                 for f in self.agent.headless_extra_flags:
                     if not f.startswith("-"):
                         cmd.append(f)
@@ -303,15 +335,24 @@ When you have finished all work:
                 cmd.append(f"Read {instructions_path} and follow the instructions exactly.")
                 cmd.extend(self.agent.headless_extra_flags)
 
+            # Model flag goes at the end for ALL agents (consistent position)
+            if self.agent.model:
+                cmd.extend([self.agent.model_flag, self.agent.model])
+
             # Use the workdir
             cwd = str(workdir)
 
             # Strip CLAUDECODE so claude allows nested invocation
             env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
+            # Set OPENCODE_PERMISSION for opencode headless runs (JSON format)
+            if self.agent.command == "opencode":
+                env["OPENCODE_PERMISSION"] = '{"*": "allow"}'
+
             if status is not None:
-                status.started_at = time.time()
-                status.running = True
+                with self._status_lock:
+                    status.started_at = time.time()
+                    status.running = True
 
             process = subprocess.Popen(
                 cmd,
@@ -325,7 +366,8 @@ When you have finished all work:
             )
 
             if status is not None:
-                status.pid = process.pid
+                with self._status_lock:
+                    status.pid = process.pid
 
             # Read stdout while process is running (streaming)
             output_lines = []
@@ -340,7 +382,7 @@ When you have finished all work:
             # Debug logging
             logger.info(f"Starting {self.agent.name} in cwd={cwd} with cmd: {cmd}")
             
-            # Set up file logging for debugging - always create log for kilo
+            # Set up file logging for debugging - always create log for opencode
             log_file = None
             feature_slug = "unknown"
             if status is not None:
@@ -358,7 +400,8 @@ When you have finished all work:
                     logger.info(f"Logging to: {log_path}")
                 except Exception as e:
                     if status is not None:
-                        status.lines.append(f"[runner] Log failed: {e}")
+                        with self._status_lock:
+                            status.lines.append(f"[runner] Log failed: {e}")
                     log_file = None
             
             # Flag to track if we've warned about stuck agent
@@ -370,56 +413,85 @@ When you have finished all work:
                     logger.warning(f"[runner] Kill requested by user. Terminating agent.")
                     try:
                         os.killpg(process.pid, signal.SIGTERM)
-                    except OSError:
-                        pass
+                    except OSError as e:
+                        if e.errno == errno.ESRCH:
+                            logger.debug(f"[runner] killpg SIGTERM: process group {process.pid} already dead")
+                        elif e.errno == errno.EPERM:
+                            logger.error(f"[runner] killpg SIGTERM: permission denied for process group {process.pid}")
+                        else:
+                            logger.warning(f"[runner] killpg SIGTERM failed for process group {process.pid}: {e}")
                     try:
-                        process.wait(timeout=5)
+                        process.wait(timeout=10)
                     except subprocess.TimeoutExpired:
+                        logger.warning(f"[runner] process.wait() timed out after SIGTERM, force-killing pid {process.pid}")
                         try:
                             os.killpg(process.pid, signal.SIGKILL)
-                        except OSError:
-                            pass
-                        process.wait()
+                        except OSError as e:
+                            if e.errno == errno.ESRCH:
+                                logger.debug(f"[runner] killpg SIGKILL: process group {process.pid} already dead")
+                            elif e.errno == errno.EPERM:
+                                logger.error(f"[runner] killpg SIGKILL: permission denied for process group {process.pid}")
+                            else:
+                                logger.warning(f"[runner] killpg SIGKILL failed for process group {process.pid}: {e}")
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            logger.error(f"[runner] Process {process.pid} did not die after kill+wait")
                     if status is not None:
-                        status.lines.append("[runner] Agent killed by user")
-                        status.running = False
+                        with self._status_lock:
+                            status.lines.append("[runner] Agent killed by user")
+                            status.running = False
                     break
 
                 # Monitor log activity - warn if stuck
-                elapsed = time.time() - start_time
-                
-                # Check log file for activity (if we have a log file)
+                # Use time since last log activity, not time since start
                 if log_file:
                     log_file.flush()
                     log_mtime = log_path.stat().st_mtime
                     if log_mtime > last_log_time:
                         last_log_time = log_mtime
-                    elif elapsed > log_watch_interval:
-                        # Log immediately on first occurrence, then every 30 seconds
-                        if not warned_about_stuck:
-                            logger.warning(f"[runner] No log activity for {int(elapsed)}s. Agent may be stuck. Feature: {feature_slug}, cwd: {cwd}")
-                            warned_about_stuck = True
-                        elif int(elapsed) % 30 == 0:
-                            logger.warning(f"[runner] No log activity for {int(elapsed)}s. Agent may be stuck. Feature: {feature_slug}, cwd: {cwd}")
-                        
-                        # Kill the process after 15 minutes of no activity
-                        logger.warning(f"[runner] Killing agent after {int(elapsed)}s of no activity. Feature: {feature_slug}")
-                        try:
-                            os.killpg(process.pid, signal.SIGTERM)
-                        except OSError:
-                            pass
-                        try:
-                            process.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
+                        warned_about_stuck = False
+                    else:
+                        idle_time = time.time() - last_log_time
+                        if idle_time > log_watch_interval:
+                            # Log immediately on first occurrence, then every 30 seconds
+                            if not warned_about_stuck:
+                                logger.warning(f"[runner] No log activity for {int(idle_time)}s. Agent may be stuck. Feature: {feature_slug}, cwd: {cwd}")
+                                warned_about_stuck = True
+
+                            # Kill the process after 15 minutes of no activity
+                            logger.warning(f"[runner] Killing agent after {int(idle_time)}s of no activity. Feature: {feature_slug}")
                             try:
-                                os.killpg(process.pid, signal.SIGKILL)
-                            except OSError:
-                                pass
-                            process.wait()
-                        if status is not None:
-                            status.lines.append(f"[runner] Agent killed after {int(elapsed)}s of no activity")
-                            status.running = False
-                        break
+                                os.killpg(process.pid, signal.SIGTERM)
+                            except OSError as e:
+                                if e.errno == errno.ESRCH:
+                                    logger.debug(f"[runner] killpg SIGTERM: process group {process.pid} already dead")
+                                elif e.errno == errno.EPERM:
+                                    logger.error(f"[runner] killpg SIGTERM: permission denied for process group {process.pid}")
+                                else:
+                                    logger.warning(f"[runner] killpg SIGTERM failed for process group {process.pid}: {e}")
+                            try:
+                                process.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                logger.warning(f"[runner] process.wait() timed out after SIGTERM, force-killing pid {process.pid}")
+                                try:
+                                    os.killpg(process.pid, signal.SIGKILL)
+                                except OSError as e:
+                                    if e.errno == errno.ESRCH:
+                                        logger.debug(f"[runner] killpg SIGKILL: process group {process.pid} already dead")
+                                    elif e.errno == errno.EPERM:
+                                        logger.error(f"[runner] killpg SIGKILL: permission denied for process group {process.pid}")
+                                    else:
+                                        logger.warning(f"[runner] killpg SIGKILL failed for process group {process.pid}: {e}")
+                                try:
+                                    process.wait(timeout=5)
+                                except subprocess.TimeoutExpired:
+                                    logger.error(f"[runner] Process {process.pid} did not die after kill+wait")
+                            if status is not None:
+                                with self._status_lock:
+                                    status.lines.append(f"[runner] Agent killed after {int(idle_time)}s of no activity")
+                                    status.running = False
+                            break
                 
                 line = ""
                 if process.stdout:
@@ -430,7 +502,8 @@ When you have finished all work:
                     break
                 if line:
                     if status is not None:
-                        status.last_activity_at = time.time()
+                        with self._status_lock:
+                            status.last_activity_at = time.time()
                     # Check for completion marker
                     if line.strip().upper() == "DONE":
                         logger.info(f"[runner] Received DONE signal")
@@ -450,35 +523,63 @@ When you have finished all work:
                                 if text:
                                     output_lines.append(text)
                                     if status is not None:
-                                        status.lines.append(text)
+                                        with self._status_lock:
+                                            status.lines.append(text)
                             elif event.get("type") == "tool_result":
                                 content = event.get("part", {}).get("content", "")
                                 if content:
                                     output_lines.append(content)
                                     if status is not None:
-                                        status.lines.append(content)
+                                        with self._status_lock:
+                                            status.lines.append(content)
                             elif event.get("type") == "tool_use":
                                 tool_name = event.get("part", {}).get("name", "")
                                 if tool_name:
                                     tool_line = f"[tool: {tool_name}]"
                                     output_lines.append(tool_line)
                                     if status is not None:
-                                        status.lines.append(tool_line)
+                                        with self._status_lock:
+                                            status.lines.append(tool_line)
+                            elif event.get("type") == "error":
+                                error_msg = event.get("error", {}).get("message", "") or event.get("message", "") or str(event)
+                                output_lines.append(error_msg)
+                                if status is not None:
+                                    with self._status_lock:
+                                        status.lines.append(error_msg)
+                            elif event.get("type") == "system":
+                                system_msg = event.get("message", "") or str(event)
+                                output_lines.append(system_msg)
+                                if status is not None:
+                                    with self._status_lock:
+                                        status.lines.append(system_msg)
+                            elif event.get("type") == "result":
+                                if event.get("is_error"):
+                                    result_text = event.get("result", "") or str(event)
+                                    output_lines.append(result_text)
+                                    if status is not None:
+                                        with self._status_lock:
+                                            status.lines.append(result_text)
                         except (json.JSONDecodeError, KeyError, TypeError):
                             # Not valid JSON or unexpected format, output as-is
                             output_lines.append(line.rstrip('\n'))
                             if status is not None:
-                                status.lines.append(line.rstrip('\n'))
+                                with self._status_lock:
+                                    status.lines.append(line.rstrip('\n'))
                     else:
                         output_lines.append(line.rstrip('\n'))
                         if status is not None:
-                            status.lines.append(line.rstrip('\n'))
+                            with self._status_lock:
+                                status.lines.append(line.rstrip('\n'))
                     
-                    if status is not None and len(status.lines) > 200:
-                        status.lines = status.lines[-200:]
+                    if status is not None:
+                        with self._status_lock:
+                            if len(status.lines) > 200:
+                                status.lines = status.lines[-200:]
             
             stderr_output = process.stderr.read() if process.stderr else ""
-            
+            if stderr_output:
+                logger.info(f"[runner] stderr ({len(stderr_output)} chars): {stderr_output[:500]}")
+
             # Try to read output from file first (preferred)
             output_from_file = ""
             if output_path.exists():
@@ -493,41 +594,68 @@ When you have finished all work:
             if not output_from_file:
                 logger.warning(f"[runner] No output file found, using stdout")
             
-            # Check if we got the completion marker - if so, don't check for rate limit
+            # Check if we got the completion marker
             if marker_path.exists() and "PHASE_COMPLETE" in marker_path.read_text():
                 got_completion_marker = True
             else:
                 got_completion_marker = any("DONE" in line.upper() for line in output_lines)
             
-            # Only check for rate limiting if we didn't get a completion marker
+            # Check for API key errors (not retryable) - always check, even if completed
+            auth_error_phrases = [
+                "invalid api key",
+                "invalid_api_key",
+                "api key is invalid",
+                "authentication failed",
+                "unauthorized",
+                "invalid credentials",
+            ]
+            stderr_lower = (stderr_output or "").lower()
+            if any(phrase in stderr_lower for phrase in auth_error_phrases):
+                raise RuntimeError(
+                    f"{self.agent.name} authentication error — check your API key configuration.\n"
+                    f"Output: {full_output[-300:]}"
+                )
+
+            # Only check for rate limiting if the phase did NOT complete successfully
+            # If the agent wrote the completion marker, the phase succeeded - don't check for rate limits
             if not got_completion_marker:
                 output_lower = full_output.lower()
                 rate_limit_phrases = [
                     "rate limit",
-                    "rate limit exceeded", 
+                    "rate limit exceeded",
                     "you are being rate limited",
                     "rate limited due to",
                     "too many requests",
+                    "out of extra usage",
+                    "out of usage",
+                    "you're out of extra usage",
                 ]
                 if any(phrase in output_lower for phrase in rate_limit_phrases):
                     raise RateLimitError(full_output)
+                if stderr_output:
+                    stderr_lower = stderr_output.lower()
+                    if any(phrase in stderr_lower for phrase in rate_limit_phrases):
+                        raise RateLimitError(stderr_output)
 
             if process.returncode != 0:
                 stderr_snippet = stderr_output[:500] if stderr_output else "(no stderr)"
+                stdout_snippet = full_output[-500:] if full_output else "(no stdout)"
                 raise RuntimeError(
                     f"{self.agent.name} exited with code {process.returncode}.\n"
-                    f"stderr: {stderr_snippet}"
+                    f"stderr: {stderr_snippet}\n"
+                    f"stdout (last 500 chars): {stdout_snippet}"
                 )
 
             return full_output
 
         finally:
             if status is not None:
-                status.running = False
-                status.pid = None
-                status.last_activity_at = None
-                status.kill_requested = False
-                status.restart_requested = False
+                with self._status_lock:
+                    status.running = False
+                    status.pid = None
+                    status.last_activity_at = None
+                    status.kill_requested = False
+                    status.restart_requested = False
             if log_file:
                 log_file.close()
                 logger.info("[runner] Log file closed")

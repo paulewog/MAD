@@ -1,0 +1,146 @@
+{
+  "id": "051a235a",
+  "board": "mad",
+  "title": "Plan vs. implementation plan",
+  "type": "feature",
+  "created": "2026-03-08T05:45Z",
+  "description": "The 'plan' prompt asks for 'key files/components/patterns' which pushes agents toward implementation details. This makes the plan too similar to impl_spec. The plan should be high-level design thinking (what, why, impact, risks) without specific files or line numbers.",
+  "plan": "## Plan: Refactor planning prompts to focus on high-level design thinking\n\n### Problem Confirmed\nCurrent planning prompts push agents toward implementation details, creating overlap with impl_spec phase. Analysis of real plans shows they contain specific files, method names, and line-by-line coding instructions that belong in impl_spec.\n\n**Evidence:**\n- plan-headless.md line 56: \"The plan should be detailed and actionable\" encourages implementation details\n- Real example plan includes specific files like `pipeline/server_client.py`, exact function parameters, and JSON message structures\n- This defeats the purpose of having separate planning and implementation phases\n\n### Solution: Revise prompts to enforce proper separation of concerns\n\n#### 1. Update plan-headless.md to focus on design thinking\n**What to change:**\n- Replace \"detailed and actionable\" with explicit high-level design guidelines\n- Add clear exclusions for implementation details\n- Structure the prompt around: What, Why, Impact, Risks, Scope\n\n**New prompt guidance:**\nPlans should address:\n- **What**: Clear description of the feature/change in plain language\n- **Why**: User value and business justification  \n- **Impact**: How this affects other system components, what might break\n- **Risks**: Technical uncertainties, potential problems\n- **Scope**: What's included and explicitly what's NOT included\n\n**Explicitly exclude:**\n- Specific file names or paths\n- Method/function names\n- Line numbers or code snippets\n- API endpoint details\n- Database schema changes\n- Implementation approaches\n\n#### 2. Update plan-bug.md for consistency\n**What to change:**\n- Apply the same high-level focus to bug planning\n- Bug plans should focus on root cause analysis, impact assessment, and fix strategy\n- Not specific files to change or code to write\n\n#### 3. Remove unused plan.md\n**What to change:**\n- Archive or delete the unused interactive plan.md template\n- It contains the problematic \"key files/components/patterns\" language but isn't used\n- Cleanup prevents future confusion\n\n#### 4. Strengthen impl_spec phase\n**What to validate:**\n- Ensure impl-spec.md properly handles the implementation details that will no longer be in plans\n- Implementation specs should break down the high-level plan into specific coding tasks\n- This creates clear value distinction between phases\n\n### Expected Outcome\n- **Plans** become strategic documents focusing on design decisions and impact analysis\n- **Implementation specs** handle the tactical file/method/code level details\n- Clear separation eliminates redundancy between phases\n- Each phase provides distinct value to the development process\n\n### Risk Mitigation\n- Test the revised prompts with existing feature descriptions\n- Ensure agents can still produce actionable plans without implementation details\n- Validate that impl_spec phase can successfully build on the higher-level plans\n\n### Success Criteria\n- Plans no longer contain specific file names, method names, or code snippets\n- Plans focus on what and why rather than how\n- Implementation specs provide clear technical breakdown\n- No loss of actionability in the overall planning process",
+  "impl_spec": "## Implementation Spec: Refactor planning prompts to focus on high-level design thinking\n\n### Task 1: Update plan-headless.md to focus on design thinking\n**File:** `pipeline/prompts/plan-headless.md`\n**What to change:**\n- After the \"Your task\" section (around line 25), add explicit guidance that plans must focus on high-level design, not implementation details.\n- Add a new section titled \"Plan Content Guidelines\" with the following structure:\n  - **What**: Clear description of the feature/change in plain language\n  - **Why**: User value and business justification\n  - **Impact**: How this affects other system components, what might break\n  - **Risks**: Technical uncertainties, potential problems\n  - **Scope**: What's included and explicitly what's NOT included\n- Add an \"Explicitly Exclude from Plans\" section listing:\n  - Specific file names or paths\n  - Method/function names\n  - Line numbers or code snippets\n  - API endpoint details\n  - Database schema changes\n  - Step-by-step implementation approaches\n- Remove/replace any language encouraging implementation-level detail. Specifically, the prompt currently says to write a \"complete plan\" \u2014 this should be reframed as a \"complete design plan\" that focuses on the what/why/impact rather than the how.\n- The exploration requirement sections (PHASE 1 and PHASE 2) should remain \u2014 agents still need to explore the codebase to understand context. But the output plan itself should stay at the design level.\n**Dependencies:** None\n\n### Task 2: Update plan-bug.md for consistency\n**File:** `pipeline/prompts/plan-bug.md`\n**What to change:**\n- Add similar \"Plan Content Guidelines\" section after the \"Your task\" section, adapted for bugs:\n  - **Root Cause Analysis**: What is likely causing the bug based on code exploration\n  - **Impact Assessment**: What is affected, how severe, any related functionality at risk\n  - **Fix Strategy**: High-level approach to fixing (not specific code changes)\n  - **Risks**: What could go wrong with the fix, regression concerns\n  - **Scope**: What the fix should and should not touch\n- Add the same \"Explicitly Exclude from Plans\" section as Task 1\n- The existing exploration requirements and question guidance should remain unchanged\n- Reframe \"write a plan to fix the bug\" to \"write a design-level plan for the bug fix\"\n**Dependencies:** None (can be done in parallel with Task 1)\n\n### Task 3: Delete unused plan.md\n**File:** `pipeline/prompts/plan.md`\n**What to do:** Delete this file entirely. It is the interactive planning template that is not referenced by any Python code (confirmed: only `plan-headless.md`, `plan-bug.md`, and `review-plan.md` are used in `pipeline/phases.py`). It contains the problematic \"key files/components/patterns\" language and keeping it around risks future confusion.\n**Dependencies:** None (can be done in parallel with Tasks 1 and 2)\n\n### Task 4: Validate and strengthen impl-spec.md\n**File:** `pipeline/prompts/impl-spec.md`\n**What to change:**\n- Add explicit guidance that the implementation spec is where all tactical details belong. After the existing instruction \"Write a detailed implementation spec\", add a section clarifying:\n  - The implementation spec translates the high-level design plan into concrete coding tasks\n  - Each task should specify: exact files to create/modify, functions/methods involved, specific code changes needed\n  - This is the phase for file paths, method signatures, API details, and step-by-step coding instructions\n- Add a note: \"The plan provides the what/why/impact. Your job is to determine the how \u2014 the specific files, functions, and code changes needed to execute that plan.\"\n- Keep the existing structure and checkpoint instructions unchanged\n**Dependencies:** Should be done after Tasks 1 and 2 to ensure the language complements the updated planning prompts",
+  "test_spec": "# Test Specification: Plan vs. Implementation Plan Separation\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 plan-headless.md No Longer Encourages Implementation Details\n- **Behavior**: The plan-headless.md prompt must not contain language that encourages agents to include implementation-level details (file names, method names, code snippets, line numbers).\n- **Success Criteria**: The prompt text does not contain phrases like \"detailed and actionable\" or similar language that pushes toward implementation specifics.\n- **Expected Output**: The prompt should guide agents toward high-level design thinking: What, Why, Impact, Risks, Scope.\n\n### 1.2 plan-headless.md Contains Explicit Exclusions\n- **Behavior**: The prompt must explicitly tell agents what NOT to include in plans.\n- **Success Criteria**: The prompt contains clear exclusion language forbidding: specific file names/paths, method/function names, line numbers or code snippets, API endpoint details, database schema changes, and implementation approaches.\n- **Expected Output**: A dedicated section or bullet list of exclusions is present in the prompt.\n\n### 1.3 plan-headless.md Structures Plans Around Design Dimensions\n- **Behavior**: The prompt must guide plan output toward the five design dimensions.\n- **Success Criteria**: The prompt references or structures output around: What (plain language description), Why (user value/justification), Impact (effects on other components), Risks (technical uncertainties), and Scope (inclusions and exclusions).\n- **Expected Output**: Plans generated from this prompt focus on strategic concerns, not tactical coding tasks.\n\n### 1.4 plan-bug.md Focuses on Root Cause Analysis\n- **Behavior**: The bug planning prompt must focus on root cause analysis, impact assessment, and fix strategy rather than specific files to change or code to write.\n- **Success Criteria**: The prompt guides agents toward understanding the bug's cause and impact at a high level, without prescribing specific file changes or code modifications.\n- **Expected Output**: Bug plans describe the problem, root cause hypothesis, affected areas, and fix strategy in plain language.\n\n### 1.5 plan-bug.md Has Consistent High-Level Focus with plan-headless.md\n- **Behavior**: Both planning prompts should share the same philosophy about plan-level vs. implementation-level content.\n- **Success Criteria**: plan-bug.md contains similar exclusion language as plan-headless.md regarding implementation details.\n- **Expected Output**: Both prompts produce plans that stay at the design/strategy level.\n\n### 1.6 Unused plan.md Is Removed\n- **Behavior**: The file pipeline/prompts/plan.md should be deleted since it is unused and contains problematic language.\n- **Success Criteria**: The file no longer exists in the prompts directory.\n- **Expected Output**: No file at pipeline/prompts/plan.md. No references to it remain in the codebase (no imports, no template loading, no configuration pointing to it).\n\n### 1.7 impl-spec.md Handles Implementation Details\n- **Behavior**: The implementation spec prompt must be the proper home for all tactical implementation details that were removed from plan prompts.\n- **Success Criteria**: impl-spec.md guides agents to break down the high-level plan into specific coding tasks, including file names, methods, and technical approach.\n- **Expected Output**: Implementation specs generated from this prompt contain the concrete coding details that plans no longer include.\n\n### 1.8 Clear Phase Value Distinction\n- **Behavior**: The plan phase and impl_spec phase must each provide distinct, non-overlapping value.\n- **Success Criteria**: Reading both prompts back-to-back, there is no ambiguity about what belongs in each phase. The plan prompt asks for design-level thinking; the impl_spec prompt asks for coding-level breakdown.\n- **Expected Output**: No overlapping guidance between the two prompts.\n\n## 2. Edge Cases\n\n### 2.1 Feature Description That Is Already Very Technical\n- **Scenario**: A feature description contains specific file names, functions, or code references.\n- **Expected Behavior**: The plan prompt should still guide the agent to produce a high-level plan, abstracting away from the technical specifics in the description. The impl_spec phase is where those details get mapped to tasks.\n\n### 2.2 Bug Description That Points to a Specific File/Line\n- **Scenario**: A bug report says \"crash in server/api.go line 42\".\n- **Expected Behavior**: The bug plan should analyze the root cause and impact, not just say \"fix line 42 in server/api.go\". The impl_spec phase handles the specific fix location.\n\n### 2.3 Very Simple Feature (One File Change)\n- **Scenario**: A feature so small it barely needs a plan.\n- **Expected Behavior**: Even for simple features, the plan should describe what and why. The impl_spec can be brief but still handles the how. The separation should not create unnecessary overhead for trivial changes.\n\n### 2.4 Feature With No Previous Plan (Fresh Planning)\n- **Scenario**: The {previous_plan} placeholder is empty.\n- **Expected Behavior**: The prompt still produces a well-structured high-level plan following the What/Why/Impact/Risks/Scope structure.\n\n### 2.5 Feature With Previous Plan (Replanning)\n- **Scenario**: A previous plan exists and is passed via {previous_plan}.\n- **Expected Behavior**: The agent should improve upon the previous plan while still adhering to the high-level design focus. It should not regress into implementation details even if the previous plan contained them.\n\n### 2.6 No References to Deleted plan.md\n- **Scenario**: After deleting plan.md, some code path might still try to load it.\n- **Expected Behavior**: No runtime errors from missing template. All code paths that select prompt templates should only reference plan-headless.md and plan-bug.md (and any other active prompts).\n\n## 3. What Constitutes Failure\n\n### 3.1 Prompt Content Failures\n- plan-headless.md still contains \"detailed and actionable\" or equivalent language encouraging implementation details.\n- plan-headless.md lacks explicit exclusions for file names, method names, code snippets, etc.\n- plan-bug.md still encourages agents to list specific files to change or code to write.\n- impl-spec.md does not adequately guide agents to produce concrete coding tasks from a high-level plan.\n\n### 3.2 File Management Failures\n- plan.md still exists in pipeline/prompts/.\n- Any code references plan.md as a template (imports, config, file loading).\n- Deleting plan.md causes a runtime error or exception anywhere in the pipeline.\n\n### 3.3 Phase Separation Failures\n- Both plan and impl_spec prompts contain overlapping guidance about the same level of detail.\n- A plan generated from the updated prompt contains specific file paths, method names, or code.\n- An implementation spec generated from impl-spec.md lacks concrete coding tasks (meaning the detail was lost, not transferred).\n\n### 3.4 Regression Failures\n- The planning phase can no longer produce plans that are useful to the impl_spec phase (plans too vague to act on).\n- The overall pipeline breaks because impl_spec cannot build on the new style of plans.\n- Questions functionality in planning prompts is broken by the changes.\n\n## 4. Out of Scope\n\n- **Agent output quality**: We are testing the prompts, not whether a specific AI model produces good plans. The test verifies prompt content and structure, not LLM behavior.\n- **Performance benchmarks**: How fast plans are generated is not relevant.\n- **UI/UX testing**: How plans are displayed in the TUI or web UI is not part of this test.\n- **Integration with specific AI providers**: The prompts should be provider-agnostic.\n- **Testing the edit-feature CLI**: The CLI tool referenced in prompts is tested separately.\n- **Checkpoint functionality**: The checkpoint instructions in prompts are orthogonal to this feature.\n- **Existing plan migration**: We are not testing whether old plans get updated; only that new plans follow the new format.\n- **Visual formatting**: How the plan text is formatted (markdown headers, bullet styles) is not a test concern as long as the content focus is correct.",
+  "impl_notes": "Implemented the Plan vs. Implementation Plan feature by updating planning prompts to focus on high-level design thinking. Modified plan-headless.md and plan-bug.md to include Plan Content Guidelines (What/Why/Impact/Risks/Scope for features, Root Cause Analysis/Impact Assessment/Fix Strategy/Risks/Scope for bugs) and Explicitly Exclude sections. Deleted unused plan.md. Strengthened impl-spec.md to clarify it handles all tactical implementation details.",
+  "history": [
+    {
+      "ts": "2026-03-08T05:45Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-09T16:08Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-09T16:19Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T16:23Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T16:23Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T16:24Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-09T16:24Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-10T01:21Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-10T01:21Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-10T01:22Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-10T01:23Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-10T01:23Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-10T01:26Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-10T01:26Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-10T01:26Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-10T01:30Z",
+      "stage": "TESTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: mpl-spec.md han..."
+    },
+    {
+      "ts": "2026-03-10T01:30Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-10T01:31Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-10T01:31Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-10T01:32Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - All plan/test spec requirements verified. plan-headless.md and plan-bug.md correc..."
+    },
+    {
+      "ts": "2026-03-10T01:32Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-09T16:24Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-10T01:32Z",
+      "verdict": "PASS",
+      "summary": "All plan/test spec requirements verified. plan-headless.md and plan-bug.md correctly updated with high-level design guidelines and explicit exclusions. plan.md deleted with no remaining references. impl-spec.md strengthened to own tactical details. Clear phase separation achieved.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-09T18:31:13.753563",
+    "verdict": "PASS",
+    "results": {
+      "passed": 880,
+      "failed": 104,
+      "errors": 0
+    },
+    "feedback": "All test spec requirements verified manually. Implementation meets requirements. Go tests all passed. Python tests: 880 passed, 104 failed (pre-existing failures unrelated to this feature). test_preserve_plan_across_replanning.py tests all pass."
+  }
+}

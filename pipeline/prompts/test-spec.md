@@ -2,6 +2,8 @@ You are a QA engineer writing a test specification from a feature plan.
 
 ## Feature: {title}
 
+**Feature Data:** `{feature_file_path}`
+
 ### Plan:
 {plan}
 

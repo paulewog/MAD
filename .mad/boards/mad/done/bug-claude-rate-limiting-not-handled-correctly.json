@@ -1,0 +1,178 @@
+{
+  "id": "b79d3dd6",
+  "board": "mad",
+  "title": "bug - claude rate limiting not handled correctly",
+  "created": "2026-03-07T19:52Z",
+  "description": "I don't think, with our JSON changes, that rate limiting from claude is handled correctly.  All it says is that \"claude exicted with code 1\" but it doesn't say there was a rate limiting stderr or stdout (and there was no stderr).  Maybe we aren't checking stdout anymore?",
+  "plan": "## Bug: Claude Rate Limiting Not Handled Correctly\n\n### Root Cause Analysis\n\nThe bug has two related causes in `pipeline/runner.py`:\n\n**1. JSON format parsing drops error/system events (lines 448-475)**\nWhen using JSON format (`--format json`), the code only extracts events of type `text`, `tool_result`, and `tool_use`. Claude CLI may output rate limiting information as a different JSON event type (e.g., `error`, `system`, or `result` with error details). These events are silently dropped - they don't match any of the three handled types, so the except clause catches them and appends the raw JSON line. However, the raw JSON line won't match rate limit phrase detection because the phrases are buried inside JSON structure.\n\n**2. Rate limit check doesn't include stderr (lines 506-517)**\nThe rate limit phrase detection only checks `full_output` (stdout/output file). If Claude puts the rate limiting message in stderr, it won't be detected as a rate limit. The code falls through to the generic exit code check (line 519-524) which only shows a 500-char stderr snippet without identifying it as rate limiting.\n\n**3. stderr not included in full error context (lines 519-524)**\nWhen the process exits with non-zero code, the RuntimeError only includes 500 chars of stderr. It doesn't include stdout, which may contain useful context about what happened.\n\n### Fix Plan\n\n**File: `pipeline/runner.py`**\n\n#### Fix 1: Handle error/system JSON events (lines 448-475)\nIn the JSON format parsing block, add handling for `error` and `system` event types. Extract error messages and append them to `output_lines` so they're visible and searchable:\n\n```python\nelif event.get(\"type\") == \"error\":\n    error_msg = event.get(\"error\", {}).get(\"message\", \"\") or event.get(\"message\", \"\") or str(event)\n    output_lines.append(error_msg)\n    if status is not None:\n        status.lines.append(error_msg)\nelif event.get(\"type\") == \"system\":\n    system_msg = event.get(\"message\", \"\") or str(event)\n    output_lines.append(system_msg)\n    if status is not None:\n        status.lines.append(system_msg)\nelif event.get(\"type\") == \"result\":\n    # Result events may contain error information\n    if event.get(\"is_error\"):\n        result_text = event.get(\"result\", \"\") or str(event)\n        output_lines.append(result_text)\n        if status is not None:\n            status.lines.append(result_text)\n```\n\n#### Fix 2: Check stderr for rate limiting too (after line 517)\nExtend the rate limit detection to also check stderr:\n\n```python\n# Also check stderr for rate limit phrases\nif stderr_output:\n    stderr_lower = stderr_output.lower()\n    if any(phrase in stderr_lower for phrase in rate_limit_phrases):\n        raise RateLimitError(stderr_output)\n```\n\n#### Fix 3: Include stdout context in non-zero exit error (lines 519-524)\nWhen Claude exits with non-zero code, include both stdout and stderr in the error message so the user can see what happened:\n\n```python\nif process.returncode != 0:\n    stderr_snippet = stderr_output[:500] if stderr_output else \"(no stderr)\"\n    stdout_snippet = full_output[-500:] if full_output else \"(no stdout)\"\n    raise RuntimeError(\n        f\"{self.agent.name} exited with code {process.returncode}.\\n\"\n        f\"stderr: {stderr_snippet}\\n\"\n        f\"stdout (last 500 chars): {stdout_snippet}\"\n    )\n```\n\n### Files to Modify\n- `pipeline/runner.py` - All three fixes are in this file, in the `headless()` method\n\n### Testing\n- Run the pipeline and verify that rate limiting errors are properly caught and reported\n- Verify that the `RateLimitError` is raised (not `RuntimeError`) when rate limiting occurs\n- Verify that error JSON events from Claude are now visible in the output",
+  "impl_spec": "## Implementation Spec: Bug - Claude Rate Limiting Not Handled Correctly\n\nAll changes are in `pipeline/runner.py`, in the `headless()` method.\n\n### Task 1: Handle error/system/result JSON event types (lines 473-484)\n**What to modify:** The JSON format parsing block inside the stdout reading loop.\n**Approach:** After the existing `elif event.get(\"type\") == \"tool_use\"` block (line 473-478), add three new elif branches before the except clause:\n\n1. `elif event.get(\"type\") == \"error\"`: Extract error message from `event.get(\"error\", {}).get(\"message\", \"\")` or `event.get(\"message\", \"\")` or `str(event)`. Append to `output_lines` and `status.lines`.\n2. `elif event.get(\"type\") == \"system\"`: Extract message from `event.get(\"message\", \"\")` or `str(event)`. Append to `output_lines` and `status.lines`.\n3. `elif event.get(\"type\") == \"result\"`: Check `event.get(\"is_error\")`. If true, extract from `event.get(\"result\", \"\")` or `str(event)`. Append to `output_lines` and `status.lines`.\n\nThe new elifs go between line 478 and line 480 (the except clause). This ensures error messages containing rate limit phrases will appear in `output_lines` and be searchable by the existing rate limit detection.\n\n**Dependencies:** None.\n\n### Task 2: Check stderr for rate limit phrases (after line 526)\n**What to modify:** The rate limit detection block, after the existing `if any(phrase in output_lower ...)` check.\n**Approach:** After the existing rate limit check on `full_output` (line 525-526), add a second check on `stderr_output`:\n\n```python\nif stderr_output:\n    stderr_lower = stderr_output.lower()\n    if any(phrase in stderr_lower for phrase in rate_limit_phrases):\n        raise RateLimitError(stderr_output)\n```\n\nThis must be inside the `if not got_completion_marker:` block, after the existing stdout rate limit check. It uses the same `rate_limit_phrases` list already defined at line 518-524.\n\n**Dependencies:** None (but logically related to Task 1 since both improve rate limit detection).\n\n### Task 3: Include stdout context in non-zero exit error (lines 528-533)\n**What to modify:** The `if process.returncode != 0` block.\n**Approach:** Replace the existing RuntimeError to include both stderr and the last 500 chars of stdout:\n\n```python\nif process.returncode != 0:\n    stderr_snippet = stderr_output[:500] if stderr_output else \"(no stderr)\"\n    stdout_snippet = full_output[-500:] if full_output else \"(no stdout)\"\n    raise RuntimeError(\n        f\"{self.agent.name} exited with code {process.returncode}.\\n\"\n        f\"stderr: {stderr_snippet}\\n\"\n        f\"stdout (last 500 chars): {stdout_snippet}\"\n    )\n```\n\nThis replaces lines 528-533. The key change is adding `stdout_snippet` with `full_output[-500:]` to show the tail of stdout.\n\n**Dependencies:** None.\n\n### Testing\n- Run the existing test suite to verify no regressions: `python -m pytest pipeline/`\n- Manually verify by checking that rate limit errors from Claude (in either stdout JSON events or stderr) result in `RateLimitError` being raised\n- Verify that non-zero exit code errors now show both stderr and stdout context",
+  "test_spec": "# Test Specification: Bug - Claude Rate Limiting Not Handled Correctly\n\n## 1. Behaviors That MUST Be Verified\n\n### Fix 1: JSON Error/System Event Handling\n\n**Behavior 1.1: Error-type JSON events are extracted and visible in output**\n- When Claude outputs a JSON event with `{\"type\": \"error\", \"error\": {\"message\": \"rate limit exceeded\"}}`, the error message text (\"rate limit exceeded\") must appear in `output_lines`.\n- Success criteria: The error message string is present in the joined output, not buried inside raw JSON.\n\n**Behavior 1.2: Error events with top-level message field are handled**\n- When the error event has `{\"type\": \"error\", \"message\": \"some error\"}` (message at top level, not nested), the message must still be extracted.\n- Success criteria: \"some error\" appears in output_lines.\n\n**Behavior 1.3: System-type JSON events are extracted**\n- When Claude outputs `{\"type\": \"system\", \"message\": \"you are being rate limited\"}`, the message must appear in output_lines.\n- Success criteria: The system message string is present in the output.\n\n**Behavior 1.4: Result-type error events are extracted**\n- When Claude outputs `{\"type\": \"result\", \"is_error\": true, \"result\": \"rate limit exceeded\"}`, the result text must appear in output_lines.\n- Success criteria: The result error text is present in the output.\n\n**Behavior 1.5: Non-error result events are NOT added to output**\n- When Claude outputs `{\"type\": \"result\", \"is_error\": false, \"result\": \"success\"}`, no extra line should be added (existing behavior for unhandled types applies).\n- Success criteria: No spurious output lines from successful result events.\n\n**Behavior 1.6: Status lines are updated for error/system/result events**\n- When a status object is provided, error/system/result-error events must also be appended to `status.lines`.\n- Success criteria: status.lines contains the extracted error/system messages.\n\n**Behavior 1.7: Existing text/tool_result/tool_use handling is unchanged**\n- Text events, tool_result events, and tool_use events must continue to work as before.\n- Success criteria: Existing event types produce the same output as before the fix.\n\n### Fix 2: Stderr Rate Limit Detection\n\n**Behavior 2.1: Rate limit phrases in stderr trigger RateLimitError**\n- When the process exits and stderr contains \"rate limit\" (or any of the rate_limit_phrases), a RateLimitError must be raised (not RuntimeError).\n- Success criteria: RateLimitError is raised with stderr content when rate limiting is detected in stderr.\n\n**Behavior 2.2: Stderr rate limit check only runs when no completion marker**\n- If the process completed successfully (completion marker exists), stderr should NOT be checked for rate limiting.\n- Success criteria: No RateLimitError when completion marker is present, even if stderr contains rate limit phrases.\n\n**Behavior 2.3: Stdout rate limit detection still works**\n- The existing stdout/output-file rate limit detection must still function.\n- Success criteria: RateLimitError is raised when rate limit phrases appear in stdout/output file.\n\n**Behavior 2.4: All rate limit phrases are checked in stderr**\n- Each phrase in rate_limit_phrases (\"rate limit\", \"rate limit exceeded\", \"you are being rate limited\", \"rate limited due to\", \"too many requests\") must be detected in stderr.\n- Success criteria: Each phrase triggers RateLimitError when present in stderr.\n\n**Behavior 2.5: Case-insensitive matching on stderr**\n- Stderr rate limit detection must be case-insensitive (e.g., \"Rate Limit\" and \"RATE LIMIT\" both match).\n- Success criteria: Mixed-case rate limit phrases in stderr still trigger RateLimitError.\n\n### Fix 3: Include stdout in Non-Zero Exit Error\n\n**Behavior 3.1: RuntimeError includes both stderr and stdout snippets**\n- When process exits with non-zero code (and no rate limiting detected), the RuntimeError message must contain both stderr (first 500 chars) and stdout (last 500 chars).\n- Success criteria: Error message contains \"stderr:\" and \"stdout (last 500 chars):\" sections.\n\n**Behavior 3.2: Empty stderr shows placeholder**\n- When stderr is empty, the error message should show \"(no stderr)\".\n- Success criteria: Error message contains \"(no stderr)\" when stderr is empty.\n\n**Behavior 3.3: Empty stdout shows placeholder**\n- When stdout/full_output is empty, the error message should show \"(no stdout)\".\n- Success criteria: Error message contains \"(no stdout)\" when no output was captured.\n\n**Behavior 3.4: Long stderr is truncated to 500 chars**\n- When stderr exceeds 500 characters, only the first 500 are included.\n- Success criteria: stderr_snippet in error message is at most 500 characters.\n\n**Behavior 3.5: Long stdout is truncated to last 500 chars**\n- When full_output exceeds 500 characters, only the last 500 are included.\n- Success criteria: stdout_snippet in error message is the tail 500 characters.\n\n## 2. Edge Cases\n\n### JSON Event Parsing Edge Cases\n- **Empty error message**: `{\"type\": \"error\", \"error\": {}}` with no message key - should fall back to `str(event)` representation.\n- **Null/missing fields**: `{\"type\": \"error\"}` with no error or message key - should use `str(event)` as fallback.\n- **Error event with empty string message**: `{\"type\": \"error\", \"error\": {\"message\": \"\"}}` - should fall back through the `or` chain to `str(event)`.\n- **System event with no message**: `{\"type\": \"system\"}` - should use `str(event)`.\n- **Result event with is_error=true but no result field**: `{\"type\": \"result\", \"is_error\": true}` - should use `str(event)`.\n- **Result event with is_error absent (falsy)**: Should not add extra output lines.\n- **Multiple error events in sequence**: All should be captured in output_lines.\n- **Mixed event types**: A stream containing text, error, system, tool_use events should handle each correctly.\n\n### Stderr Edge Cases\n- **Stderr is None/empty**: process.stderr.read() returns empty string - no crash, no false positive.\n- **Rate limit phrase spans multiple lines in stderr**: Detection should still work since we check the full stderr string.\n- **Rate limit phrase appears in both stdout and stderr**: RateLimitError should be raised (caught by stdout check first).\n- **Stderr contains rate limit phrase but completion marker exists**: Should NOT raise RateLimitError.\n\n### Error Message Edge Cases\n- **Both stderr and stdout are empty**: Error should contain both \"(no stderr)\" and \"(no stdout)\" placeholders.\n- **Stderr is exactly 500 chars**: Should be included in full, not truncated.\n- **Stdout is exactly 500 chars**: Should be included in full.\n- **Agent name contains special characters**: Should still appear correctly in error message.\n\n## 3. What Constitutes Failure\n\n- **FAIL**: A JSON error event containing a rate limit phrase does NOT trigger RateLimitError (the original bug).\n- **FAIL**: A rate limit message in stderr results in a generic RuntimeError instead of RateLimitError.\n- **FAIL**: Error/system/result JSON events are silently dropped (not appearing in output_lines).\n- **FAIL**: RuntimeError for non-zero exit code does not include stdout context.\n- **FAIL**: Any of the existing event types (text, tool_result, tool_use) stop working.\n- **FAIL**: Rate limit detection triggers when a completion marker is present.\n- **FAIL**: The code crashes (unhandled exception) on malformed or unexpected JSON event types.\n- **FAIL**: Case sensitivity causes rate limit phrases to be missed.\n\n## 4. Out of Scope\n\n- **Actual Claude CLI interaction**: Tests should mock subprocess behavior, not invoke the real Claude CLI.\n- **Network/API behavior**: We are not testing Claude's actual rate limiting behavior, only our detection of it.\n- **TUI rendering**: How rate limit errors display in the terminal UI is not part of this spec.\n- **Performance benchmarks**: Speed of JSON parsing or event processing is not tested.\n- **Retry/recovery logic**: How the pipeline retries after a RateLimitError is handled elsewhere and not tested here.\n- **Output file reading**: The fix doesn't change output file reading logic; existing behavior is assumed correct.\n- **Log file writing**: The raw line logging to log_file is unchanged and not tested.\n- **Concurrent process execution**: Multiple headless() calls running simultaneously is not in scope.\n- **Visual/formatting assertions**: Exact formatting of error messages beyond required content is not tested.",
+  "impl_notes": "Created test file pipeline/test_rate_limit_handling.py with 25 comprehensive tests that verify all three bug fixes for Claude rate limiting handling: (1) JSON error/system/result event extraction, (2) stderr rate limit detection, and (3) non-zero exit error includes both stderr and stdout. All tests pass.",
+  "history": [
+    {
+      "ts": "2026-03-07T19:52Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-08T01:19Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-08T01:19Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T01:21Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-08T01:21Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-08T01:22Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-08T01:22Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-08T02:15Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-08T02:15Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-08T02:16Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T02:17Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T02:17Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T02:20Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T02:20Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T02:20Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T02:22Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T02:22Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T02:23Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T02:23Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T02:35Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T02:35Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T02:35Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T02:36Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-08T02:36Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T02:37Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-08T02:37Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-09T23:47Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-08T01:22Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-08T02:23Z",
+      "verdict": "FAIL",
+      "feedback": "The implementation code itself is correct and complete - all three fixes are properly implemented in pipeline/runner.py:\n\nFix 1 (lines 480-495): Error/system/result JSON event handling is correct with proper fallback chains.\nFix 2 (lines 543-546): Stderr rate limit detection works correctly, case-insensitive, only when no completion marker.\nFix 3 (lines 548-555): Non-zero exit error includes both stderr and stdout snippets with placeholders.\n\nHowever, the implementation FAILS because NO TESTS WERE WRITTEN. The test spec requires verification of:\n7 JSON event parsing behaviors (1.1-1.7)\n5 stderr rate limit detection behaviors (2.1-2.5)\n5 error message behaviors (3.1-3.5)\n8+ edge cases\n\nTo fix: Create a test file (e.g., pipeline/test_rate_limit_handling.py) that:\nMocks subprocess.Popen to simulate JSON event streams with error/system/result events\nVerifies RateLimitError is raised when rate limit phrases appear in stderr\nVerifies RateLimitError is NOT raised when completion marker exists\nVerifies RuntimeError message format includes both stderr and stdout snippets\nTests edge cases: empty messages, missing fields, case-insensitive matching\nVerifies existing text/tool_result/tool_use handling is unchanged\n\nAll behaviors listed in the test spec sections 1 and 2 must have corresponding test cases."
+    },
+    {
+      "ts": "2026-03-08T02:37Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-07T18:36:12.439663",
+    "verdict": "PASS",
+    "results": {
+      "passed": 25,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": ""
+  }
+}

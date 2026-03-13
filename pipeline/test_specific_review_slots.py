@@ -134,15 +134,17 @@ class TestAddPlanReview:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_plan_review("PASS", "Looks good!")
+                feature.add_plan_review("PASS", "Looks good!", None)
                 
                 assert len(feature.plan_reviews) == 1
                 entry = feature.plan_reviews[0]
                 assert "ts" in entry
                 assert "verdict" in entry
+                assert "summary" in entry
                 assert "feedback" in entry
                 assert entry["verdict"] == "PASS"
-                assert entry["feedback"] == "Looks good!"
+                assert entry["summary"] == "Looks good!"
+                assert entry["feedback"] is None
 
     def test_add_plan_review_timestamp_is_iso_format(self):
         """Test that add_plan_review() uses ISO timestamp format."""
@@ -154,7 +156,7 @@ class TestAddPlanReview:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_plan_review("PASS", "Good")
+                feature.add_plan_review("PASS", "Good", None)
                 
                 entry = feature.plan_reviews[0]
                 ts = entry["ts"]
@@ -170,8 +172,8 @@ class TestAddPlanReview:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_plan_review("PASS", "First review")
-                feature.add_plan_review("FAIL", "Second review")
+                feature.add_plan_review("PASS", "First review", None)
+                feature.add_plan_review("FAIL", "Second review", "Fix it")
                 
                 assert len(feature.plan_reviews) == 2
                 assert feature.plan_reviews[0]["verdict"] == "PASS"
@@ -191,15 +193,17 @@ class TestAddImplReview:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_impl_review("PASS", "Implementation looks good!")
+                feature.add_impl_review("PASS", "Implementation looks good!", None)
                 
                 assert len(feature.impl_reviews) == 1
                 entry = feature.impl_reviews[0]
                 assert "ts" in entry
                 assert "verdict" in entry
+                assert "summary" in entry
                 assert "feedback" in entry
                 assert entry["verdict"] == "PASS"
-                assert entry["feedback"] == "Implementation looks good!"
+                assert entry["summary"] == "Implementation looks good!"
+                assert entry["feedback"] is None
 
     def test_add_impl_review_timestamp_is_iso_format(self):
         """Test that add_impl_review() uses ISO timestamp format."""
@@ -211,7 +215,7 @@ class TestAddImplReview:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_impl_review("PASS", "Good")
+                feature.add_impl_review("PASS", "Good", None)
                 
                 entry = feature.impl_reviews[0]
                 ts = entry["ts"]
@@ -227,8 +231,8 @@ class TestAddImplReview:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_impl_review("PASS", "First review")
-                feature.add_impl_review("FAIL", "Second review")
+                feature.add_impl_review("PASS", "First review", None)
+                feature.add_impl_review("FAIL", "Second review", "Fix it")
                 
                 assert len(feature.impl_reviews) == 2
                 assert feature.impl_reviews[0]["verdict"] == "PASS"
@@ -254,7 +258,7 @@ class TestVerdictNormalization:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_plan_review(input_verdict, "feedback")
+                feature.add_plan_review(input_verdict, "feedback", "Fix it")
                 
                 assert feature.plan_reviews[0]["verdict"] == expected
 
@@ -274,7 +278,7 @@ class TestVerdictNormalization:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_plan_review(input_verdict, "feedback")
+                feature.add_plan_review(input_verdict, "feedback", "Fix it")
                 
                 assert feature.plan_reviews[0]["verdict"] == "FAIL"
 
@@ -292,10 +296,10 @@ class TestEmptyNoneFeedbackHandling:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_plan_review("FAIL", "")
+                feature.add_plan_review("FAIL", "summary", "")
                 
                 assert len(feature.plan_reviews) == 1
-                assert feature.plan_reviews[0]["feedback"] == ""
+                assert feature.plan_reviews[0]["feedback"] is None
 
     def test_none_feedback_creates_entry_with_empty_string(self):
         """Test that None feedback creates entry with empty string."""
@@ -307,10 +311,10 @@ class TestEmptyNoneFeedbackHandling:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_plan_review("FAIL", None)
+                feature.add_plan_review("FAIL", "summary", None)
                 
                 assert len(feature.plan_reviews) == 1
-                assert feature.plan_reviews[0]["feedback"] == ""
+                assert feature.plan_reviews[0]["feedback"] is None
 
 
 class TestGetLatestPlanReview:
@@ -326,12 +330,12 @@ class TestGetLatestPlanReview:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_plan_review("PASS", "First")
-                feature.add_plan_review("FAIL", "Second")
+                feature.add_plan_review("PASS", "First", None)
+                feature.add_plan_review("FAIL", "Second", "Fix it")
                 
                 latest = feature.get_latest_plan_review()
                 assert latest["verdict"] == "FAIL"
-                assert latest["feedback"] == "Second"
+                assert latest["feedback"] == "Fix it"
 
     def test_get_latest_plan_review_returns_none_when_empty(self):
         """Test that get_latest_plan_review() returns None when no reviews."""
@@ -360,12 +364,12 @@ class TestGetLatestImplReview:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_impl_review("PASS", "First")
-                feature.add_impl_review("FAIL", "Second")
+                feature.add_impl_review("PASS", "First", None)
+                feature.add_impl_review("FAIL", "Second", "Fix it")
                 
                 latest = feature.get_latest_impl_review()
                 assert latest["verdict"] == "FAIL"
-                assert latest["feedback"] == "Second"
+                assert latest["feedback"] == "Fix it"
 
     def test_get_latest_impl_review_returns_none_when_empty(self):
         """Test that get_latest_impl_review() returns None when no reviews."""
@@ -394,11 +398,11 @@ class TestGetLatestFeedbackPhases:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_plan_review("FAIL", "Plan feedback")
-                feature.add_impl_review("FAIL", "Impl feedback")
+                feature.add_plan_review("FAIL", "Plan feedback", "Fix it")
+                feature.add_impl_review("FAIL", "Impl feedback", "Fix it")
                 
                 feedback = _get_latest_feedback(feature)
-                assert feedback == "Impl feedback"
+                assert feedback == "Fix it"
 
     def test_get_latest_feedback_returns_plan_when_no_impl_fail(self):
         """Test that _get_latest_feedback() returns plan feedback when impl has no FAIL."""
@@ -410,11 +414,11 @@ class TestGetLatestFeedbackPhases:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_plan_review("FAIL", "Plan feedback")
-                feature.add_impl_review("PASS", "Impl passed")
+                feature.add_plan_review("FAIL", "Plan feedback", "Fix it")
+                feature.add_impl_review("PASS", "Impl passed", None)
                 
                 feedback = _get_latest_feedback(feature)
-                assert feedback == "Plan feedback"
+                assert feedback == "Fix it"
 
     def test_get_latest_feedback_default_message_when_no_failures(self):
         """Test that _get_latest_feedback() returns default when no FAIL verdicts."""
@@ -426,8 +430,8 @@ class TestGetLatestFeedbackPhases:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_plan_review("PASS", "Plan passed")
-                feature.add_impl_review("PASS", "Impl passed")
+                feature.add_plan_review("PASS", "Plan passed", None)
+                feature.add_impl_review("PASS", "Impl passed", None)
                 
                 feedback = _get_latest_feedback(feature)
                 assert feedback == "No previous feedback available."
@@ -472,7 +476,7 @@ class TestServerClientIncludesReviews:
             with patch('state.Config') as mock_config_class:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
-                feature.add_plan_review("FAIL", "Plan feedback")
+                feature.add_plan_review("FAIL", "Plan feedback", "Fix it")
                 
             feature_summaries = []
             
@@ -510,7 +514,7 @@ class TestServerClientIncludesReviews:
             with patch('state.Config') as mock_config_class:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
-                feature.add_impl_review("FAIL", "Impl feedback")
+                feature.add_impl_review("FAIL", "Impl feedback", "Fix it")
                 
             feature_summaries = []
             
@@ -585,7 +589,7 @@ class TestEdgeCases:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_plan_review("", "feedback")
+                feature.add_plan_review("", "feedback", "Fix it")
                 
                 assert feature.plan_reviews[0]["verdict"] == "FAIL"
 
@@ -599,7 +603,7 @@ class TestEdgeCases:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_plan_review(None, "feedback")
+                feature.add_plan_review(None, "feedback", "Fix it")
                 
                 assert feature.plan_reviews[0]["verdict"] == "FAIL"
 
@@ -641,7 +645,7 @@ class TestEdgeCases:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_plan_review("FAIL", long_feedback)
+                feature.add_plan_review("FAIL", "summary", long_feedback)
                 
                 stored = feature.plan_reviews[0]["feedback"]
                 assert len(stored) == 15000
@@ -659,9 +663,9 @@ class TestEdgeCases:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test", "Desc")
                 
-                feature.add_plan_review("PASS", unicode_feedback)
+                feature.add_plan_review("PASS", unicode_feedback, None)
                 
-                stored = feature.plan_reviews[0]["feedback"]
+                stored = feature.plan_reviews[0]["summary"]
                 assert stored == unicode_feedback
 
 
@@ -678,13 +682,13 @@ class TestIntegrationScenarios:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test Feature", "Description")
                 
-                feature.add_plan_review("FAIL", "Plan needs improvement: missing details")
-                assert feature.get_latest_plan_review()["feedback"] == "Plan needs improvement: missing details"
+                feature.add_plan_review("FAIL", "Plan needs improvement: missing details", "Fix it")
+                assert feature.get_latest_plan_review()["feedback"] == "Fix it"
                 
                 latest = _get_latest_feedback(feature)
-                assert latest == "Plan needs improvement: missing details"
+                assert latest == "Fix it"
                 
-                feature.add_plan_review("PASS", "Plan looks good now")
+                feature.add_plan_review("PASS", "Plan looks good now", None)
                 assert len(feature.plan_reviews) == 2
 
     def test_impl_review_feedback_loop(self):
@@ -697,13 +701,13 @@ class TestIntegrationScenarios:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test Feature", "Description")
                 
-                feature.add_impl_review("FAIL", "Implementation has bugs in step 3")
-                assert feature.get_latest_impl_review()["feedback"] == "Implementation has bugs in step 3"
+                feature.add_impl_review("FAIL", "Implementation has bugs in step 3", "Fix it")
+                assert feature.get_latest_impl_review()["feedback"] == "Fix it"
                 
                 latest = _get_latest_feedback(feature)
-                assert latest == "Implementation has bugs in step 3"
+                assert latest == "Fix it"
                 
-                feature.add_impl_review("PASS", "Implementation fixed")
+                feature.add_impl_review("PASS", "Implementation fixed", None)
                 assert len(feature.impl_reviews) == 2
 
     def test_mixed_review_types(self):
@@ -716,15 +720,15 @@ class TestIntegrationScenarios:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test Feature", "Description")
                 
-                feature.add_plan_review("FAIL", "Plan issue")
-                feature.add_plan_review("PASS", "Plan fixed")
-                feature.add_impl_review("FAIL", "Impl issue")
+                feature.add_plan_review("FAIL", "Plan issue", "Fix it")
+                feature.add_plan_review("PASS", "Plan fixed", None)
+                feature.add_impl_review("FAIL", "Impl issue", "Fix it")
                 
                 assert len(feature.plan_reviews) == 2
                 assert len(feature.impl_reviews) == 1
                 
                 feedback = _get_latest_feedback(feature)
-                assert feedback == "Impl issue"
+                assert feedback == "Fix it"
 
 
 class TestRunFixFeedbackFallback:
@@ -742,7 +746,7 @@ class TestRunFixFeedbackFallback:
             with patch('state.Config') as mock_config_class:
                 mock_config_class.return_value = config
                 feature = FeatureFile.create("testboard", "Test Feature", "Description")
-                feature.add_impl_review("FAIL", "Bug in login function")
+                feature.add_impl_review("FAIL", "Bug in login function", "Fix it")
                 feature.save()
             
             with patch('phases._build_prompt', return_value="test"), \
@@ -758,4 +762,4 @@ class TestRunFixFeedbackFallback:
                 run_fix_feedback(feature, mock_runner, feedback="")
                 
                 latest = feature.get_latest_impl_review()
-                assert latest["feedback"] == "Bug in login function"
+                assert latest["feedback"] == "Fix it"

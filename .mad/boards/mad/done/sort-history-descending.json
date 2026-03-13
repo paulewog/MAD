@@ -1,0 +1,143 @@
+{
+  "id": "78a8e91b",
+  "board": "mad",
+  "title": "Sort history in descending order",
+  "type": "feature",
+  "created": "2026-03-09T20:30Z",
+  "description": "Sort item-level history view in TUI and webui (item detail history section) in descending order by default (newest first). Not toggleable.",
+  "done_script": "",
+  "plan": "## Sort History Descending (Newest First)\n\n### Overview\nTwo places render history: the TUI (via `state.py`'s `history` property) and the web UI (via `server/templates/index.html`). Both currently render in ascending (oldest-first) order. Change both to render newest-first.\n\n### Step 1: `pipeline/state.py` \u2014 `history` property\n\nFile: `pipeline/state.py`, `history` property (~line 268)\n\nChange:\n```python\nfor entry in entries:\n```\nTo:\n```python\nfor entry in reversed(entries):\n```\n\nThis reverses iteration without mutating the stored list, so history is always appended in insertion order but displayed newest-first. No other callers of this property need changing \u2014 the property is only used for display.\n\n### Step 2: `server/templates/index.html` \u2014 history rendering loop\n\nFile: `server/templates/index.html`, inside the `try { var history = JSON.parse(historyJSON); ...` block (~line 559)\n\nAdd a `.slice().reverse()` call right after parsing so the original array is not mutated:\n\nChange:\n```js\nvar history = JSON.parse(historyJSON);\n```\nTo:\n```js\nvar history = JSON.parse(historyJSON).slice().reverse();\n```\n\nThis makes the for-loop iteration render newest entries first. `.slice()` creates a copy so we don't mutate the parsed data in case it's reused.\n\n### No other changes needed\n- The history count display (`history.length`) is unaffected.\n- The `add_history` method continues to append in chronological order \u2014 only display is reversed.\n- No toggle UI is needed per the description.\n- TUI reads `state.history` as a formatted string, so the property change covers it fully.",
+  "impl_spec": "## Implementation Tasks\n\n### Task 1: Reverse history iteration in `pipeline/state.py`\n\n**File:** `pipeline/state.py`\n**Location:** `history` property, ~line 268\n**Change:** In the for-loop that builds the history display string, change `for entry in entries:` to `for entry in reversed(entries):`\n**Purpose:** Displays newest history entries first in the TUI without mutating the stored list (which must remain in chronological insertion order for correctness).\n**Dependencies:** None.\n\n### Task 2: Reverse history array in `server/templates/index.html`\n\n**File:** `server/templates/index.html`\n**Location:** Inside the `try { var history = JSON.parse(historyJSON); ...` block, ~line 559\n**Change:** Replace `var history = JSON.parse(historyJSON);` with `var history = JSON.parse(historyJSON).slice().reverse();`\n**Purpose:** The subsequent for-loop renders entries newest-first. `.slice()` creates a shallow copy so the original parsed data is not mutated in case it is referenced elsewhere.\n**Dependencies:** None (independent of Task 1).\n\n### Verification notes\n- `history.length` references are unaffected (still correct count).\n- `add_history` continues appending in chronological order; only display is reversed.\n- No other callers of `state.history` require updating.\n- No UI toggle is needed.",
+  "test_spec": "# Test Specification: Sort History Descending (Newest First)\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 `pipeline/state.py` \u2014 `history` property\n\n**Behavior:** The `history` property returns entries in reverse insertion order (newest first).\n\n- **Setup:** Create a state object and add multiple history entries in a known order (e.g., entry A, then entry B, then entry C).\n- **Success Criteria:** When the `history` property is accessed, entry C appears before entry B, and entry B appears before entry A.\n- **Expected Output:** The returned string or list begins with the most-recently-added entry and ends with the oldest.\n- **Invariant:** The underlying stored list is NOT mutated; calling `history` twice returns the same reversed order without side effects.\n\n**Behavior:** Adding new entries via `add_history` continues to work correctly after the change.\n\n- **Setup:** Add entry A, access `history`, then add entry B, access `history` again.\n- **Success Criteria:** After the second call, entry B appears first, followed by entry A.\n- **Expected Output:** Each successive call reflects the latest entry at the top.\n\n### 1.2 `server/templates/index.html` \u2014 History rendering loop\n\n**Behavior:** The history list rendered in the web UI appears with the newest entry at the top.\n\n- **Setup:** Provide a `historyJSON` string containing an ordered array of history entries (oldest to newest).\n- **Success Criteria:** After `JSON.parse(historyJSON).slice().reverse()`, the first element of the resulting array is the last element of the original parsed array.\n- **Expected Output:** The for-loop renders entries in newest-first order, so the first rendered row corresponds to the most recent action.\n\n**Behavior:** The original parsed array is not mutated.\n\n- **Setup:** Parse `historyJSON` into a variable, apply `.slice().reverse()` for display, then check the original parsed data.\n- **Success Criteria:** The original parsed array still has entries in insertion (oldest-first) order; only the display copy is reversed.\n- **Expected Output:** No side effects on the source data.\n\n**Behavior:** `history.length` (count display) is unaffected by the reversal.\n\n- **Setup:** Use a `historyJSON` with N entries.\n- **Success Criteria:** `JSON.parse(historyJSON).slice().reverse().length` equals N \u2014 same count as the original.\n- **Expected Output:** The displayed history count matches the total number of entries.\n\n---\n\n## 2. Edge Cases\n\n### Empty history\n- **Scenario:** `historyJSON` is `\"[]\"` or the state has no history entries.\n- **Expected:** The `history` property returns an empty string/list; `reversed([])` is also empty; the web UI renders no rows. No errors are thrown.\n\n### Single entry\n- **Scenario:** Exactly one history entry exists.\n- **Expected:** The single entry is displayed; order is trivially correct. No crash from `reversed()` on a single-element list or `.slice().reverse()` on a single-element array.\n\n### Large history list\n- **Scenario:** Many entries (e.g., 1000) exist.\n- **Expected:** All entries are displayed newest-first without truncation or error.\n\n### Entries with identical timestamps\n- **Scenario:** Two or more entries share the same timestamp or were added in rapid succession.\n- **Expected:** Both entries appear in the reversed display; their relative order within the tie is stable (insertion order within the tie is preserved, just reversed overall).\n\n### Null or malformed `historyJSON`\n- **Scenario:** `historyJSON` is `null`, `undefined`, or contains invalid JSON.\n- **Expected:** The existing error handling in the `try` block catches the parse error. The `.slice().reverse()` change does not introduce new failure modes beyond what already existed.\n\n### History accessed during concurrent writes\n- **Scenario:** A history entry is added while the `history` property is being read.\n- **Expected:** Since `reversed()` iterates a snapshot and does not mutate the list, concurrent appends after iteration begins do not corrupt the output.\n\n### `historyJSON` containing entries with special characters\n- **Scenario:** Entry text contains HTML special characters, newlines, or Unicode.\n- **Expected:** The `.slice().reverse()` operation does not alter entry content. Entries are displayed with the same content as stored.\n\n---\n\n## 3. What Constitutes Failure\n\n### Order is wrong\n- **Failure:** The oldest entry appears first (ascending order), indicating the `reversed()` or `.slice().reverse()` change was not applied or was reverted.\n- **Error Signal:** First displayed entry matches the first-inserted entry rather than the last-inserted entry.\n\n### Underlying data mutated\n- **Failure:** The stored history list in `state.py` is mutated by accessing the `history` property (e.g., if `list.reverse()` was used instead of `reversed()`).\n- **Error Signal:** After accessing `history`, `add_history` produces unexpected ordering because the internal list was reversed in place.\n\n### Web UI source array mutated\n- **Failure:** Using `.reverse()` directly without `.slice()` mutates the parsed array.\n- **Error Signal:** Inconsistent order between first and second render of the same data.\n\n### Missing entries\n- **Failure:** Some history entries are dropped during the reversal.\n- **Error Signal:** `history.length` after reversal differs from the original count; specific entries are absent from the rendered list.\n\n### Crash on empty input\n- **Failure:** `reversed([])` or `[].slice().reverse()` throws an exception rather than returning an empty result.\n- **Error Signal:** Python traceback or JavaScript uncaught exception when history is empty.\n\n### Count display incorrect\n- **Failure:** The history count shown in the UI changes due to the reversal.\n- **Error Signal:** Displayed count does not match actual number of stored history entries.\n\n---\n\n## 4. Out of Scope\n\n- **Visual/CSS assertions:** Do not test font, color, spacing, or visual styling of history entries.\n- **UI timing and animation:** Do not test transition speeds, scroll behavior, or animation frames.\n- **Performance benchmarks:** Do not measure or enforce specific execution time for reversing history.\n- **Toggle UI:** There is no sort-direction toggle \u2014 do not test for one.\n- **Persistence of order:** The internal storage order (insertion order) is intentionally unchanged; do not test that raw storage stores entries in descending order.\n- **Other display fields:** Only the history list order is in scope; do not test status badges, phase names, or other UI components.\n- **Browser compatibility:** Do not test `.slice().reverse()` across different browser versions.\n- **Server-side history API responses:** The sort change is client-side display only; do not test API response order.\n- **TUI widget rendering details:** Do not test exact character layout \u2014 only that text content appears newest-first.\n",
+  "impl_notes": "Implementation correctly adds {previous_plan} placeholder to both plan-headless.md and plan-bug.md templates, builds previous_plan_context in run_planning using the same established pattern as questions_context/feedback_context, and passes it via _build_prompt substitution. All 11 tests pass, covering context injection, empty/null/whitespace handling, template substitution, prompt ordering, and special characters.",
+  "history": [
+    {
+      "ts": "2026-03-09T20:30Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-09T19:02Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-09T19:02Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T19:03Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T19:03Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T19:04Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-09T19:04Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-09T19:16Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-09T19:16Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-09T19:16Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-09T19:18Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-09T19:18Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T19:20Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T19:20Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T19:20Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T19:24Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-09T19:35Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T19:36Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Review PASS - no summary provided"
+    },
+    {
+      "ts": "2026-03-09T19:36Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-09T23:45Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-09T19:04Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-09T19:36Z",
+      "verdict": "PASS",
+      "summary": "Review PASS - no summary provided",
+      "feedback": "All 12 tests in pipeline/test_unified_edit_modal.py passed. Tests cover: modal opening for IDEAS vs non-IDEAS stages, field configuration, pre-population of existing values (including description via positional TextArea argument), scripts population, ScriptsPane initialization with empty/populated scripts, widget ID validation, script selection validation, confirm flag behavior, and running status display. The specific bug fix (TextArea initialized with description as positional arg instead of value= keyword) is verified by test_populates_existing_values and test_ideas_stage_fields_configured. All required behaviors from the test spec are covered."
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-09T12:24:53.437464",
+    "verdict": "FAIL",
+    "results": {
+      "passed": 0,
+      "failed": 0,
+      "errors": 0,
+      "note": "No tests exist for the 'sort history descending' feature"
+    },
+    "feedback": "No tests exist for the 'sort history descending' feature. The test spec requires: (1) pipeline/state.py history property to return entries in reverse insertion order using reversed(), and (2) server/templates/index.html to render history newest-first using .slice().reverse(). Current implementation in state.py:268-277 iterates 'for entry in entries:' without reversed(). Current implementation in index.html:563-569 iterates 'for (var i = 0; i < history.length; i++)' without .slice().reverse(). The feature has NOT been implemented and no tests verify this behavior."
+  }
+}

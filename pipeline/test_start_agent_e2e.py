@@ -61,12 +61,16 @@ def _make_feature(title="Test Feature", stage="ideas", board="default",
     f.board = board
     f.created = created
     f.id = fid
+    f.slug = fid
     f.description = ""
     f.questions = []
     f.plan = ""
     f.impl_spec = ""
     f.test_spec = ""
     f.impl_notes = ""
+    f.plan_reviews = []
+    f.impl_reviews = []
+    f.test_results = {}
     f._data = {"pipeline_log": logs or [], "history": []}
     return f
 
@@ -585,7 +589,8 @@ class TestTUIHandleStartAgent:
         mock_tui.logger = MagicMock()
         return mock_tui
 
-    def test_feature_not_found_returns_early(self):
+    @pytest.mark.asyncio
+    async def test_feature_not_found_returns_early(self):
         """Test that _handle_start_agent returns early when feature not found."""
         from unittest.mock import MagicMock, patch
         from types import SimpleNamespace
@@ -595,12 +600,12 @@ class TestTUIHandleStartAgent:
 
         with patch("tui.logger") as mock_logger:
             from tui import PipelineApp
-            PipelineApp._handle_start_agent(mock_tui, "nonexistent-feature", "plan")
+            await PipelineApp._handle_start_agent(mock_tui, "nonexistent-feature", "plan")
 
         mock_tui._load_features.assert_called_once_with("default")
-        mock_tui.call_from_thread.assert_not_called()
 
-    def test_unknown_action_returns_early(self):
+    @pytest.mark.asyncio
+    async def test_unknown_action_returns_early(self):
         """Test that _handle_start_agent returns early for unknown action."""
         from unittest.mock import MagicMock, patch
         from types import SimpleNamespace
@@ -611,12 +616,12 @@ class TestTUIHandleStartAgent:
 
         with patch("tui.logger") as mock_logger:
             from tui import PipelineApp
-            PipelineApp._handle_start_agent(mock_tui, "f1", "unknown_action")
+            await PipelineApp._handle_start_agent(mock_tui, "f1", "unknown_action")
 
         mock_logger.warning.assert_called()
-        mock_tui.call_from_thread.assert_not_called()
 
-    def test_invalid_stage_for_plan_action_returns_early(self):
+    @pytest.mark.asyncio
+    async def test_invalid_stage_for_plan_action_returns_early(self):
         """Test that _handle_start_agent returns early when stage invalid for plan."""
         from unittest.mock import MagicMock, patch
         from types import SimpleNamespace
@@ -627,12 +632,12 @@ class TestTUIHandleStartAgent:
 
         with patch("tui.logger") as mock_logger:
             from tui import PipelineApp
-            PipelineApp._handle_start_agent(mock_tui, "f1", "plan")
+            await PipelineApp._handle_start_agent(mock_tui, "f1", "plan")
 
         mock_logger.warning.assert_called()
-        mock_tui.call_from_thread.assert_not_called()
 
-    def test_invalid_stage_for_implement_action_returns_early(self):
+    @pytest.mark.asyncio
+    async def test_invalid_stage_for_implement_action_returns_early(self):
         """Test that _handle_start_agent returns early when stage invalid for implement."""
         from unittest.mock import MagicMock, patch
         from types import SimpleNamespace
@@ -643,12 +648,12 @@ class TestTUIHandleStartAgent:
 
         with patch("tui.logger") as mock_logger:
             from tui import PipelineApp
-            PipelineApp._handle_start_agent(mock_tui, "f1", "implement")
+            await PipelineApp._handle_start_agent(mock_tui, "f1", "implement")
 
         mock_logger.warning.assert_called()
-        mock_tui.call_from_thread.assert_not_called()
 
-    def test_plan_agent_already_running_returns_early(self):
+    @pytest.mark.asyncio
+    async def test_plan_agent_already_running_returns_early(self):
         """Test that _handle_start_agent returns early when plan agent already running."""
         from unittest.mock import MagicMock, patch
         from types import SimpleNamespace
@@ -660,12 +665,12 @@ class TestTUIHandleStartAgent:
 
         with patch("tui.logger") as mock_logger:
             from tui import PipelineApp
-            PipelineApp._handle_start_agent(mock_tui, "f1", "plan")
+            await PipelineApp._handle_start_agent(mock_tui, "f1", "plan")
 
         mock_logger.warning.assert_called()
-        mock_tui.call_from_thread.assert_not_called()
 
-    def test_implement_agent_already_running_returns_early(self):
+    @pytest.mark.asyncio
+    async def test_implement_agent_already_running_returns_early(self):
         """Test that _handle_start_agent returns early when implement agent already running."""
         from unittest.mock import MagicMock, patch
         from types import SimpleNamespace
@@ -677,12 +682,12 @@ class TestTUIHandleStartAgent:
 
         with patch("tui.logger") as mock_logger:
             from tui import PipelineApp
-            PipelineApp._handle_start_agent(mock_tui, "f1", "implement")
+            await PipelineApp._handle_start_agent(mock_tui, "f1", "implement")
 
         mock_logger.warning.assert_called()
-        mock_tui.call_from_thread.assert_not_called()
 
-    def test_successful_plan_action_calls_run_plan_async(self):
+    @pytest.mark.asyncio
+    async def test_successful_plan_action_calls_run_plan_async(self):
         """Test that _handle_start_agent triggers plan action correctly."""
         from unittest.mock import MagicMock, patch
         from types import SimpleNamespace
@@ -691,23 +696,15 @@ class TestTUIHandleStartAgent:
         feature = SimpleNamespace(id="f1", title="Test Feature", current_stage="plan-inbox")
         mock_tui._load_features = MagicMock(return_value=[feature])
 
-        executed_callback = []
-
-        def capture_callback(callback):
-            executed_callback.append(callback)
-            callback()
-
-        mock_tui.call_from_thread = capture_callback
-
         with patch.object(mock_tui, "_run_plan_async", create=True) as mock_run_plan:
             from tui import PipelineApp
-            PipelineApp._handle_start_agent(mock_tui, "f1", "plan")
+            await PipelineApp._handle_start_agent(mock_tui, "f1", "plan")
 
-            assert len(executed_callback) == 1
             mock_tui._show_log.assert_called_once()
             mock_run_plan.assert_called_once_with(feature)
 
-    def test_successful_implement_action_calls_run_implement_async(self):
+    @pytest.mark.asyncio
+    async def test_successful_implement_action_calls_run_implement_async(self):
         """Test that _handle_start_agent triggers implement action correctly."""
         from unittest.mock import MagicMock, patch
         from types import SimpleNamespace
@@ -716,23 +713,15 @@ class TestTUIHandleStartAgent:
         feature = SimpleNamespace(id="f1", title="Test Feature", current_stage="approved")
         mock_tui._load_features = MagicMock(return_value=[feature])
 
-        executed_callback = []
-
-        def capture_callback(callback):
-            executed_callback.append(callback)
-            callback()
-
-        mock_tui.call_from_thread = capture_callback
-
         with patch.object(mock_tui, "_run_implement_async", create=True) as mock_run_impl:
             from tui import PipelineApp
-            PipelineApp._handle_start_agent(mock_tui, "f1", "implement")
+            await PipelineApp._handle_start_agent(mock_tui, "f1", "implement")
 
-            assert len(executed_callback) == 1
             mock_tui._show_log.assert_called_once()
             mock_run_impl.assert_called_once_with(feature)
 
-    def test_plan_sets_selected_feature(self):
+    @pytest.mark.asyncio
+    async def test_plan_sets_selected_feature(self):
         """Test that _handle_start_agent sets selected_feature for plan action."""
         from unittest.mock import MagicMock, patch
         from types import SimpleNamespace
@@ -741,20 +730,13 @@ class TestTUIHandleStartAgent:
         feature = SimpleNamespace(id="f1", title="Test Feature", current_stage="plan-inbox")
         mock_tui._load_features = MagicMock(return_value=[feature])
 
-        executed_callback = []
-
-        def capture_callback(callback):
-            executed_callback.append(callback)
-            callback()
-
-        mock_tui.call_from_thread = capture_callback
-
         from tui import PipelineApp
-        PipelineApp._handle_start_agent(mock_tui, "f1", "plan")
+        await PipelineApp._handle_start_agent(mock_tui, "f1", "plan")
 
         assert mock_tui.selected_feature == feature
 
-    def test_implement_sets_selected_feature(self):
+    @pytest.mark.asyncio
+    async def test_implement_sets_selected_feature(self):
         """Test that _handle_start_agent sets selected_feature for implement action."""
         from unittest.mock import MagicMock, patch
         from types import SimpleNamespace
@@ -763,20 +745,13 @@ class TestTUIHandleStartAgent:
         feature = SimpleNamespace(id="f1", title="Test Feature", current_stage="approved")
         mock_tui._load_features = MagicMock(return_value=[feature])
 
-        executed_callback = []
-
-        def capture_callback(callback):
-            executed_callback.append(callback)
-            callback()
-
-        mock_tui.call_from_thread = capture_callback
-
         from tui import PipelineApp
-        PipelineApp._handle_start_agent(mock_tui, "f1", "implement")
+        await PipelineApp._handle_start_agent(mock_tui, "f1", "implement")
 
         assert mock_tui.selected_feature == feature
 
-    def test_approved_stage_allows_both_plan_and_implement(self):
+    @pytest.mark.asyncio
+    async def test_approved_stage_allows_both_plan_and_implement(self):
         """Test that approved stage allows both plan and implement actions."""
         from unittest.mock import MagicMock, patch
         from types import SimpleNamespace
@@ -785,30 +760,20 @@ class TestTUIHandleStartAgent:
         feature = SimpleNamespace(id="f1", title="Test", current_stage="approved")
         mock_tui._load_features = MagicMock(return_value=[feature])
 
-        executed_callback = []
-
-        def capture_callback(callback):
-            executed_callback.append(callback)
-            callback()
-
-        mock_tui.call_from_thread = capture_callback
-
         with patch.object(mock_tui, "_run_plan_async", create=True) as mock_plan, \
              patch.object(mock_tui, "_run_implement_async", create=True) as mock_impl:
             from tui import PipelineApp
             
-            PipelineApp._handle_start_agent(mock_tui, "f1", "plan")
-            assert len(executed_callback) == 1
+            await PipelineApp._handle_start_agent(mock_tui, "f1", "plan")
             mock_plan.assert_called_once()
             
             mock_tui._plan_running = False
-            executed_callback.clear()
             
-            PipelineApp._handle_start_agent(mock_tui, "f1", "implement")
-            assert len(executed_callback) == 1
+            await PipelineApp._handle_start_agent(mock_tui, "f1", "implement")
             mock_impl.assert_called_once()
 
-    def test_spec_writing_stage_allows_only_implement(self):
+    @pytest.mark.asyncio
+    async def test_spec_writing_stage_allows_only_implement(self):
         """Test that spec-writing stage only allows implement, not plan."""
         from unittest.mock import MagicMock, patch
         from types import SimpleNamespace
@@ -819,29 +784,20 @@ class TestTUIHandleStartAgent:
 
         with patch("tui.logger") as mock_logger:
             from tui import PipelineApp
-            PipelineApp._handle_start_agent(mock_tui, "f1", "plan")
+            await PipelineApp._handle_start_agent(mock_tui, "f1", "plan")
 
         mock_logger.warning.assert_called()
-        mock_tui.call_from_thread.assert_not_called()
 
         mock_tui._plan_running = False
 
-        executed_callback = []
-
-        def capture_callback(callback):
-            executed_callback.append(callback)
-            callback()
-
-        mock_tui.call_from_thread = capture_callback
-
         with patch.object(mock_tui, "_run_implement_async", create=True) as mock_impl:
             from tui import PipelineApp
-            PipelineApp._handle_start_agent(mock_tui, "f1", "implement")
+            await PipelineApp._handle_start_agent(mock_tui, "f1", "implement")
 
-            assert len(executed_callback) == 1
             mock_impl.assert_called_once()
 
-    def test_plan_busy_allows_implement(self):
+    @pytest.mark.asyncio
+    async def test_plan_busy_allows_implement(self):
         """Test that plan busy doesn't block implement action."""
         from unittest.mock import MagicMock, patch
         from types import SimpleNamespace
@@ -851,22 +807,14 @@ class TestTUIHandleStartAgent:
         feature = SimpleNamespace(id="f1", title="Test", current_stage="approved")
         mock_tui._load_features = MagicMock(return_value=[feature])
 
-        executed_callback = []
-
-        def capture_callback(callback):
-            executed_callback.append(callback)
-            callback()
-
-        mock_tui.call_from_thread = capture_callback
-
         with patch.object(mock_tui, "_run_implement_async", create=True) as mock_impl:
             from tui import PipelineApp
-            PipelineApp._handle_start_agent(mock_tui, "f1", "implement")
+            await PipelineApp._handle_start_agent(mock_tui, "f1", "implement")
 
-            assert len(executed_callback) == 1
             mock_impl.assert_called_once()
 
-    def test_implement_busy_allows_plan(self):
+    @pytest.mark.asyncio
+    async def test_implement_busy_allows_plan(self):
         """Test that implement busy doesn't block plan action."""
         from unittest.mock import MagicMock, patch
         from types import SimpleNamespace
@@ -876,17 +824,8 @@ class TestTUIHandleStartAgent:
         feature = SimpleNamespace(id="f1", title="Test", current_stage="approved")
         mock_tui._load_features = MagicMock(return_value=[feature])
 
-        executed_callback = []
-
-        def capture_callback(callback):
-            executed_callback.append(callback)
-            callback()
-
-        mock_tui.call_from_thread = capture_callback
-
         with patch.object(mock_tui, "_run_plan_async", create=True) as mock_plan:
             from tui import PipelineApp
-            PipelineApp._handle_start_agent(mock_tui, "f1", "plan")
+            await PipelineApp._handle_start_agent(mock_tui, "f1", "plan")
 
-            assert len(executed_callback) == 1
             mock_plan.assert_called_once()

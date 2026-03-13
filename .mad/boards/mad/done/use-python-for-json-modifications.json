@@ -1,0 +1,265 @@
+{
+  "id": "a1b2c310",
+  "board": "mad",
+  "title": "Use Python helper to modify feature JSON files",
+  "type": "feature",
+  "created": "2026-03-09T00:30Z",
+  "description": "Agents sometimes produce malformed JSON when editing feature files directly (missing closing braces, duplicate keys, etc.). Instead of having agents edit JSON files with text tools, provide a Python helper script or library function that agents call to make structured modifications. This would validate the JSON before writing and prevent corruption. Could be a CLI tool like 'mad-edit-feature <slug> --set-field plan \"...\"' or a Python API that the agent prompts instruct agents to use.",
+  "plan": "## Implementation Plan: Python Helper for Feature JSON Modifications\n\n### Overview\nCreate a CLI tool `mad edit-feature` that provides structured modification of feature JSON files through existing FeatureFile methods, preventing malformed JSON and corruption.\n\n### 1. Core CLI Implementation\n\n**Add to pipeline/pipeline.py:**\n- Create new Click group `edit-feature` under the main CLI\n- Implement subcommands: `set-field`, `get-field`, `set-test-results`\n- Use existing `FeatureFile.find()` method for feature lookup (state.py:416-434)\n- Add error handling for multiple partial slug matches with disambiguation menu\n\n**Subcommands:**\n\n```bash\n# Set single-line fields\nmad edit-feature <slug> set-field <field_name> <value>\n\n# Set multi-line content using stdin\necho \"content\" | mad edit-feature <slug> set-field plan --stdin\n\n# Set multi-line content from file  \nmad edit-feature <slug> set-field impl_spec --file /path/to/spec.md\n\n# Set test results as JSON\nmad edit-feature <slug> set-test-results '{\"passed\": 5, \"failed\": 1, \"details\": \"...\"}'\n\n# Get field values\nmad edit-feature <slug> get-field plan\n\n# Get field as JSON (machine-readable)\nmad edit-feature <slug> get-field plan --json\n```\n\n### 2. Field Mapping and Validation\n\n**Supported fields map to existing FeatureFile setters:**\n- `title` \u2192 `set_title()`\n- `description` \u2192 `set_description()`  \n- `plan` \u2192 `set_plan()`\n- `impl_spec` \u2192 `set_impl_spec()`\n- `test_spec` \u2192 `set_test_spec()`\n- `impl_notes` \u2192 `set_impl_notes()`\n- `type` \u2192 `set_item_type()`\n- `design_ref` \u2192 `set_design_ref()`\n- `done_script` \u2192 `set_done_script()`\n- `questions` \u2192 `set_questions()`\n\n**Input handling:**\n- Default: single argument for short values\n- `--stdin`: read from stdin for multi-line content\n- `--file <path>`: read from file for multi-line content\n- Validate field names against supported list\n- Validate JSON for structured fields like questions\n\n### 3. Test Results Command\n\n```bash\nmad edit-feature <slug> set-test-results <json_dict>\n```\n\nAccepts JSON dict matching FeatureFile.set_test_results() signature:\n```json\n{\"passed\": 5, \"failed\": 1, \"details\": \"All core tests passed, one edge case failed\"}\n```\n\n### 4. Error Handling\n\n- **Feature not found**: Clear error message with suggestion to use `mad ls`\n- **Multiple slug matches**: Show disambiguation menu with numbered options\n- **Invalid field names**: List supported fields\n- **JSON validation**: Parse and validate before setting\n- **File access errors**: Clear error messages for --file flag\n- **Permission errors**: Handle read-only files gracefully\n\n### 5. Output Modes\n\n**get-field command:**\n- Default: plain text output for human reading\n- `--json`: JSON-escaped output for machine processing\n- Handle multi-line content properly in both modes\n\n### 6. Prompt Updates\n\nUpdate all prompts in `pipeline/prompts/` to instruct agents to use the new tool:\n\n- `plan-headless.md`\n- `plan-bug.md` \n- `implement.md`\n- `review-impl.md`\n- `fix-feedback.md`\n\n**Add instruction section:**\n```\nIMPORTANT: Use the mad edit-feature CLI tool to modify feature files instead of direct text editing:\n\n- Set plan: echo \"content\" | mad edit-feature <slug> set-field plan --stdin\n- Set spec: mad edit-feature <slug> set-field impl_spec --file spec.md\n- Set results: mad edit-feature <slug> set-test-results '{\"passed\": 3, \"failed\": 0}'\n\nThis prevents JSON corruption and validation errors.\n```\n\n### 7. Integration Points\n\n**Leverage existing infrastructure:**\n- Use FeatureFile.find() for consistent slug resolution\n- All setter methods handle validation and auto-save\n- Maintain existing history tracking through FeatureFile methods\n- Preserve JSON formatting through FeatureFile._save()\n\n**Testing:**\n- Unit tests for each subcommand\n- Integration tests with existing FeatureFile methods  \n- Error condition testing\n- Multi-line content handling tests\n\n### 8. Implementation Steps\n\n1. **Add CLI group and commands to pipeline.py**\n2. **Implement field mapping and input handling**\n3. **Add error handling and disambiguation**\n4. **Implement test-results command with JSON validation**\n5. **Add get-field command with output modes**\n6. **Update all relevant prompts**\n7. **Write comprehensive tests**\n8. **Update documentation**\n\nThis approach addresses all review feedback while leveraging existing FeatureFile methods for consistency and reliability.",
+  "impl_spec": "## Implementation Spec: `pipeline edit-feature` CLI Tool\n\n### Task 1: Add field mapping constants and input helper to pipeline.py\n\n**File:** `pipeline/pipeline.py`\n**Approach:**\n- Add `FIELD_SETTERS` dict mapping field name strings to FeatureFile setter method names:\n  ```python\n  FIELD_SETTERS = {\n      \"title\": \"set_title\",\n      \"description\": \"set_description\",\n      \"plan\": \"set_plan\",\n      \"impl_spec\": \"set_impl_spec\",\n      \"test_spec\": \"set_test_spec\",\n      \"impl_notes\": \"set_impl_notes\",\n      \"type\": \"set_item_type\",\n      \"design_ref\": \"set_design_ref\",\n      \"done_script\": \"set_done_script\",\n      \"questions\": \"set_questions\",\n  }\n  ```\n- Add `FIELD_GETTERS` dict mapping field name strings to FeatureFile property names:\n  ```python\n  FIELD_GETTERS = {\n      \"title\": \"title\",\n      \"description\": \"description\",\n      \"plan\": \"plan\",\n      \"impl_spec\": \"impl_spec\",\n      \"test_spec\": \"test_spec\",\n      \"impl_notes\": \"impl_notes\",\n      \"type\": \"item_type\",\n      \"design_ref\": \"design_ref\",\n      \"done_script\": \"done_script\",\n      \"questions\": \"questions\",\n  }\n  ```\n- Add helper function `_read_input(value, stdin_flag, file_path)` that returns the content string based on which input source is specified. Returns `value` if given directly, reads `sys.stdin.read()` if `stdin_flag`, reads file contents if `file_path`, errors if none provided.\n**Dependencies:** None\n\n### Task 2: Add `edit-feature` Click group to pipeline.py\n\n**File:** `pipeline/pipeline.py`\n**Approach:**\n- Add a new Click group `edit_feature` registered under `cli` with name `edit-feature`\n- Takes a required `slug` argument\n- Uses `find_feature_or_exit(slug)` to resolve the feature (this already handles not-found errors with a helpful message)\n- Passes the resolved `FeatureFile` via Click context (`ctx.ensure_object(dict); ctx.obj['feature'] = feature`)\n**Dependencies:** Task 1\n\n### Task 3: Implement `set-field` subcommand\n\n**File:** `pipeline/pipeline.py`\n**Approach:**\n- Add `set_field` command under `edit_feature` group\n- Arguments: `field_name` (required), `value` (optional)\n- Options: `--stdin` (flag), `--file` (path string)\n- Logic:\n  1. Validate `field_name` against `FIELD_SETTERS` keys. If invalid, print supported fields list to stderr and exit 1.\n  2. Determine value source using `_read_input(value, stdin, file)`. Error if no value source provided.\n  3. For `questions` field: parse value as JSON with `json.loads()`, validate it's a list of dicts each having a \"question\" key.\n  4. Call `getattr(feature, FIELD_SETTERS[field_name])(parsed_value)`\n  5. Print success confirmation to stderr (keep stdout clean for piping)\n- Error handling: catch `ValueError` from setters (e.g., empty title, invalid type), print error, exit 1. Catch `json.JSONDecodeError` for questions field.\n- Catch `FileNotFoundError` and `PermissionError` for `--file` flag.\n**Dependencies:** Tasks 1, 2\n\n### Task 4: Implement `get-field` subcommand\n\n**File:** `pipeline/pipeline.py`\n**Approach:**\n- Add `get_field` command under `edit_feature` group\n- Arguments: `field_name` (required)\n- Options: `--json` (flag for JSON-encoded output)\n- Logic:\n  1. Validate `field_name` against `FIELD_GETTERS` keys. If invalid, print supported fields and exit 1.\n  2. Get value via `getattr(feature, FIELD_GETTERS[field_name])`\n  3. If `--json` flag: print `json.dumps(value)` to stdout\n  4. Otherwise: for str values, print directly. For list/dict values, print `json.dumps(value, indent=2)`.\n**Dependencies:** Tasks 1, 2\n\n### Task 5: Implement `set-test-results` subcommand\n\n**File:** `pipeline/pipeline.py`\n**Approach:**\n- Add `set_test_results` command under `edit_feature` group\n- Arguments: `json_data` (optional string)\n- Options: `--stdin` (flag to read JSON from stdin)\n- Logic:\n  1. Read JSON from argument or stdin\n  2. Parse with `json.loads()`, validate result is a dict (not list/string/etc). If not dict, print error and exit 1.\n  3. Call `feature.set_test_results(parsed_dict)`\n  4. Print confirmation to stderr\n- Error handling: catch `json.JSONDecodeError`, print error with the invalid input, exit 1\n**Dependencies:** Task 2\n\n### Task 6: Update prompt files to instruct agents to use `pipeline edit-feature`\n\n**Files to modify:**\n- `pipeline/prompts/plan-headless.md` \u2014 add instruction block emphasizing `set-field plan`\n- `pipeline/prompts/plan-bug.md` \u2014 add instruction block emphasizing `set-field plan`\n- `pipeline/prompts/implement.md` \u2014 add instruction block emphasizing `set-field impl_notes` and `set-test-results`\n- `pipeline/prompts/review-impl.md` \u2014 add instruction block mentioning `get-field` for reading\n- `pipeline/prompts/fix-feedback.md` \u2014 add instruction block for `set-field impl_notes`\n- `pipeline/prompts/impl-spec.md` \u2014 add instruction block emphasizing `set-field impl_spec`\n\n**Instruction block to add (adapt emphasis per file):**\n```\n## Modifying Feature Files\n\nIMPORTANT: Use the `pipeline edit-feature` CLI to modify feature JSON files instead of direct JSON editing:\n\n- Set a field: `pipeline edit-feature <slug> set-field <field_name> <value>`\n- Set multi-line content from stdin: `echo \"content\" | pipeline edit-feature <slug> set-field <field_name> --stdin`\n- Set content from file: `pipeline edit-feature <slug> set-field <field_name> --file /path/to/content.md`\n- Set test results: `pipeline edit-feature <slug> set-test-results '{\"passed\": 3, \"failed\": 0}'`\n- Read a field: `pipeline edit-feature <slug> get-field <field_name>`\n\nAvailable fields: title, description, plan, impl_spec, test_spec, impl_notes, type, design_ref, done_script, questions\n\nThis prevents JSON corruption and ensures proper validation.\n```\n\n**Dependencies:** None (parallel with Tasks 1-5)\n\n### Task 7: Write tests\n\n**File:** `pipeline/test_edit_feature.py` (new file)\n**Approach:**\n- Use Click's `CliRunner` for invoking CLI commands\n- Setup: create a temp directory structure mimicking a board, create a feature with `FeatureFile.create()`, mock `Config` to point to temp dir\n- Test cases:\n  1. `set-field title \"New Title\"` \u2014 verify title changed on disk\n  2. `set-field description \"New desc\"` \u2014 verify description changed\n  3. `set-field type bug` \u2014 verify type changed\n  4. `set-field type invalid` \u2014 verify error exit code and message\n  5. `set-field plan --stdin` with piped content \u2014 verify multi-line plan set correctly\n  6. `set-field impl_spec --file /tmp/spec.md` \u2014 verify file content read and set\n  7. `set-field invalid_field value` \u2014 verify error lists valid fields\n  8. `set-field questions '[{\"question\": \"Q1\"}]'` \u2014 verify questions set as list\n  9. `get-field plan` \u2014 verify plain text output matches\n  10. `get-field plan --json` \u2014 verify JSON-encoded output\n  11. `get-field questions` \u2014 verify list output formatted as JSON\n  12. `set-test-results '{\"passed\": 5, \"failed\": 1}'` \u2014 verify dict stored\n  13. `set-test-results 'not json'` \u2014 verify error\n  14. `set-test-results '[1,2,3]'` \u2014 verify error (not a dict)\n  15. Feature slug not found \u2014 verify error message suggests `pipeline ls`\n  16. `set-field title \"\"` \u2014 verify ValueError from setter propagates as error\n- Verify all changes persisted by re-reading the FeatureFile from disk after each command\n\n**Dependencies:** Tasks 1-5\n\n### Execution Order:\n1. Task 1 (constants and helper)\n2. Task 2 (Click group)\n3. Tasks 3, 4, 5 (subcommands \u2014 can be done in parallel)\n4. Task 6 (prompt updates \u2014 independent, can be done anytime)\n5. Task 7 (tests \u2014 after subcommands done)\n\n### Files Modified Summary:\n- `pipeline/pipeline.py` \u2014 main implementation (Tasks 1-5)\n- `pipeline/prompts/plan-headless.md` \u2014 prompt update\n- `pipeline/prompts/plan-bug.md` \u2014 prompt update\n- `pipeline/prompts/implement.md` \u2014 prompt update\n- `pipeline/prompts/review-impl.md` \u2014 prompt update\n- `pipeline/prompts/fix-feedback.md` \u2014 prompt update\n- `pipeline/prompts/impl-spec.md` \u2014 prompt update\n- `pipeline/test_edit_feature.py` \u2014 new test file",
+  "test_spec": "## Test Specification: `pipeline edit-feature` CLI Tool\n\n### 1. Behaviors That MUST Be Verified\n\n#### 1.1 Feature Lookup (slug resolution)\n- **Exact slug match**: Running `pipeline edit-feature <exact-slug> get-field title` should resolve the correct feature and return its title.\n- **Partial slug match**: Running `pipeline edit-feature <partial>` where the partial string uniquely matches one feature should resolve successfully.\n- **Feature not found**: Running `pipeline edit-feature nonexistent-slug get-field title` should print an error message to stderr and exit with code 1. The error should suggest using `pipeline ls` to find features.\n\n#### 1.2 set-field Subcommand \u2014 Basic Field Setting\n- **Set title**: `pipeline edit-feature <slug> set-field title \"New Title\"` should update the title in the JSON file on disk. Reading the file afterwards should show the new title.\n- **Set description**: `pipeline edit-feature <slug> set-field description \"New description\"` should persist the new description.\n- **Set type to bug**: `pipeline edit-feature <slug> set-field type bug` should change the type field to \"bug\".\n- **Set type to feature**: `pipeline edit-feature <slug> set-field type feature` should change the type field to \"feature\".\n- **Set plan**: Setting a plan value should persist correctly and be retrievable.\n- **Set impl_spec**: Setting impl_spec should persist correctly.\n- **Set test_spec**: Setting test_spec should persist correctly.\n- **Set impl_notes**: Setting impl_notes should persist correctly.\n- **Set design_ref**: Setting design_ref should persist correctly.\n- **Set done_script**: Setting done_script should persist correctly (assuming valid script ID or empty).\n- **Set questions**: `pipeline edit-feature <slug> set-field questions '[{\"question\": \"Q1\"}, {\"question\": \"Q2\"}]'` should set the questions list. The questions should be parseable as JSON and stored as a list of dicts.\n- **Success confirmation**: After a successful set-field, a confirmation message should be printed to stderr (not stdout), so stdout remains clean for piping.\n\n#### 1.3 set-field \u2014 Input Modes\n- **Direct value argument**: `pipeline edit-feature <slug> set-field title \"Hello\"` should use the argument directly.\n- **Stdin input**: `echo \"Multi-line\\ncontent here\" | pipeline edit-feature <slug> set-field plan --stdin` should read the entire stdin and set the plan field to the multi-line content.\n- **File input**: Given a file `/tmp/spec.md` with content, `pipeline edit-feature <slug> set-field impl_spec --file /tmp/spec.md` should read the file and set impl_spec to its contents.\n- **No value provided**: Running `pipeline edit-feature <slug> set-field title` without a value, --stdin, or --file should produce an error and exit 1.\n- **Multi-line content preserved**: When setting a field via --stdin or --file with content containing newlines, special characters, and unicode, the content should be preserved exactly when read back.\n\n#### 1.4 get-field Subcommand\n- **Plain text output**: `pipeline edit-feature <slug> get-field plan` should print the plan field contents as plain text to stdout.\n- **JSON output**: `pipeline edit-feature <slug> get-field plan --json` should print the plan field as a JSON-encoded string to stdout (with quotes and escaping).\n- **List field plain output**: `pipeline edit-feature <slug> get-field questions` for a list value should print JSON-formatted output (since lists aren't plain text).\n- **List field JSON output**: `pipeline edit-feature <slug> get-field questions --json` should output properly JSON-encoded list.\n- **Empty field**: Getting a field that is empty/null should output empty string (plain mode) or `\"\"` / `null` (JSON mode) without error.\n\n#### 1.5 set-test-results Subcommand\n- **Valid JSON dict**: `pipeline edit-feature <slug> set-test-results '{\"passed\": 5, \"failed\": 1, \"details\": \"info\"}'` should store the dict in the feature's test_results field.\n- **Stdin input**: `echo '{\"passed\": 3}' | pipeline edit-feature <slug> set-test-results --stdin` should read JSON from stdin and store it.\n- **Stored values match**: After setting test results, re-reading the feature file from disk should show the exact dict that was passed in.\n\n#### 1.6 Field Validation\n- **Invalid field name**: `pipeline edit-feature <slug> set-field nonexistent_field value` should print an error listing all supported field names and exit 1.\n- **Invalid type value**: `pipeline edit-feature <slug> set-field type invalid` should fail with a ValueError-based message indicating type must be \"feature\" or \"bug\".\n- **Empty title**: `pipeline edit-feature <slug> set-field title \"\"` should fail because FeatureFile.set_title() raises ValueError for empty titles.\n- **Invalid questions JSON**: `pipeline edit-feature <slug> set-field questions 'not json'` should fail with a JSON parse error.\n- **Questions not a list**: `pipeline edit-feature <slug> set-field questions '{\"key\": \"val\"}'` should fail because questions must be a list.\n\n#### 1.7 Prompt File Updates\n- Each of the following prompt files should contain instructions telling agents to use `pipeline edit-feature` instead of direct JSON editing:\n  - `pipeline/prompts/plan-headless.md`\n  - `pipeline/prompts/plan-bug.md`\n  - `pipeline/prompts/implement.md`\n  - `pipeline/prompts/review-impl.md`\n  - `pipeline/prompts/fix-feedback.md`\n  - `pipeline/prompts/impl-spec.md`\n- The instruction block should mention: set-field, get-field, set-test-results, --stdin, --file flags, and the list of available fields.\n- The instruction should mention that this prevents JSON corruption.\n\n#### 1.8 Data Persistence and Integrity\n- After any set-field or set-test-results command, the JSON file on disk should be valid JSON (parseable without errors).\n- The JSON file should maintain proper indentation (indent=2 as used by FeatureFile._save()).\n- Other fields in the feature file should be untouched after modifying a single field.\n- History tracking should still function (FeatureFile methods that add history entries should continue to do so).\n\n### 2. Edge Cases\n\n#### 2.1 Empty and Null Inputs\n- Setting a field to an empty string (for fields that allow it, like description, plan) should succeed and store \"\".\n- Setting title to whitespace-only string should fail (set_title strips and checks).\n- Passing `--stdin` when stdin is empty (EOF immediately) should set the field to \"\".\n- Passing `--file` with an empty file should set the field to \"\".\n\n#### 2.2 Special Characters\n- Field values containing JSON special characters (quotes, backslashes, newlines) should be stored and retrieved correctly.\n- Field values containing unicode characters should round-trip correctly.\n- Field values containing very long content (e.g., 100KB plan) should work without truncation.\n\n#### 2.3 Invalid States\n- Running set-test-results with a JSON array `[1,2,3]` instead of a dict should fail with a clear error.\n- Running set-test-results with a JSON string `'\"hello\"'` should fail (not a dict).\n- Running set-test-results with a JSON number `42` should fail (not a dict).\n- Running set-test-results with malformed JSON `{bad json}` should fail with JSONDecodeError.\n\n#### 2.4 File Access Errors\n- `--file` pointing to a nonexistent path should produce a FileNotFoundError message and exit 1.\n- `--file` pointing to a directory instead of a file should produce an appropriate error.\n- `--file` pointing to a file without read permission should produce a PermissionError message and exit 1.\n\n#### 2.5 Conflicting Input Sources\n- Providing both a value argument and `--stdin` should either use one deterministically or produce an error (the implementation should define which takes precedence).\n- Providing both `--stdin` and `--file` should either use one deterministically or produce an error.\n\n### 3. What Constitutes Failure\n\n- **Exit codes**: Any error condition should result in exit code 1 (non-zero). Successful operations should exit with code 0.\n- **Invalid field name error**: Must list all supported fields so the user knows what's available.\n- **Feature not found error**: Must suggest `pipeline ls` for discovering features.\n- **JSON parse errors**: Must include the problematic input or a portion of it in the error message so the user can diagnose.\n- **Setter validation errors**: Must propagate the ValueError message from FeatureFile setters (e.g., \"Title cannot be empty\", \"Type must be 'feature' or 'bug'\").\n- **Data corruption**: If any command results in an unparseable JSON file on disk, that is a critical failure.\n- **Silent failures**: If a command exits 0 but the field was not actually updated on disk, that is a failure.\n- **Stdout pollution**: If error messages or confirmation messages leak to stdout (instead of stderr), that breaks piping and is a failure.\n\n### 4. Out of Scope\n\n- **Performance benchmarks**: Not testing how fast commands execute.\n- **Concurrent modification**: Not testing two processes modifying the same feature file simultaneously (no locking mechanism exists).\n- **TUI integration**: Not testing how the TUI displays features modified by this CLI.\n- **WebUI integration**: Not testing server-side behavior after CLI modifications.\n- **Agent behavior**: Not testing whether AI agents actually use the CLI correctly in practice \u2014 only that the CLI itself works.\n- **Prompt content quality**: Not testing whether the prompt instructions are well-written or effective \u2014 only that they exist and contain the required keywords.\n- **Disambiguation menu**: The plan mentions a disambiguation menu for multiple partial slug matches, but FeatureFile.find() already returns the shortest match. Testing interactive disambiguation is out of scope unless it's implemented as a non-interactive error.\n- **Shell escaping**: Not testing complex shell quoting scenarios \u2014 that's the shell's responsibility, not the CLI's.",
+  "impl_notes": "Implemented the 'pipeline edit-feature' CLI tool for structured modification of feature JSON files. Added FIELD_SETTERS and FIELD_GETTERS constants, _read_input helper function, and three subcommands (set-field, get-field, set-test-results). Updated all relevant prompt files with instructions. All 23 tests pass.",
+  "history": [
+    {
+      "ts": "2026-03-09T00:30Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-09T01:07Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-09T02:16Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T02:18Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T02:18Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T02:19Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Review agent error: returned a plan instead of a review verdict"
+    },
+    {
+      "ts": "2026-03-09T02:19Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Review agent error: returned a plan instead of a review verdict. This is a system error..."
+    },
+    {
+      "ts": "2026-03-09T02:19Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T02:24Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T02:24Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T02:24Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Review agent error: returned a plan instead of a review verdict"
+    },
+    {
+      "ts": "2026-03-09T02:24Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Review agent error: returned a plan instead of a review verdict. This is a system error..."
+    },
+    {
+      "ts": "2026-03-09T02:24Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T02:29Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T02:29Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T02:29Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Review agent error: returned a plan instead of a review verdict"
+    },
+    {
+      "ts": "2026-03-09T02:29Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Review agent error: returned a plan instead of a review verdict. This is a system error..."
+    },
+    {
+      "ts": "2026-03-09T04:33Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T04:38Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T04:38Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T04:41Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Plan has multiple issues: (1) proposes load_feature_by_slug but FeatureFile.find(..."
+    },
+    {
+      "ts": "2026-03-09T04:41Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Issues to fix:\n\nUse existing FeatureFile.find() method instead of creating load_feature..."
+    },
+    {
+      "ts": "2026-03-09T04:41Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T04:45Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T04:45Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T04:47Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible. Uses existing FeatureFile metho..."
+    },
+    {
+      "ts": "2026-03-09T04:47Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-09T04:47Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-09T04:47Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-09T04:49Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-09T04:51Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-09T04:51Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T05:05Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T05:05Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T05:05Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T05:08Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-09T05:08Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T05:09Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation is complete and functional. All 23 tests pass. CLI commands (set-f..."
+    },
+    {
+      "ts": "2026-03-09T05:09Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-09T23:47Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-09T02:19Z",
+      "verdict": "FAIL",
+      "summary": "Review agent error: returned a plan instead of a review verdict",
+      "feedback": "Review agent error: returned a plan instead of a review verdict. This is a system error, not a plan issue."
+    },
+    {
+      "ts": "2026-03-09T02:24Z",
+      "verdict": "FAIL",
+      "summary": "Review agent error: returned a plan instead of a review verdict",
+      "feedback": "Review agent error: returned a plan instead of a review verdict. This is a system error, not a plan issue."
+    },
+    {
+      "ts": "2026-03-09T02:29Z",
+      "verdict": "FAIL",
+      "summary": "Review agent error: returned a plan instead of a review verdict",
+      "feedback": "Review agent error: returned a plan instead of a review verdict. This is a system error, not a plan issue."
+    },
+    {
+      "ts": "2026-03-09T04:41Z",
+      "verdict": "FAIL",
+      "summary": "Plan has multiple issues: (1) proposes load_feature_by_slug but FeatureFile.find() already exists (state.py:416), (2) doesn't address multi-line content CLI passing (plans/specs), (3) set-test-results command design doesn't match FeatureFile.set_test_results() dict parameter.",
+      "feedback": "Issues to fix:\n\nUse existing FeatureFile.find() method instead of creating load_feature_by_slug(). The find() method (state.py:416-434) already searches by id, slug, or partial slug - the plan should leverage this instead of creating redundant code.\n\nCLI argument handling for multi-line content: The plan shows commands like 'mad edit-feature <slug> set-field plan \"...\"' but doesn't address how agents will pass multi-line content (plans, specs, impl_notes) through CLI. Options: (a) Use --stdin flag to read from stdin, (b) Use --file flag to read from file, (c) Accept JSON input. The plan must specify how multi-line content is passed.\n\nset-test-results command design: The plan shows '--passed <n> --failed <n>' but FeatureFile.set_test_results() takes a dict (test_results property at line 183-188). Either pass as JSON or adapt the command to accept the dict format.\n\nVerify prompt locations: The plan references prompts at pipeline/prompts/ folder, not the paths listed. Verify actual prompt locations and update all relevant prompts (plan-headless.md, plan-bug.md, implement.md, review-impl.md, fix-feedback.md).\n\nAdd error handling for multiple matches: When slug partial match returns multiple results, the CLI should either error out or show a disambiguation menu. Add this to the error handling section.\n\nThe 'get-field' command returning values may have the same multi-line output issue - consider using --json flag for machine-readable output."
+    },
+    {
+      "ts": "2026-03-09T04:47Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible. Uses existing FeatureFile methods correctly to prevent JSON corruption.",
+      "feedback": "Implementation clarifications: 1) CLI should be 'pipeline edit-feature' not 'mad edit-feature' to match existing naming, 2) FeatureFile.find() returns single result so disambiguation menu requires CLI-level implementation, 3) Consider updating additional prompts (verify-tests.md, update-design.md, plan.md) beyond the 5 listed, 4) Document the JSON validation approach for questions field."
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-09T05:09Z",
+      "verdict": "PASS",
+      "summary": "Implementation is complete and functional. All 23 tests pass. CLI commands (set-field, get-field, set-test-results) work correctly with value, --stdin, and --file input modes. All 6 prompt files updated with edit-feature instructions. Field validation, error handling, and JSON persistence are solid.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-08T22:08:01.325398",
+    "verdict": "FAIL",
+    "results": {
+      "passed": 23,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 23 tests pass. However, significant coverage gaps exist:\n\nMISSING TESTS:\nFeature Lookup: Exact slug match, partial slug match\nBasic Fields: test_spec, impl_notes, design_ref, done_script\nInput Modes: direct value argument (only tested via --stdin/--file)\nget-field: list field JSON output, empty field handling\nValidation: questions not a list, set-test-results with string/number\nEdge Cases: empty string inputs, whitespace-only title, --stdin empty, --file empty, special characters/unicode, long content, --file with directory/permission errors, conflicting input sources\n\nThe test suite covers basic happy path functionality but lacks comprehensive coverage for edge cases, alternative input modes, and validation scenarios outlined in the test spec."
+  }
+}

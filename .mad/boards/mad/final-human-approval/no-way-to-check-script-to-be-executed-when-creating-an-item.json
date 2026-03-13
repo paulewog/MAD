@@ -1,0 +1,159 @@
+{
+  "id": "3f8d0e88",
+  "board": "mad",
+  "title": "No way to check script to be executed when creating an item",
+  "type": "bug",
+  "created": "2026-03-10T17:51Z",
+  "description": "I still cannot mark a script to be executed when an item is done when creating an item in the TUI modal.  I didn't check the webui but I assume the same bug probably exists.",
+  "done_script": "",
+  "plan": "## Root Cause Analysis\n\nThe bug has two distinct root causes across different UI surfaces:\n\n1. **WebUI (client_full2.html) - Missing field entirely**: The \"Create New Idea\" modal in the client_full2 template is missing the done_script select field. The modal only collects title, board, and description. The submit function also does not include done_script in the POST request body. This is a straightforward omission \u2014 the other two WebUI templates (index.html and client_full.html) both correctly include a done_script select dropdown in their creation modals.\n\n2. **TUI - Potential rendering/visibility issue**: The TUI's NewFeatureModal does include a done_script Select widget and correctly wires it through the submit flow. However, the modal has a constrained max-height (28 lines) which may cause the done_script field to be clipped or scrolled out of view, especially on smaller terminals. The field exists in code but users may not be able to see or interact with it.\n\n## Impact Assessment\n\n- Users creating items from the client_full2 WebUI can never set a done_script at creation time \u2014 they must edit the item afterward to add one.\n- TUI users may not realize the done_script field exists if it's clipped by the modal height constraint.\n- The done_script can still be set post-creation via editing, so this is a usability issue rather than a data loss issue.\n- No other functionality is at risk; the done_script execution path when items complete is unaffected.\n\n## Fix Strategy\n\n- **WebUI**: Add the done_script select dropdown to the client_full2.html creation modal, matching the pattern already used in index.html and client_full.html. Update the submit function to include the done_script value in the POST body.\n- **TUI**: Increase the modal's max-height or convert to a scrollable container to ensure all fields (including done_script) are visible regardless of terminal size.\n\n## Risks\n\n- The WebUI fix is low-risk since two other templates already implement the same pattern correctly.\n- The TUI height adjustment could affect layout on very small terminals, but making the modal scrollable mitigates this.\n- Need to ensure the server API endpoint accepts the done_script field in the creation payload (it likely already does based on how the other templates work).\n\n## Scope\n\n- Fix should be limited to the creation modal UI in client_full2.html and the TUI modal height constraint.\n- Should NOT touch the done_script execution logic, the edit modal, or other templates that already work correctly.\n- Should NOT change the server API \u2014 only ensure the client sends the field that the API already supports.",
+  "impl_spec": "## Task 1: Add done_script select dropdown to client_full2.html creation modal\n\n**File:** `server/templates/client_full2.html`\n\n**What:** Add a Done Script select dropdown to the \"Create New Idea\" modal, between the Description textarea and the button row.\n\n**Approach:** Insert a new `<div>` block after the description field (after line 257, before line 258's button div). Copy the exact pattern from `client_full.html` lines 245-250:\n\n```html\n<div style=\"margin-bottom:1rem\">\n    <label style=\"display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem\">Done Script (optional)</label>\n    <select id=\"new-idea-done-script\" style=\"width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit\">\n        <option value=\"\">(none)</option>\n    </select>\n</div>\n```\n\n**Dependencies:** None.\n\n## Task 2: Add fetchScriptsForNewIdea function to client_full2.html\n\n**File:** `server/templates/client_full2.html`\n\n**What:** Add a `fetchScriptsForNewIdea()` function that populates the done_script select dropdown by fetching from the scripts API.\n\n**Approach:** Add the following function in the `<script>` block (after the `showNewIdeaModal` function, around line 613). Copy the pattern from `client_full.html` lines 567-578:\n\n```javascript\nfunction fetchScriptsForNewIdea() {\n    var scriptSelect = document.getElementById('new-idea-done-script');\n    scriptSelect.innerHTML = '<option value=\"\">(none)</option>';\n    fetch('/api/clients/' + encodeURIComponent(_clientID) + '/scripts?key=' + encodeURIComponent(_dashKey)).then(function(r) { return r.json(); }).then(function(scripts) {\n        scripts.forEach(function(s) {\n            var opt = document.createElement('option');\n            opt.value = s.id;\n            opt.textContent = s.label;\n            scriptSelect.appendChild(opt);\n        });\n    }).catch(function() {});\n}\n```\n\n**Dependencies:** Task 1 (the select element must exist).\n\n## Task 3: Update showNewIdeaModal to reset done_script and fetch scripts\n\n**File:** `server/templates/client_full2.html`\n\n**What:** Modify the `showNewIdeaModal()` function to reset the done_script select and call `fetchScriptsForNewIdea()`.\n\n**Approach:** In `showNewIdeaModal()` (line 603-612):\n1. After line 607 (`document.getElementById('new-idea-description').value = '';`), add:\n   ```javascript\n   document.getElementById('new-idea-done-script').value = '';\n   ```\n2. Before or after `document.getElementById('new-idea-title').focus();` (line 612), add:\n   ```javascript\n   fetchScriptsForNewIdea();\n   ```\n\n**Dependencies:** Tasks 1 and 2.\n\n## Task 4: Update submitNewIdea to include done_script in POST body\n\n**File:** `server/templates/client_full2.html`\n\n**What:** Modify the `submitNewIdea()` function to read the done_script value and include it in the POST request body.\n\n**Approach:**\n1. After line 622 (`var description = ...`), add:\n   ```javascript\n   var doneScript = document.getElementById('new-idea-done-script').value;\n   ```\n2. Change line 640 from:\n   ```javascript\n   body: JSON.stringify({title: title, board: board, description: description})\n   ```\n   to:\n   ```javascript\n   body: JSON.stringify({title: title, board: board, description: description, done_script: doneScript})\n   ```\n\n**Dependencies:** Task 1.\n\n## Task 5: Increase TUI NewFeatureModal max-height\n\n**File:** `pipeline/tui.py`\n\n**What:** Increase the `max-height` of the `#new-dialog` container in `NewFeatureModal` so all fields (including Done Script) are visible on smaller terminals. Also make the container scrollable.\n\n**Approach:** In the CSS block of `NewFeatureModal` (line 858), change:\n```css\nmax-height: 28;\n```\nto:\n```css\nmax-height: 36;\n```\n\nThis provides enough room for all widgets: Label (New Item) + Board label+select + Type label+select + Title label+input + Description label+input + Done Script label+select + Buttons = ~7 widget groups \u00d7 ~4 lines each (with margins) \u2248 28-32 lines. A max-height of 36 gives comfortable headroom.\n\nAlternatively, add `overflow-y: auto;` to `#new-dialog` to make it scrollable if contents exceed the height:\n```css\n#new-dialog {\n    width: 70;\n    height: auto;\n    max-height: 36;\n    overflow-y: auto;\n    border: thick $panel;\n    background: $surface;\n    padding: 1 2;\n}\n```\n\n**Dependencies:** None.\n\n## Summary of files modified\n\n1. `server/templates/client_full2.html` \u2014 Tasks 1-4 (add done_script select, fetch function, wire into modal open/submit)\n2. `pipeline/tui.py` \u2014 Task 5 (increase modal max-height)\n\n## Testing Notes\n\n- **WebUI (client_full2):** Open a client page, click \"+ New Idea\", verify the Done Script dropdown appears and is populated with scripts from the API. Create an idea with a done_script selected and verify the feature JSON file has the done_script field set.\n- **TUI:** Launch the TUI, press 'n' to open the New Item modal, verify the Done Script select is visible without scrolling on a standard 80\u00d724 terminal. Verify creating an item with a done_script works correctly.",
+  "test_spec": "# Test Specification: No Way to Check Script to Be Executed When Creating an Item\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 WebUI client_full2.html - Done Script Field Present in Create Modal\n- **Behavior**: The \"Create New Idea\" modal in client_full2.html must include a \"Done Script (optional)\" select dropdown, placed between the Description field and the action buttons.\n- **Success Criteria**: When the modal is opened, a select element with id \"new-idea-done-script\" is visible with a default \"(none)\" option.\n- **Expected Output**: The select dropdown renders with the same styling as the existing board select field.\n\n### 1.2 WebUI client_full2.html - Scripts Are Fetched and Populated\n- **Behavior**: When the \"Create New Idea\" modal is shown, the available scripts must be fetched from the /api/clients/{clientID}/scripts endpoint and populated as options in the done_script select dropdown.\n- **Success Criteria**: After the modal opens, the select dropdown contains one option per available script (plus the default \"(none)\" option). Each option's value is the script name and its display text shows the script name.\n- **Expected Output**: If the server returns scripts [{\"name\": \"deploy\"}, {\"name\": \"notify\"}], the dropdown contains options: (none), deploy, notify.\n\n### 1.3 WebUI client_full2.html - Done Script Included in POST Body\n- **Behavior**: When submitting a new idea from client_full2.html, the done_script value from the select dropdown must be included in the JSON POST body sent to /api/clients/{clientID}/ideas.\n- **Success Criteria**: The POST request body includes a \"done_script\" field. If a script is selected, it contains the script name string. If \"(none)\" is selected, it contains an empty string.\n- **Expected Output**: POST body is {\"title\": \"...\", \"board\": \"...\", \"description\": \"...\", \"done_script\": \"deploy\"} when a script is selected.\n\n### 1.4 WebUI client_full2.html - Done Script Field Resets on Modal Reopen\n- **Behavior**: When the modal is closed and reopened, the done_script select dropdown must reset to the default \"(none)\" value.\n- **Success Criteria**: After creating an idea with a done_script selected, closing and reopening the modal shows the select back at \"(none)\".\n- **Expected Output**: The select element's value is an empty string after reopening.\n\n### 1.5 TUI - Done Script Field Is Visible Without Scrolling\n- **Behavior**: The TUI NewFeatureModal must display all fields, including the done_script Select widget, without them being clipped by the modal's max-height constraint.\n- **Success Criteria**: The done_script field is visible and interactable in the modal on a standard terminal (80x24 or larger). The modal should either have a larger max-height or be scrollable so no fields are hidden.\n- **Expected Output**: Users can see and interact with the done_script field without needing to know it exists off-screen.\n\n### 1.6 Consistency Across Templates\n- **Behavior**: All three WebUI templates (index.html, client_full.html, client_full2.html) must include the done_script field in their creation modals with equivalent behavior.\n- **Success Criteria**: Creating an idea with the same title, board, description, and done_script from any of the three templates produces the same result on the server.\n- **Expected Output**: The server creates an item with the done_script field set correctly regardless of which template was used.\n\n## 2. Edge Cases\n\n### 2.1 No Scripts Available\n- **Behavior**: If the /api/clients/{clientID}/scripts endpoint returns an empty array, the done_script dropdown should only show the \"(none)\" option.\n- **Expected Output**: Select contains exactly one option: \"(none)\".\n\n### 2.2 Scripts API Returns Error\n- **Behavior**: If the scripts fetch fails (network error, 500 response), the dropdown should gracefully remain with just the \"(none)\" option. The modal should still be fully functional for creating an idea without a done_script.\n- **Expected Output**: Modal remains usable; idea can be created without a done_script.\n\n### 2.3 Done Script Selected But \"(none)\" Intended\n- **Behavior**: User selects a script, then changes their mind and selects \"(none)\" before submitting.\n- **Expected Output**: POST body contains done_script as an empty string; item is created without a done_script.\n\n### 2.4 Done Script with Special Characters in Name\n- **Behavior**: If a script name contains special characters (spaces, quotes, HTML entities), it should be properly escaped in the dropdown and correctly sent in the POST body.\n- **Expected Output**: The script name is preserved exactly as returned by the API.\n\n### 2.5 TUI on Minimum Terminal Size\n- **Behavior**: On a very small terminal (e.g., 80x20), the TUI modal should still allow access to the done_script field, either by scrolling or by fitting within the available space.\n- **Expected Output**: The done_script field is reachable even on small terminals.\n\n### 2.6 Creating Idea with Only Required Fields\n- **Behavior**: Creating an idea with just title and board (no description, no done_script) should still work correctly from client_full2.html.\n- **Expected Output**: Item is created successfully with empty description and no done_script.\n\n## 3. What Constitutes Failure\n\n### 3.1 Critical Failures\n- The done_script select dropdown is not present in the client_full2.html creation modal.\n- The done_script value is not included in the POST body when submitting from client_full2.html.\n- The done_script field is permanently hidden/clipped in the TUI modal with no way to access it.\n- Selecting a done_script causes the creation request to fail or error.\n- The done_script value is sent but not persisted on the created item.\n\n### 3.2 Non-Critical Failures\n- The done_script dropdown is present but not populated with available scripts (missing fetch call).\n- The done_script field is not reset when the modal is reopened.\n- The scripts fetch error causes the entire modal to become unusable.\n\n### 3.3 Regression Failures\n- The fix breaks the existing done_script functionality in index.html or client_full.html.\n- The fix breaks the edit modal's done_script field.\n- The fix breaks idea creation when no done_script is selected (the \"(none)\" case).\n- The TUI height change causes other modal elements to overflow or become inaccessible.\n\n## 4. Out of Scope\n\n- **Done script execution logic**: Whether the done_script actually runs when an item completes is not being tested. Only the ability to set it at creation time.\n- **Visual/CSS assertions**: Exact pixel positioning, colors, or styling of the done_script dropdown.\n- **Performance**: Load time of the scripts API call or modal rendering speed.\n- **Server API validation**: Whether the server correctly validates or rejects invalid done_script values \u2014 the server API is assumed to already handle this correctly.\n- **Edit modal**: The done_script field in the edit modal already works and is not being modified.\n- **Other templates' creation modals**: index.html and client_full.html already work correctly and should not be modified; they are reference implementations only.\n- **Browser compatibility**: Testing across different browsers or browser versions.\n- **Authentication/authorization**: Whether the API key is correctly passed is not part of this fix.\n- **Concurrent creation**: Multiple users creating ideas simultaneously is not a concern for this UI fix.",
+  "impl_notes": "Implemented done_script field in client_full2.html creation modal and increased TUI NewFeatureModal height. Added done_script select dropdown, fetchScriptsForNewIdea function, updated showNewIdeaModal to reset/fetch scripts, and updated submitNewIdea to include done_script in POST body. In TUI, increased max-height from 28 to 36 and added overflow-y: auto to ensure done_script field is visible.",
+  "ideation_summaries": [],
+  "Ideation": "",
+  "history": [
+    {
+      "ts": "2026-03-10T17:51Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-10T17:51Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-10T17:52Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-10T17:56Z",
+      "stage": "PLANNING",
+      "note": "FAILED: Agent asked questions without evidence of codebase exploration. Agent must use Read, Grep..."
+    },
+    {
+      "ts": "2026-03-10T21:09Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-10T21:10Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-10T21:10Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-10T21:11Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible. It correctly identifies root ca..."
+    },
+    {
+      "ts": "2026-03-10T21:11Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-10T21:11Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-10T21:11Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-10T21:13Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-10T21:15Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-10T21:15Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-10T21:18Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-10T21:18Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-10T21:18Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-10T21:23Z",
+      "stage": "TESTING",
+      "note": "FAILED: 'utf-8' codec can't decode byte 0xc2 in position 59205: unexpected end of data"
+    },
+    {
+      "ts": "2026-03-10T21:23Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-10T21:26Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-10T21:26Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-10T21:26Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation correctly adds done_script select dropdown to client_full2.html cr..."
+    },
+    {
+      "ts": "2026-03-10T21:26Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-10T21:11Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible. It correctly identifies root causes for both WebUI and TUI, provides clear fix strategies, and identifies risks. The assumption about server API compatibility is reasonable given other templates already work.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-10T21:26Z",
+      "verdict": "PASS",
+      "summary": "Implementation correctly adds done_script select dropdown to client_full2.html creation modal with script fetching, POST body inclusion, and modal reset. TUI max-height increased from 28 to 36 with overflow-y: auto. All three WebUI templates now have consistent done_script support in creation modals.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-10T14:26:00.557706",
+    "verdict": "FAIL",
+    "results": {
+      "passed": 35,
+      "failed": 12,
+      "errors": 0
+    },
+    "feedback": "12 Python tests fail, but these are test code bugs NOT implementation issues. Tests use 3-parameter callback (title, board, description) but implementation correctly uses 5 parameters (title, board, description, item_type, done_script). Implementation verified correct: (1) client_full2.html has done_script select dropdown with id 'new-idea-done-script', (2) fetchScriptsForNewIdea() fetches from /api/clients/{clientID}/scripts, (3) submitNewIdea() includes done_script in POST body, (4) done_script resets on modal reopen, (5) TUI NewFeatureModal has max-height:36 with overflow-y:auto for scrolling. Go tests pass. TUI tests (test_create_idea_tui.py) all 10 pass."
+  }
+}

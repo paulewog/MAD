@@ -1,0 +1,179 @@
+{
+  "id": "82cd3963",
+  "board": "mad",
+  "title": "Bug - webui does not answer questions",
+  "type": "feature",
+  "created": "2026-03-08T05:25Z",
+  "description": "I can't answer questions in the web you anymore. Also can't create \"bug\" types",
+  "plan": "## Bug Fix Plan: WebUI Cannot Answer Questions or Create Bug Types\n\n### Root Causes\n\n**Bug 1: Questions cannot be answered in the web UI**\n\nThe `feature_stages` Go template defined in `server/templates/client.html` (lines 860-886) is missing the `data-questions` and `data-available-actions` HTML attributes on the `.feature-card` div elements. The JavaScript code in the same file (lines 621-653, 667-681) reads these attributes via `card.getAttribute('data-questions')` and `card.getAttribute('data-available-actions')`, but they are never rendered into the HTML.\n\nThe `client_full2.html` template has the correct attributes (lines 633-634):\n```\ndata-questions=\"{{toJSON .Questions}}\"\ndata-available-actions=\"{{toJSON .AvailableActions}}\"\n```\n\nBut only `client.html` is loaded by the server (see `api.go` line 204: `ParseFS(templateFS, \"templates/index.html\", \"templates/client.html\")`).\n\n**Bug 2: Cannot create \"bug\" type ideas**\n\nThe \"Create New Idea\" modal in `client.html` (lines 296-319) has no UI element to select between \"feature\" and \"bug\" types. The `submitNewIdea()` function (lines 798-843) only collects `title`, `board`, and `description` \u2014 it never sends a `type` field. The backend API (`api.go` lines 760-825) already supports the `type` field and defaults to \"feature\" when omitted.\n\n### Fix Steps\n\n#### Step 1: Add missing data attributes to feature_stages template in client.html\n\n**File:** `server/templates/client.html`, line ~881 (inside the `feature_stages` template block)\n\nAdd these two attributes to the `.feature-card` div, after `data-impl-reviews`:\n```\ndata-questions=\"{{toJSON .Questions}}\"\ndata-available-actions=\"{{toJSON .AvailableActions}}\"\n```\n\nThis makes the template match what `client_full2.html` already has, and enables the existing JavaScript to read questions and render the answer form for `requested-input` stage features.\n\n#### Step 2: Add type selector to the Create New Idea modal in client.html\n\n**File:** `server/templates/client.html`, lines 309-313\n\nAdd a type selector dropdown between the Board and Description fields:\n```html\n<div style=\"margin-bottom:1rem\">\n    <label style=\"display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem\">Type</label>\n    <select id=\"new-idea-type\" style=\"width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit\">\n        <option value=\"feature\">Feature</option>\n        <option value=\"bug\">Bug</option>\n    </select>\n</div>\n```\n\n#### Step 3: Update submitNewIdea() to send the type field\n\n**File:** `server/templates/client.html`, lines 798-819\n\nIn `submitNewIdea()`, read the type value and include it in the POST body:\n```javascript\nvar itemType = document.getElementById('new-idea-type').value;\n// ...\nbody: JSON.stringify({title: title, board: board, description: description, type: itemType})\n```\n\n#### Step 4: Reset type selector in showNewIdeaModal()\n\n**File:** `server/templates/client.html`, line 782-791\n\nIn `showNewIdeaModal()`, reset the type selector:\n```javascript\ndocument.getElementById('new-idea-type').value = 'feature';\n```\n\n### Files to Modify\n\n1. `server/templates/client.html` \u2014 Add `data-questions` and `data-available-actions` to the `feature_stages` template; add type selector to modal; update `submitNewIdea()` and `showNewIdeaModal()`\n\n### Testing\n\n1. Rebuild the Go server (`go build -o mad-server .` in the server/ directory)\n2. Start the server and connect a pipeline client\n3. Create a feature with questions (in `requested-input` stage) and verify the question form appears when clicking the feature card\n4. Submit answers and verify they are received by the pipeline client\n5. Create a new idea with type \"bug\" and verify the type is correctly passed through to the pipeline\n6. Create a new idea with type \"feature\" (default) and verify it works as before",
+  "impl_spec": "## Implementation Spec: Bug - WebUI Does Not Answer Questions\n\n### Task 1: Add missing data attributes to feature_stages template\n\n**File:** `server/templates/client.html`, line 1053\n**Approach:** Add `data-questions` and `data-available-actions` attributes to the `.feature-card` div in the `feature_stages` Go template. These attributes are already read by the JavaScript (lines 795, 839) but never rendered into the HTML.\n**Change:** After the `data-impl-reviews` attribute on line 1053, add:\n```\ndata-questions=\"{{toJSON .Questions}}\"\ndata-available-actions=\"{{toJSON .AvailableActions}}\"\n```\nSo line 1053 becomes:\n```\n            data-impl-reviews=\"{{toJSON .ImplReviews}}\"\n            data-questions=\"{{toJSON .Questions}}\"\n            data-available-actions=\"{{toJSON .AvailableActions}}\">\n```\n**Dependencies:** None\n\n### Task 2: Add type selector dropdown to Create New Idea modal\n\n**File:** `server/templates/client.html`, lines 412-416\n**Approach:** Insert a Type selector `<select>` between the Board selector (line 411) and the Description textarea (line 413). Use the same styling as the Board selector for visual consistency.\n**Change:** After the closing `</div>` of the Board field (line 412), insert:\n```html\n<div style=\"margin-bottom:1rem\">\n    <label style=\"display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem\">Type</label>\n    <select id=\"new-idea-type\" style=\"width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit\">\n        <option value=\"feature\">Feature</option>\n        <option value=\"bug\">Bug</option>\n    </select>\n</div>\n```\n**Dependencies:** None\n\n### Task 3: Update submitNewIdea() to include the type field\n\n**File:** `server/templates/client.html`, line 991\n**Approach:** Read the type value from the new `#new-idea-type` select element and include it in the JSON body sent to the POST /api/clients/:id/ideas endpoint.\n**Change:** Before the fetch call, add:\n```javascript\nvar itemType = document.getElementById('new-idea-type').value;\n```\nChange the body on line 991 from:\n```javascript\nbody: JSON.stringify({title: title, board: board, description: description})\n```\nTo:\n```javascript\nbody: JSON.stringify({title: title, board: board, description: description, type: itemType})\n```\n**Dependencies:** Task 2 (the select element must exist)\n\n### Task 4: Reset type selector in showNewIdeaModal()\n\n**File:** `server/templates/client.html`, line 958\n**Approach:** Reset the type selector to 'feature' (default) when the modal is opened, alongside the other field resets.\n**Change:** After line 958 (`document.getElementById('new-idea-description').value = '';`), add:\n```javascript\ndocument.getElementById('new-idea-type').value = 'feature';\n```\n**Dependencies:** Task 2 (the select element must exist)\n\n### Files to Modify\n\n1. `server/templates/client.html` \u2014 All 4 tasks modify this single file\n\n### Execution Order\n\n1. Task 1 (independent \u2014 fixes question answering)\n2. Task 2 (independent \u2014 adds UI element)\n3. Tasks 3 & 4 (depend on Task 2 \u2014 wire up the new UI element)\n\n### Verification\n\n- Rebuild Go server: `cd server && go build -o mad-server .`\n- Test question answering: create a feature in `requested-input` stage with questions, click it in the web UI, verify the question form renders and answers can be submitted\n- Test bug type creation: open Create New Idea modal, select 'Bug' type, create idea, verify the JSON file on disk has `\"type\": \"bug\"`\n- Test default type: create an idea without changing the type selector, verify it defaults to 'feature'",
+  "test_spec": "# Test Specification: Bug - WebUI Does Not Answer Questions\n\n## 1. Behaviors That MUST Be Verified\n\n### Bug 1: Questions cannot be answered in the web UI\n\n**Behavior 1.1: data-questions attribute is rendered on feature cards**\n- When the feature_stages template renders a feature card, the resulting HTML div.feature-card must include a `data-questions` attribute.\n- If the feature has questions (e.g. [{\"id\":\"q1\",\"text\":\"What color?\"}]), the attribute value must be the JSON-encoded array of question objects.\n- If the feature has no questions, the attribute value must be an empty JSON array \"[]\" or empty string.\n- Success: The attribute is present and contains valid JSON matching the feature's Questions field.\n\n**Behavior 1.2: data-available-actions attribute is rendered on feature cards**\n- When the feature_stages template renders a feature card, the resulting HTML div.feature-card must include a `data-available-actions` attribute.\n- The attribute value must be JSON-encoded and match the feature's AvailableActions field.\n- Success: The attribute is present and contains valid JSON.\n\n**Behavior 1.3: Question form appears for features in requested-input stage**\n- When a user clicks on a feature card that has questions (non-empty data-questions), the detail panel must display a form with the questions.\n- Each question's text should be visible in the form.\n- An answer input field should be available for each question.\n- Success: The question form renders with all questions from the data-questions attribute.\n\n**Behavior 1.4: Answers can be submitted**\n- When a user fills in answers to questions and submits, the answers must be sent to the backend API.\n- The API call should include the question IDs and the corresponding answer text.\n- After successful submission, feedback should indicate success.\n- Success: The POST request is made with correct answer data, and the UI shows success feedback.\n\n### Bug 2: Cannot create \"bug\" type ideas\n\n**Behavior 2.1: Type selector is present in the Create New Idea modal**\n- When the Create New Idea modal is opened, a Type dropdown/select must be visible between the Board and Description fields.\n- The dropdown must have two options: \"Feature\" (value=\"feature\") and \"Bug\" (value=\"bug\").\n- \"Feature\" must be the default selected option.\n- Success: The select element with id \"new-idea-type\" is present with both options, defaulting to \"feature\".\n\n**Behavior 2.2: Type field is sent in the create idea API request**\n- When the user selects \"bug\" and submits, the POST body must include `\"type\": \"bug\"`.\n- When the user selects \"feature\" (or leaves default) and submits, the POST body must include `\"type\": \"feature\"`.\n- Success: The JSON body of the POST to /api/clients/{id}/ideas includes the correct type value.\n\n**Behavior 2.3: Type selector resets when modal is reopened**\n- After creating a bug-type idea and closing the modal, reopening the modal must reset the type selector back to \"feature\".\n- Success: The type selector value is \"feature\" every time the modal opens.\n\n**Behavior 2.4: Idea creation still works end-to-end**\n- Creating an idea with type \"bug\" results in the idea being created on the board with bug type.\n- Creating an idea with type \"feature\" results in the idea being created on the board with feature type.\n- Success: The backend receives the correct type and the idea appears in the UI.\n\n## 2. Edge Cases\n\n**Empty questions array:**\n- A feature with an empty questions array (data-questions=\"[]\") should NOT show a question form. The detail panel should display normally without answer inputs.\n\n**Questions with special characters:**\n- Questions containing HTML special characters (quotes, angle brackets, ampersands) must be properly escaped in the data-questions attribute and rendered correctly in the form.\n\n**Missing data-questions attribute (backwards compatibility):**\n- If for any reason data-questions is missing or null, the JavaScript should gracefully handle it (the existing `|| '[]'` fallback). No errors should appear in the console.\n\n**Missing data-available-actions attribute:**\n- Same as above \u2014 JavaScript should fall back to empty array without errors.\n\n**Type selector with no selection change:**\n- If user does not interact with the type selector at all, the default \"feature\" should be sent.\n\n**Rapid modal open/close:**\n- Opening and closing the modal multiple times should always reset the type selector to \"feature\" and clear all other fields.\n\n**Multiple questions:**\n- A feature with many questions (5+) should render all of them with individual answer fields.\n\n**Empty description with bug type:**\n- Creating a bug with no description (description is optional) should succeed.\n\n## 3. What Constitutes Failure\n\n- The `data-questions` or `data-available-actions` attributes are missing from the rendered feature card HTML in the feature_stages template.\n- Clicking a feature card with questions does NOT show a question/answer form.\n- Submitting answers results in a JavaScript error or the answers are not sent to the backend.\n- The Create New Idea modal does NOT have a type selector.\n- The type field is NOT included in the POST body when creating an idea.\n- The type selector does NOT reset to \"feature\" when the modal is reopened.\n- Any JavaScript console error related to parsing data-questions or data-available-actions (e.g., JSON.parse failure).\n- Creating a bug-type idea results in it being saved as a feature instead.\n- The Go server fails to build after changes.\n\n## 4. Out of Scope\n\n- **Visual/CSS testing:** Exact pixel positions, colors, font sizes, or layout of the type selector or question form.\n- **Performance testing:** Load time benchmarks, rendering speed with many features.\n- **WebSocket behavior:** Real-time update mechanics via WebSocket are not part of this fix.\n- **Backend API logic:** The API already supports the type field and question answering \u2014 only the frontend template/JavaScript changes are in scope.\n- **Other templates:** Changes to client_full.html or client_full2.html are not in scope (they already work or are not used).\n- **Browser compatibility:** Testing across multiple browsers is out of scope.\n- **Authentication/authorization:** Key-based access control is not affected by these changes.\n- **Pipeline client behavior:** How the pipeline client handles received answers is out of scope.\n- **Mobile responsiveness:** Layout on mobile devices is not in scope.",
+  "impl_notes": "All bug fixes for WebUI question answering and bug type creation were verified and are already implemented in server/templates/client.html. The fixes include: (1) data-questions and data-available-actions attributes on feature cards (lines 1063-1064), (2) Type selector dropdown in Create New Idea modal (lines 413-419), (3) submitNewIdea() sends type field to API (line 1000), (4) showNewIdeaModal() resets type selector to 'feature' (line 966). Go server compiles and tests pass.",
+  "history": [
+    {
+      "ts": "2026-03-08T05:25Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-08T05:29Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-08T05:51Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T05:54Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-08T05:54Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-08T05:57Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-08T05:57Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-08T09:50Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-08T09:50Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-08T09:51Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T09:52Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T09:52Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T09:56Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T09:56Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T09:56Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T10:02Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-08T10:02Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T10:03Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T10:03Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T10:06Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T10:06Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T10:06Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T10:11Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-08T10:11Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T10:12Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-08T10:12Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-09T00:56Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-08T05:57Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-08T10:03Z",
+      "verdict": "FAIL",
+      "feedback": "Bug 2 fix is completely missing. The following plan steps were not implemented:\n\nStep 2 (Type selector): The Create New Idea modal (lines 230-249 in client.html) has no type selector dropdown. Add a <select id=\"new-idea-type\"> with 'Feature' and 'Bug' options between the Board and Description fields, as specified in the plan.\n\nStep 3 (Send type in API request): The submitNewIdea() function (line 585) sends JSON with only title, board, and description. It must also read the type selector value and include it: JSON.stringify({title: title, board: board, description: description, type: itemType})\n\nStep 4 (Reset type on modal open): The showNewIdeaModal() function (lines 548-558) does not reset the type selector. Add: document.getElementById('new-idea-type').value = 'feature';\n\nAll three changes are in the same file (server/templates/client.html) and are straightforward additions per the plan."
+    },
+    {
+      "ts": "2026-03-08T10:12Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-08T03:11:27.398513",
+    "verdict": "PASS",
+    "results": {
+      "passed": 684,
+      "failed": 85,
+      "errors": 0
+    },
+    "feedback": "Go tests pass. Python tests have 85 failures due to pre-existing asyncio event loop issues (Python 3.12 compatibility), unrelated to this feature. Implementation verified: (1) data-questions and data-available-actions attributes present on feature cards in client.html:1063-1064, (2) Type selector dropdown with Feature/Bug options present in client.html:415-418, (3) Type field sent in API request client.html:1000, (4) Type selector resets to 'feature' on modal open client.html:966, (5) API handler handles type field api.go:985-994. No dedicated tests exist for these specific frontend behaviors - they would require browser-based testing which is out of scope per the spec."
+  }
+}

@@ -1,0 +1,915 @@
+{
+  "id": "b05c48e0",
+  "board": "mad",
+  "title": "Add concept of scripts or actions",
+  "type": "feature",
+  "created": "2026-03-08T01:33Z",
+  "description": "I would like the ability to configure and run deploy scripts from the webui (or other scripts) so I can deploy AI implemented things without going back to my computer.",
+  "plan": "# Plan: Add Concept of Scripts or Actions\n\n## Overview\n\nAdd the ability to define project-scoped scripts in `.mad/scripts.json` that can be triggered from the WebUI or TUI. Scripts are executed by an AI agent (not raw shell), which can work through issues autonomously. Output is streamed in real-time and captured to log files.\n\n---\n\n## 1. Script Configuration \u2014 `.mad/scripts.json`\n\nCreate a new file `.mad/scripts.json` with this schema:\n\n```json\n[\n  {\n    \"id\": \"deploy\",\n    \"label\": \"Deploy to Production\",\n    \"description\": \"Build and deploy the application to production\",\n    \"command\": \"cd /home/paule/MAD && ./deploy.sh\",\n    \"confirm\": true,\n    \"model\": null,\n    \"agent\": null\n  }\n]\n```\n\n**Field definitions:**\n- `id` (string, required): Unique identifier, used in API calls and filenames. Must be alphanumeric + hyphens.\n- `label` (string, required): Human-readable name shown in UI.\n- `description` (string, optional): Explanation of what the script does.\n- `command` (string, required): The shell command or instructions for the agent to execute.\n- `confirm` (bool, optional, default: `true`): Whether to show a confirmation dialog before running. Defaults to true for safety \u2014 every script requires confirmation unless explicitly opted out.\n- `model` (string, optional): Override the agent model. If set, appended as `--model <value>` flag to the agent command. If null, uses the agent's default model.\n- `agent` (string, optional): Which configured agent to use (e.g., \"claude\", \"opencode\"). If null, uses `default_agent` from config.\n\n### 1.1 Loading and Validation \u2014 `pipeline/scripts.py` (new file)\n\n```python\n@dataclass\nclass ScriptConfig:\n    id: str\n    label: str\n    command: str\n    description: str = \"\"\n    confirm: bool = True\n    model: Optional[str] = None\n    agent: Optional[str] = None\n\ndef load_scripts(mad_dir: Path) -> list[ScriptConfig]:\n    scripts_path = mad_dir / \"scripts.json\"\n    if not scripts_path.exists():\n        return []\n    data = json.loads(scripts_path.read_text())\n    scripts = []\n    seen_ids = set()\n    for entry in data:\n        # Validate required fields\n        if not entry.get(\"id\"):\n            log.warning(\"Script entry missing 'id', skipping\")\n            continue\n        if not entry.get(\"label\"):\n            log.warning(f\"Script '{entry['id']}' missing 'label', skipping\")\n            continue\n        if not entry.get(\"command\"):\n            log.warning(f\"Script '{entry['id']}' missing 'command', skipping\")\n            continue\n        if not re.match(r'^[a-zA-Z0-9-]+$', entry['id']):\n            log.warning(f\"Script id '{entry['id']}' contains invalid characters, skipping\")\n            continue\n        if entry['id'] in seen_ids:\n            log.warning(f\"Duplicate script id '{entry['id']}', skipping\")\n            continue\n        seen_ids.add(entry['id'])\n        scripts.append(ScriptConfig(\n            id=entry['id'],\n            label=entry['label'],\n            command=entry['command'],\n            description=entry.get('description', ''),\n            confirm=entry.get('confirm', True),\n            model=entry.get('model'),\n            agent=entry.get('agent'),\n        ))\n    return scripts\n```\n\n---\n\n## 2. Script Execution \u2014 `pipeline/scripts.py`\n\nScripts are executed by an AI agent in headless mode, similar to how planning/implementing phases work in `runner.py`.\n\n### 2.1 ScriptStatus dataclass\n\n```python\n@dataclass\nclass ScriptStatus:\n    script_id: str\n    running: bool = False\n    pid: Optional[int] = None\n    started_at: Optional[str] = None\n    finished_at: Optional[str] = None\n    lines: list = field(default_factory=list)\n    exit_code: Optional[int] = None\n    kill_requested: bool = False  # See \u00a72.3 for thread safety\n    context: str = \"\"  # User-provided context\n```\n\n### 2.2 run_script() function\n\n```python\nasync def run_script(script: ScriptConfig, config: Config, status: ScriptStatus, context: str = \"\") -> int:\n    \"\"\"\n    Execute a script via AI agent in headless mode.\n    Returns exit code (0 = success).\n    \"\"\"\n    # 1. Determine agent\n    agent_name = script.agent or config.raw.get('default_agent', 'claude')\n    agent_config = config.agents[agent_name]\n    runner = AgentRunner(config, agent_name, config.code_path)\n\n    # 2. Build prompt\n    prompt = f\"\"\"# Script Execution: {script.label}\n\n## Task\nExecute the following command/task and handle any issues that arise:\n\n```\n{script.command}\n```\n\n{f'## Description{chr(10)}{script.description}' if script.description else ''}\n{f'## Additional Context{chr(10)}{context}' if context else ''}\n\n## Instructions\n- Execute the command above\n- If errors occur, attempt to diagnose and fix them\n- Report the outcome clearly\n\"\"\"\n\n    # 3. Model override\n    # If script.model is set, temporarily override the agent's model.\n    # AgentRunner.headless() constructs the command using agent_config.model:\n    #   cmd = [agent_config.command, agent_config.headless_flag, ...]\n    #   if agent_config.model: cmd.extend([agent_config.model_flag, agent_config.model])\n    # So setting agent_config.model before calling headless() will cause\n    # --model <script.model> to be appended to the agent command.\n    original_model = agent_config.model\n    if script.model:\n        agent_config.model = script.model\n\n    # 4. Execute via runner.headless()\n    #    Use phase_key=f\"script-{script.id}\" for file naming\n    #    The runner writes to .tmp/script-{script.id}.instructions\n    #    and reads from .tmp/script-{script.id}.output.json\n    try:\n        status.running = True\n        status.started_at = datetime.now().isoformat()\n        status.pid = None\n        status.lines = []\n\n        output = runner.headless(\n            prompt=prompt,\n            workdir=config.code_path,\n            status=status,\n            phase_key=f\"script-{script.id}\",\n            output_schema={\"summary\": \"string\", \"success\": \"bool\"},\n        )\n\n        status.exit_code = 0\n        return 0\n    except Exception as e:\n        status.exit_code = 1\n        status.lines.append(f\"Error: {e}\")\n        return 1\n    finally:\n        if script.model:\n            agent_config.model = original_model\n        status.running = False\n        status.finished_at = datetime.now().isoformat()\n        # Write log to .mad/logs/script-{script.id}-{timestamp}.log\n        _save_script_log(config, script, status)\n\ndef _save_script_log(config: Config, script: ScriptConfig, status: ScriptStatus):\n    log_dir = config.code_path / '.mad' / 'logs'\n    log_dir.mkdir(exist_ok=True)\n    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')\n    log_path = log_dir / f\"script-{script.id}-{timestamp}.log\"\n    log_path.write_text('\\n'.join(status.lines))\n```\n\n### 2.3 Thread Safety for kill_requested\n\nThe `kill_requested` flag on `ScriptStatus` is accessed from two threads:\n- **Main TUI thread**: sets `kill_requested = True` when user cancels\n- **Worker thread** (via `@work(thread=True)`): reads `kill_requested` in the runner's polling loop\n\nThis is safe because:\n1. `kill_requested` is a simple boolean \u2014 Python's GIL guarantees atomic reads/writes of simple attributes.\n2. This is the exact same pattern already used by `runner.py` (line ~395) where `status.kill_requested` is checked in the subprocess polling loop. The existing `_run_plan_async` and `_run_implement_async` workers in `tui.py` already set `kill_requested` from the main thread.\n3. Textual's `@work(thread=True)` runs in a standard Python thread, so GIL protections apply.\n\nNo additional synchronization (locks, events) is needed. This matches the established codebase pattern.\n\n---\n\n## 3. Server-Side Changes \u2014 `server/api.go` and `server/hub.go`\n\n### 3.1 New HTTP Endpoint \u2014 `api.go`\n\nAdd a new endpoint following the exact pattern of `serveStartAgent()` (api.go:643):\n\n```go\n// POST /api/clients/{id}/run-script\nfunc (s *Server) serveRunScript(w http.ResponseWriter, r *http.Request) {\n    if r.Method != http.MethodPost {\n        http.Error(w, \"Method not allowed\", 405)\n        return\n    }\n    if !s.checkAuth(r, w) {\n        return\n    }\n    clientID := r.PathValue(\"id\")\n\n    // Parse request body\n    var req struct {\n        ScriptID string `json:\"script_id\"`\n        Context  string `json:\"context\"`\n    }\n    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {\n        http.Error(w, \"Bad request\", 400)\n        return\n    }\n    if req.ScriptID == \"\" {\n        http.Error(w, \"script_id required\", 400)\n        return\n    }\n\n    // Send run_script message to pipeline client via WebSocket\n    msg := map[string]interface{}{\n        \"type\":      \"run_script\",\n        \"script_id\": req.ScriptID,\n        \"context\":   req.Context,\n    }\n    msgBytes, _ := json.Marshal(msg)\n    s.hub.SendToClient(clientID, msgBytes)\n\n    w.WriteHeader(http.StatusOK)\n    json.NewEncoder(w).Encode(map[string]string{\"status\": \"sent\"})\n}\n```\n\n**Register the route** (in the same place as other routes, around api.go:200):\n```go\nmux.HandleFunc(\"/api/clients/{id}/run-script\", s.serveRunScript)\n```\n\n**Message flow (addressing the forwarding concern):**\n```\nWebUI (browser) \u2192 POST /api/clients/{id}/run-script\n  \u2192 serveRunScript() validates auth and body\n  \u2192 hub.SendToClient(clientID, msgBytes)\n  \u2192 Client.send channel \u2192 writePump() \u2192 WebSocket\n  \u2192 Python ServerClient._handle_incoming() receives \"run_script\" message\n  \u2192 dispatches to on_run_script callback\n  \u2192 TUI executes script\n```\n\nThis does NOT go through hub.handleMessage() at all. The HTTP endpoint sends directly to the client's WebSocket via SendToClient(), which is a direct channel write \u2014 same pattern as serveStartAgent(), serveAnswerQuestions(), and all other existing server\u2192client commands.\n\n### 3.2 No hub.go Message Routing Changes Needed\n\nThe `run_script` message does NOT flow through hub.handleMessage()'s switch statement (lines 305-307). It is sent via the HTTP endpoint \u2192 SendToClient() path, which bypasses message routing entirely. This is identical to how `start_agent`, `answer_questions`, `move_feature`, etc. all work.\n\n### 3.3 State Struct Extensions \u2014 `hub.go`\n\nExtend `ClientState` to include script information passed through from push_state():\n\n```go\ntype ScriptInfo struct {\n    ID          string `json:\"id\"`\n    Label       string `json:\"label\"`\n    Description string `json:\"description\"`\n    Confirm     bool   `json:\"confirm\"`\n}\n\ntype ScriptState struct {\n    ScriptID   string   `json:\"script_id\"`\n    Running    bool     `json:\"running\"`\n    Lines      []string `json:\"lines\"`\n    StartedAt  string   `json:\"started_at,omitempty\"`\n    FinishedAt string   `json:\"finished_at,omitempty\"`\n    ExitCode   *int     `json:\"exit_code,omitempty\"`\n}\n```\n\nAdd to `ClientState`:\n```go\nScripts      []ScriptInfo  `json:\"scripts,omitempty\"`\nScriptStatus *ScriptState  `json:\"script_status,omitempty\"`\n```\n\nThese fields are populated by the pipeline client's `push_state()` call \u2014 the server just stores and forwards them, no server-side logic needed.\n\n---\n\n## 4. Pipeline Client Changes \u2014 `pipeline/server_client.py`\n\n### 4.1 New Callback\n\nAdd `on_run_script` callback to `ServerClient.__init__()`:\n\n```python\ndef __init__(self, ..., on_run_script=None):\n    self.on_run_script = on_run_script\n```\n\n### 4.2 Message Handling\n\nIn `_handle_incoming()`, add a new case in the message type dispatch:\n\n```python\nelif msg_type == \"run_script\":\n    script_id = data.get(\"script_id\", \"\")\n    context = data.get(\"context\", \"\")\n    if self.on_run_script:\n        await self.on_run_script(script_id, context)\n```\n\n### 4.3 State Pushing\n\nIn `push_state()`, add script data to the state payload:\n\n```python\ndef push_state(self, features, plan_status, impl_status, \n               auto_plan_enabled, auto_impl_enabled,\n               scripts=None, script_status=None):  # New params\n    # ... existing code ...\n    state[\"scripts\"] = [\n        {\"id\": s.id, \"label\": s.label, \"description\": s.description, \"confirm\": s.confirm}\n        for s in (scripts or [])\n    ]\n    if script_status and script_status.running:\n        state[\"script_status\"] = {\n            \"script_id\": script_status.script_id,\n            \"running\": script_status.running,\n            \"lines\": script_status.lines[-50:],  # Last 50 lines for WebUI\n            \"started_at\": script_status.started_at,\n            \"finished_at\": script_status.finished_at,\n            \"exit_code\": script_status.exit_code,\n        }\n```\n\n---\n\n## 5. TUI Changes \u2014 `pipeline/tui.py`\n\n### 5.1 Script State in PipelineApp\n\nAdd to `PipelineApp.__init__()` or class body:\n\n```python\nself._scripts: list[ScriptConfig] = load_scripts(self.mad_dir)\nself._script_status: Optional[ScriptStatus] = None\n```\n\n### 5.2 Script List UI\n\nAdd a \"Scripts\" section to the sidebar or as a new keybinding (e.g., `S` for Scripts). Show available scripts with their labels.\n\n### 5.3 Run Script Modal \u2014 `RunScriptModal`\n\nNew modal extending `ModalScreen`:\n\n```python\nclass RunScriptModal(ModalScreen[Optional[tuple[str, str]]]):\n    \"\"\"Modal to select and run a script.\"\"\"\n    BINDINGS = [(\"escape\", \"cancel\", \"Cancel\")]\n\n    def __init__(self, scripts: list[ScriptConfig]):\n        super().__init__()\n        self.scripts = scripts\n\n    def compose(self):\n        with Vertical(id=\"modal-dialog\"):\n            yield Static(\"Run Script\", classes=\"modal-title\")\n            yield Select(\n                [(s.label, s.id) for s in self.scripts],\n                prompt=\"Select script\",\n                id=\"script-select\",\n            )\n            yield TextArea(id=\"script-context\", placeholder=\"Additional context for the agent (optional)\")\n            yield Horizontal(\n                Button(\"Run\", variant=\"primary\", id=\"run-btn\"),\n                Button(\"Cancel\", variant=\"default\", id=\"cancel-btn\"),\n            )\n\n    def on_button_pressed(self, event):\n        if event.button.id == \"run-btn\":\n            script_id = self.query_one(\"#script-select\").value\n            context = self.query_one(\"#script-context\").text\n            if script_id:\n                selected = next(s for s in self.scripts if s.id == script_id)\n                if selected.confirm:\n                    # Show confirmation\n                    self.app.push_screen(\n                        ConfirmModal(f\"Run '{selected.label}'?\"),\n                        callback=lambda ok: self.dismiss((script_id, context)) if ok else None\n                    )\n                else:\n                    self.dismiss((script_id, context))\n        elif event.button.id == \"cancel-btn\":\n            self.dismiss(None)\n```\n\n### 5.4 Script Execution Worker\n\n```python\n@work(thread=True, exclusive=True, group=\"script\")\nasync def _run_script_async(self, script_id: str, context: str = \"\"):\n    script = next((s for s in self._scripts if s.id == script_id), None)\n    if not script:\n        self.notify(f\"Script '{script_id}' not found\", severity=\"error\")\n        return\n\n    self._script_status = ScriptStatus(script_id=script_id, context=context)\n\n    try:\n        exit_code = await run_script(script, self.config, self._script_status, context)\n        self.app.call_from_thread(\n            self.notify,\n            f\"Script '{script.label}' finished (exit code: {exit_code})\",\n            severity=\"information\" if exit_code == 0 else \"error\",\n        )\n    except Exception as e:\n        self.app.call_from_thread(\n            self.notify, f\"Script error: {e}\", severity=\"error\"\n        )\n    finally:\n        self._script_status = None\n```\n\n### 5.5 Server Callback Wiring\n\nIn `_connect_server()`, add the callback:\n\n```python\nself.server_client = ServerClient(\n    ...,\n    on_run_script=self._handle_run_script,\n)\n\nasync def _handle_run_script(self, script_id: str, context: str):\n    \"\"\"Called when WebUI requests script execution.\"\"\"\n    script = next((s for s in self._scripts if s.id == script_id), None)\n    if not script:\n        return\n    # Scripts triggered from WebUI skip TUI confirmation since WebUI has its own\n    self._run_script_async(script_id, context)\n```\n\n### 5.6 Push Script State to Server\n\nIn `_push_to_server()`, pass script data:\n\n```python\nself.server_client.push_state(\n    ...,\n    scripts=self._scripts,\n    script_status=self._script_status,\n)\n```\n\n### 5.7 Kill Running Script\n\nAdd keybinding (e.g., `K` when script is running):\n\n```python\ndef action_kill_script(self):\n    if self._script_status and self._script_status.running:\n        self._script_status.kill_requested = True\n        self.notify(\"Kill requested for running script\")\n```\n\n---\n\n## 6. WebUI Changes \u2014 `server/templates/client.html`\n\nThe active template is `client.html` (loaded in api.go:204 via `template.Must(template.New(\"\").Funcs(funcMap).ParseFS(templateFS, \"templates/index.html\", \"templates/client.html\"))`).\n\n### 6.1 Scripts Panel\n\nAdd a \"Scripts\" section to the client detail page, after the features section:\n\n```html\n<!-- Scripts Section -->\n<div id=\"scripts-section\" style=\"display:none;\">\n    <h3>Scripts</h3>\n    <div id=\"scripts-list\"></div>\n</div>\n\n<!-- Script Output Modal -->\n<div id=\"script-output-modal\" class=\"modal\" style=\"display:none;\">\n    <div class=\"modal-content\">\n        <h4 id=\"script-output-title\">Script Output</h4>\n        <pre id=\"script-output-log\" style=\"max-height:400px; overflow-y:auto; background:#1a1a1a; color:#0f0; padding:10px; font-family:monospace;\"></pre>\n        <div id=\"script-status-indicator\"></div>\n    </div>\n</div>\n```\n\n### 6.2 JavaScript for Script Management\n\n```javascript\nfunction renderScripts(clientId, scripts, scriptStatus) {\n    const section = document.getElementById('scripts-section');\n    const list = document.getElementById('scripts-list');\n    if (!scripts || scripts.length === 0) {\n        section.style.display = 'none';\n        return;\n    }\n    section.style.display = 'block';\n    list.innerHTML = scripts.map(s => `\n        <div class=\"script-card\">\n            <strong>${escapeHtml(s.label)}</strong>\n            ${s.description ? `<p>${escapeHtml(s.description)}</p>` : ''}\n            <button onclick=\"runScript('${escapeHtml(clientId)}', '${escapeHtml(s.id)}', ${s.confirm})\"\n                    ${scriptStatus?.running ? 'disabled' : ''}>\n                ${scriptStatus?.running && scriptStatus.script_id === s.id ? 'Running...' : 'Run'}\n            </button>\n        </div>\n    `).join('');\n\n    // Show live output if script is running\n    if (scriptStatus?.running) {\n        showScriptOutput(scriptStatus);\n    }\n}\n\nfunction runScript(clientId, scriptId, requireConfirm) {\n    let context = '';\n    // Always prompt for optional context\n    context = prompt('Additional context for the agent (optional):') ?? '';\n    \n    if (requireConfirm) {\n        if (!confirm(`Run script '${scriptId}'?`)) return;\n    }\n\n    fetch(`/api/clients/${encodeURIComponent(clientId)}/run-script?key=${encodeURIComponent(dashboardKey)}`, {\n        method: 'POST',\n        headers: {'Content-Type': 'application/json'},\n        body: JSON.stringify({\n            script_id: scriptId,\n            context: context,\n        }),\n    });\n}\n\nfunction showScriptOutput(status) {\n    const modal = document.getElementById('script-output-modal');\n    const log = document.getElementById('script-output-log');\n    const indicator = document.getElementById('script-status-indicator');\n    modal.style.display = 'block';\n    log.textContent = status.lines.join('\\n');\n    log.scrollTop = log.scrollHeight;  // Auto-scroll\n    indicator.textContent = status.running ? 'Running...' : \n        (status.exit_code === 0 ? 'Completed' : 'Failed');\n}\n```\n\n### 6.3 Integration with Existing State Updates\n\nThe WebUI already receives state updates via WebSocket polling. The `scripts` and `script_status` fields added to `ClientState` will automatically flow through. In the existing `updateClientDetail()` function (or equivalent), add:\n\n```javascript\nrenderScripts(clientId, state.scripts, state.script_status);\n```\n\nStreaming output works because `push_state()` runs every 10 seconds (configurable via `push_interval_seconds`). For near-real-time streaming, the output updates every push interval. The last 50 lines are sent each push to keep payload size manageable.\n\n---\n\n## 7. Implementation Order\n\n1. **`pipeline/scripts.py`** \u2014 ScriptConfig, ScriptStatus, load_scripts(), run_script(), _save_script_log()\n2. **`pipeline/server_client.py`** \u2014 Add on_run_script callback, handle run_script message, extend push_state()\n3. **`server/api.go`** \u2014 Add /api/clients/{id}/run-script endpoint\n4. **`server/hub.go`** \u2014 Add ScriptInfo, ScriptState structs to ClientState\n5. **`pipeline/tui.py`** \u2014 Load scripts, add RunScriptModal, add _run_script_async worker, wire callbacks, add keybindings\n6. **`server/templates/client.html`** \u2014 Add scripts section, script output modal, JavaScript\n7. **`.mad/scripts.json`** \u2014 Create example configuration\n8. **Testing** \u2014 Manual test: add a test script, trigger from TUI and WebUI, verify streaming output\n\n## 8. Files Modified\n\n- `pipeline/scripts.py` (NEW)\n- `pipeline/server_client.py` (MODIFIED)\n- `pipeline/tui.py` (MODIFIED)\n- `pipeline/runner.py` (no changes needed \u2014 reuse existing AgentRunner)\n- `server/api.go` (MODIFIED)\n- `server/hub.go` (MODIFIED)\n- `server/templates/client.html` (MODIFIED)\n- `.mad/scripts.json` (NEW)\n\n## 9. Out of Scope\n\n- Auto-triggering scripts on stage transitions (future)\n- Editing scripts from WebUI (scripts.json is file-only)\n- Script scheduling / cron\n- Per-board script scoping (all scripts are project-scoped)\n- Script dependencies / chaining",
+  "impl_spec": "# Implementation Spec: Add Concept of Scripts or Actions\n\n## Task 1: Create `pipeline/scripts.py` \u2014 ScriptConfig, ScriptStatus, load_scripts()\n\n**What:** New file with dataclasses and loader.\n\n**Approach:**\n- Define `ScriptConfig` dataclass with fields: `id`, `label`, `command`, `description` (default \"\"), `confirm` (default True), `model` (default None), `agent` (default None).\n- Define `ScriptStatus` dataclass with fields: `script_id`, `running` (default False), `pid` (default None), `started_at` (default None), `finished_at` (default None), `lines` (default_factory=list), `exit_code` (default None), `kill_requested` (default False), `context` (default \"\"). Add `_agent_status` (default None) for kill propagation to the inner AgentStatus used by runner.headless().\n- Implement `load_scripts(mad_dir: Path) -> list[ScriptConfig]` that reads `.mad/scripts.json`, validates required fields (id, label, command), validates id format (alphanumeric + hyphens via regex `^[a-zA-Z0-9-]+$`), checks for duplicates, and returns list of ScriptConfig. Logs warnings for skipped entries.\n\n**Dependencies:** None.\n\n## Task 2: Create `pipeline/scripts.py` \u2014 run_script() and _save_script_log()\n\n**What:** Add script execution function to the same file.\n\n**Approach:**\n- Implement `def run_script(script: ScriptConfig, config: Config, status: ScriptStatus, context: str = \"\") -> int` (synchronous, called from @work(thread=True) worker).\n- Determine agent: `script.agent or config.raw.get('default_agent', 'claude')`, get `agent_config = config.agents[agent_name]`.\n- Create `AgentRunner(config, agent_name, config.code_path)`.\n- Build prompt string with script label, command, optional description, optional context, and instructions to execute/diagnose/report.\n- If `script.model` is set, temporarily override `agent_config.model` (save original, restore in finally block).\n- Create an `AgentStatus(feature_slug=f\"script-{script.id}\")` instance. Store it on `status._agent_status` for kill propagation from the TUI.\n- Set `status.running = True`, `status.started_at = datetime.now().isoformat()`.\n- Call `runner.headless(prompt=prompt, workdir=config.code_path, status=agent_status, phase_key=f\"script-{script.id}\", output_schema={\"summary\": \"string\", \"success\": \"bool\"})`.\n- After headless returns, copy `agent_status.lines` to `status.lines`.\n- On success: set `status.exit_code = 0`, return 0.\n- On exception: copy lines, append error, set `status.exit_code = 1`, return 1.\n- In finally: restore model if overridden, set `status.running = False`, `status.finished_at = datetime.now().isoformat()`, call `_save_script_log()`.\n- During execution, `status.lines` should be kept in sync with `agent_status.lines` \u2014 since headless() is blocking and runs in a thread, the TUI's periodic push can read `agent_status.lines` through `status._agent_status.lines`. Update `_push_to_server` to read from `_agent_status.lines` if available.\n- Implement `_save_script_log(config, script, status)`: write `status.lines` joined by newlines to `.mad/logs/script-{script.id}-{YYYYMMDD-HHMMSS}.log`.\n\n**Dependencies:** Task 1.\n\n## Task 3: Extend `pipeline/server_client.py` \u2014 Add on_run_script callback\n\n**What:** Add `on_run_script` parameter and handle `run_script` message type.\n\n**Approach:**\n- Add `on_run_script: Optional[Callable[[str, str], Awaitable[None]]] = None` parameter to `ServerClient.__init__()` (after `on_edit_description`). Store as `self._on_run_script`.\n- In `_handle_incoming()`, add new elif branch after the `edit_description` handler (before the comment about other message types):\n  ```python\n  elif msg_type == \"run_script\":\n      script_id = data.get(\"script_id\", \"\")\n      context = data.get(\"context\", \"\")\n      if self._on_run_script and script_id:\n          try:\n              await self._on_run_script(script_id, context)\n          except Exception as e:\n              logger.warning(f\"Error handling run_script: {e}\")\n  ```\n\n**Dependencies:** None.\n\n## Task 4: Extend `pipeline/server_client.py` \u2014 Add scripts to push_state()\n\n**What:** Pass script configuration and running status in state updates.\n\n**Approach:**\n- Add parameters to `push_state()` signature: `scripts=None, script_status=None` (after `auto_impl_enabled`).\n- After building the `msg` dict and before `json.dumps` (around line 193), add:\n  ```python\n  if scripts:\n      msg[\"scripts\"] = [\n          {\"id\": s.id, \"label\": s.label, \"description\": s.description, \"confirm\": s.confirm}\n          for s in scripts\n      ]\n  if script_status:\n      lines = script_status.lines\n      # If agent_status is available, use its lines (they update in real-time)\n      if hasattr(script_status, '_agent_status') and script_status._agent_status:\n          lines = script_status._agent_status.lines\n      msg[\"script_status\"] = {\n          \"script_id\": script_status.script_id,\n          \"running\": script_status.running,\n          \"lines\": lines[-50:] if lines else [],\n          \"started_at\": script_status.started_at or \"\",\n          \"finished_at\": script_status.finished_at or \"\",\n          \"exit_code\": script_status.exit_code,\n      }\n  ```\n\n**Dependencies:** Task 1 (needs ScriptConfig/ScriptStatus types).\n\n## Task 5: Extend `server/hub.go` \u2014 Add ScriptInfo and ScriptState structs\n\n**What:** Add new types and fields to ClientState for scripts.\n\n**Approach:**\n- Add struct definitions after `AgentState` (around line 64):\n  ```go\n  type ScriptInfo struct {\n      ID          string `json:\"id\"`\n      Label       string `json:\"label\"`\n      Description string `json:\"description\"`\n      Confirm     bool   `json:\"confirm\"`\n  }\n\n  type ScriptState struct {\n      ScriptID   string   `json:\"script_id\"`\n      Running    bool     `json:\"running\"`\n      Lines      []string `json:\"lines\"`\n      StartedAt  string   `json:\"started_at,omitempty\"`\n      FinishedAt string   `json:\"finished_at,omitempty\"`\n      ExitCode   *int     `json:\"exit_code,omitempty\"`\n  }\n  ```\n- Add fields to `ClientState` struct (after `StageActions`, around line 76):\n  ```go\n  Scripts      []ScriptInfo  `json:\"scripts,omitempty\"`\n  ScriptStatus *ScriptState  `json:\"script_status,omitempty\"`\n  ```\n- In `handleMessage()`, inside the `case \"state_update\"` block (after the `stage_actions` parsing around line 297), add:\n  ```go\n  if raw, ok := msg[\"scripts\"]; ok {\n      var scripts []ScriptInfo\n      if err := json.Unmarshal(raw, &scripts); err == nil {\n          client.state.Scripts = scripts\n      }\n  }\n  if raw, ok := msg[\"script_status\"]; ok {\n      var ss ScriptState\n      if err := json.Unmarshal(raw, &ss); err == nil {\n          client.state.ScriptStatus = &ss\n      } else {\n          client.state.ScriptStatus = nil\n      }\n  }\n  ```\n\n**Dependencies:** None.\n\n## Task 6: Add `server/api.go` \u2014 serveRunScript endpoint\n\n**What:** New HTTP endpoint POST /api/clients/{id}/run-script.\n\n**Approach:**\n- Add function `serveRunScript(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string)` following the exact pattern of `serveAutoMode()` (api.go:514). This is the simplest existing pattern \u2014 no feature ID needed:\n  - Check POST method.\n  - Check auth with `checkAnyAuth(r, cfg)`.\n  - Read body, unmarshal into struct with `ScriptID string` and `Context string` (json tags: `script_id`, `context`).\n  - Validate `ScriptID` is not empty.\n  - Check client exists and is connected via `hub.GetClient(clientID)`.\n  - Marshal `{\"type\": \"run_script\", \"script_id\": ..., \"context\": ...}` and send via `hub.SendToClient(clientID, msg)`.\n  - Return 200 with `{\"status\": \"ok\"}`.\n- Register route in `apiClientsHandler` by adding a check in the sub-path routing section (around line 270, after the `auto-mode` check):\n  ```go\n  if sub == \"run-script\" {\n      serveRunScript(w, r, hub, cfg, clientID)\n      return\n  }\n  ```\n\n**Dependencies:** Task 5 (needs ScriptState type for compilation, though endpoint doesn't use it directly).\n\n## Task 7: Extend `pipeline/tui.py` \u2014 Load scripts, add state, wire callbacks\n\n**What:** Integrate scripts into the TUI application.\n\n**Approach:**\n- Add import at top: `from scripts import ScriptConfig, ScriptStatus, load_scripts, run_script`.\n- In `PipelineApp.__init__()` (around line 1461), add:\n  ```python\n  self._scripts: list[ScriptConfig] = load_scripts(self._config.mad_dir)\n  self._script_status: Optional[ScriptStatus] = None\n  ```\n  Note: `self._config.mad_dir` \u2014 verify this attribute exists. The Config class has `mad_dir` property. If not, use `get_mad_dir()`.\n- In the server client initialization (around line 1543), add `on_run_script=self._handle_run_script` to the `ServerClient()` constructor call.\n- Add `_handle_run_script` async method:\n  ```python\n  async def _handle_run_script(self, script_id: str, context: str):\n      script = next((s for s in self._scripts if s.id == script_id), None)\n      if not script:\n          return\n      self._run_script_async(script_id, context)\n  ```\n- In `_push_to_server()` (line 1717), update the `push_state()` call to include scripts:\n  ```python\n  await self._server_client.push_state(\n      features, self._plan_agent_status, self._implement_agent_status,\n      auto_plan_enabled=self.auto_plan_enabled,\n      auto_impl_enabled=self.auto_implement_enabled,\n      scripts=self._scripts,\n      script_status=self._script_status,\n  )\n  ```\n\n**Dependencies:** Tasks 1, 2, 3, 4.\n\n## Task 8: Add `pipeline/tui.py` \u2014 RunScriptModal, worker, keybindings\n\n**What:** Add modal for script selection and background worker for execution.\n\n**Approach:**\n- Add `RunScriptModal(ModalScreen[Optional[tuple[str, str]]])` class (place after existing modals like MoveFeatureModal):\n  - Constructor takes `scripts: list[ScriptConfig]`.\n  - BINDINGS: escape -> cancel.\n  - CSS: similar to existing modals (RejectModal pattern).\n  - compose(): Vertical container with Static title, Select dropdown `[(s.label, s.id) for s in self.scripts]`, Input or TextArea for optional context, Run and Cancel buttons.\n  - on_button_pressed: if run-btn, get selected script_id and context. If script.confirm, push ConfirmModal (reuse existing pattern if ConfirmModal exists, otherwise use simple confirm). Dismiss with (script_id, context). If cancel-btn, dismiss None.\n  - action_cancel: dismiss None.\n\n- Check if ConfirmModal exists in the codebase. If not, implement inline confirmation in RunScriptModal or create a simple one.\n\n- Add `_run_script_async` worker to PipelineApp:\n  ```python\n  @work(thread=True, exclusive=True, group=\"script\")\n  def _run_script_async(self, script_id: str, context: str = \"\"):\n      script = next((s for s in self._scripts if s.id == script_id), None)\n      if not script:\n          self.app.call_from_thread(self.notify, f\"Script '{script_id}' not found\", severity=\"error\")\n          return\n      self._script_status = ScriptStatus(script_id=script_id, context=context)\n      try:\n          exit_code = run_script(script, self._config, self._script_status, context)\n          severity = \"information\" if exit_code == 0 else \"error\"\n          self.app.call_from_thread(self.notify, f\"Script '{script.label}' finished (exit code: {exit_code})\", severity=severity)\n      except Exception as e:\n          self.app.call_from_thread(self.notify, f\"Script error: {e}\", severity=\"error\")\n      finally:\n          self._script_status = None\n  ```\n\n- Add keybinding: `Binding(\"S\", \"run_script\", \"Script\")` to BINDINGS list (use uppercase S to avoid conflicts). Or add to GLOBAL_BINDINGS tuple list.\n\n- Implement `action_run_script()`:\n  ```python\n  def action_run_script(self):\n      if not self._scripts:\n          self.notify(\"No scripts configured. Add scripts to .mad/scripts.json\")\n          return\n      if self._script_status and self._script_status.running:\n          self.notify(\"A script is already running\")\n          return\n      self.push_screen(RunScriptModal(self._scripts), callback=self._on_script_selected)\n  \n  def _on_script_selected(self, result):\n      if result:\n          script_id, context = result\n          self._run_script_async(script_id, context)\n  ```\n\n- Add kill support: extend existing kill action to also handle scripts, or add separate kill. When `_script_status` is set and running, propagate kill via `_script_status._agent_status.kill_requested = True`.\n\n**Dependencies:** Tasks 1, 2, 7.\n\n## Task 9: Extend `server/templates/client.html` \u2014 Scripts UI\n\n**What:** Add scripts panel and run-script functionality to the WebUI.\n\n**Approach:**\n- Add a \"Scripts\" section in the client detail page, placed after the agent status sections and before the features/logs. HTML structure:\n  ```html\n  <div id=\"scripts-section\" style=\"display:none\">\n      <h2>Scripts</h2>\n      <div id=\"scripts-list\"></div>\n  </div>\n  <div id=\"script-output-modal\" style=\"display:none\">\n      <h3 id=\"script-output-title\">Script Output</h3>\n      <pre id=\"script-output-log\" style=\"max-height:400px; overflow-y:auto; background:#1a1a1a; color:#0f0; padding:10px;\"></pre>\n      <div id=\"script-status-indicator\"></div>\n  </div>\n  ```\n\n- Determine how the client.html page currently receives state updates. Check if it uses HTMX polling (hx-get with hx-trigger=\"every Xs\") or JavaScript/WebSocket. The page already polls via HTMX for features. For scripts, add JavaScript that reads the state from the JSON API endpoint `/api/clients/{id}?key=...` or embed the data in the initial page load template.\n\n- Since client.html uses Go templates for initial render and HTMX for updates, the simplest approach for scripts is:\n  1. Add scripts data to the template data map in `serveClientPage()` (api.go:711-726): add `\"Scripts\": state.Scripts, \"ScriptStatus\": state.ScriptStatus`.\n  2. Render scripts in the Go template using `{{range .Scripts}}`.\n  3. For dynamic updates (script status), add a small JavaScript fetch that polls `/api/clients/{id}?key=...` and updates the scripts section, OR add an HTMX fragment endpoint.\n\n- Alternative simpler approach: add a JavaScript block that fetches client state JSON periodically and renders scripts dynamically. This avoids adding new Go template fragments.\n\n- Add `renderScripts(clientId, scripts, scriptStatus)` JS function that creates script cards with Run buttons.\n- Add `runScript(clientId, scriptId, requireConfirm)` JS function: prompt for context, confirm if needed, POST to `/api/clients/{clientId}/run-script?key=...`.\n- Add `showScriptOutput(status)` JS function for live output display.\n- Add `escapeHtml()` utility if not already present.\n- Wire into a periodic poll (setInterval) that fetches client state and calls renderScripts.\n\n**Dependencies:** Tasks 5, 6.\n\n## Task 10: Create `.mad/scripts.json` \u2014 Example configuration\n\n**What:** Create an example scripts.json for testing.\n\n**Approach:**\n- Create `.mad/scripts.json`:\n  ```json\n  [\n    {\n      \"id\": \"build-server\",\n      \"label\": \"Build Server\",\n      \"description\": \"Build the Go server binary\",\n      \"command\": \"cd /home/paule/MAD/server && go build -o mad-server .\",\n      \"confirm\": true\n    }\n  ]\n  ```\n\n**Dependencies:** None.\n\n## Task 11: Rebuild Go server and verify\n\n**What:** Compile Go changes and verify no errors.\n\n**Approach:**\n- Run `cd /home/paule/MAD/server && go build -o mad-server .`\n- Fix any compilation errors.\n\n**Dependencies:** Tasks 5, 6.\n\n## Implementation Order\n\nPhase 1 (parallel): Tasks 1, 3, 5, 10\nPhase 2 (parallel): Tasks 2, 4, 6\nPhase 3: Task 11 (rebuild Go)\nPhase 4: Task 7 (TUI wiring)\nPhase 5: Task 8 (TUI modal + worker)\nPhase 6: Task 9 (WebUI)",
+  "test_spec": "# Test Spec: Add Concept of Scripts or Actions\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Script Configuration Loading (`pipeline/scripts.py` \u2014 `load_scripts()`)\n\n**Behavior:** Loading a valid `scripts.json` returns a list of ScriptConfig objects with correct field values.\n- Given a `.mad/scripts.json` with one entry containing all fields (id, label, command, description, confirm, model, agent), `load_scripts()` returns a list with one ScriptConfig whose attributes match the JSON values exactly.\n\n**Behavior:** Missing `scripts.json` returns an empty list.\n- Given no `.mad/scripts.json` file exists, `load_scripts()` returns `[]` without error.\n\n**Behavior:** Required field validation skips invalid entries.\n- An entry missing `id` is skipped (warning logged).\n- An entry missing `label` is skipped (warning logged).\n- An entry missing `command` is skipped (warning logged).\n- Valid entries in the same file are still loaded.\n\n**Behavior:** ID format validation rejects invalid characters.\n- An entry with id `\"my script!\"` (contains space and exclamation) is skipped.\n- An entry with id `\"my_script\"` (contains underscore) is skipped.\n- An entry with id `\"my-script\"` (alphanumeric + hyphens) is accepted.\n- An entry with id `\"MyScript123\"` (mixed case alphanumeric) is accepted.\n\n**Behavior:** Duplicate IDs are rejected.\n- Given two entries with the same `id`, only the first is loaded; the second is skipped with a warning.\n\n**Behavior:** Optional fields have correct defaults.\n- An entry with only id, label, command results in: `description=\"\"`, `confirm=True`, `model=None`, `agent=None`.\n\n**Behavior:** `confirm` defaults to True.\n- An entry without a `confirm` field has `confirm=True`.\n- An entry with `\"confirm\": false` has `confirm=False`.\n\n### 1.2 Script Execution (`pipeline/scripts.py` \u2014 `run_script()`)\n\n**Behavior:** Successful script execution returns exit code 0.\n- Given a valid ScriptConfig and a mock runner whose `headless()` returns successfully, `run_script()` returns 0 and `status.exit_code` is 0.\n\n**Behavior:** Failed script execution returns exit code 1.\n- Given a ScriptConfig where `runner.headless()` raises an exception, `run_script()` returns 1, `status.exit_code` is 1, and the error message is appended to `status.lines`.\n\n**Behavior:** Status lifecycle is correct.\n- Before execution: `status.running` is False.\n- During execution: `status.running` is True, `status.started_at` is set to an ISO timestamp.\n- After execution (success or failure): `status.running` is False, `status.finished_at` is set.\n\n**Behavior:** Model override is applied and restored.\n- Given `script.model = \"claude-sonnet\"` and `agent_config.model = \"claude-opus\"`, during execution the agent_config.model is `\"claude-sonnet\"`. After execution (success or failure), `agent_config.model` is restored to `\"claude-opus\"`.\n\n**Behavior:** Model override restoration on exception.\n- If `runner.headless()` raises, `agent_config.model` is still restored to its original value.\n\n**Behavior:** Agent selection uses script.agent or config default.\n- If `script.agent` is set to `\"opencode\"`, the runner uses agent `\"opencode\"`.\n- If `script.agent` is None, the runner uses `config.raw['default_agent']` (or `'claude'` if not set).\n\n**Behavior:** Prompt includes script details.\n- The prompt passed to `runner.headless()` contains the script's label, command, description (if present), and context (if provided).\n- If description is empty, the description section is omitted from the prompt.\n- If context is empty, the context section is omitted from the prompt.\n\n**Behavior:** Log file is saved after execution.\n- After `run_script()` completes, a log file exists at `.mad/logs/script-{id}-{YYYYMMDD-HHMMSS}.log` containing the output lines joined by newlines.\n\n**Behavior:** Kill propagation works.\n- Setting `status.kill_requested = True` propagates to the inner `_agent_status.kill_requested`, allowing the subprocess to be terminated.\n\n### 1.3 Server Client (`pipeline/server_client.py`)\n\n**Behavior:** `run_script` message dispatches to callback.\n- When a WebSocket message `{\"type\": \"run_script\", \"script_id\": \"deploy\", \"context\": \"hotfix\"}` is received, `on_run_script` is called with `(\"deploy\", \"hotfix\")`.\n\n**Behavior:** Missing callback is handled gracefully.\n- If `on_run_script` is None and a `run_script` message arrives, no error is raised.\n\n**Behavior:** `push_state()` includes scripts array.\n- When `scripts` parameter is provided, the state message contains a `scripts` key with an array of `{id, label, description, confirm}` objects.\n\n**Behavior:** `push_state()` includes script_status when running.\n- When `script_status` is provided and running, the state message contains `script_status` with `script_id`, `running`, `lines` (last 50), `started_at`, `finished_at`, `exit_code`.\n\n**Behavior:** Lines are truncated to last 50 in push_state.\n- If `script_status.lines` has 100 entries, only the last 50 are included in the state message.\n\n**Behavior:** No scripts or script_status when not provided.\n- When `scripts=None` and `script_status=None`, the state message does not contain these keys (or contains empty/null values).\n\n### 1.4 Go Server \u2014 API Endpoint (`server/api.go`)\n\n**Behavior:** POST `/api/clients/{id}/run-script` sends message to client.\n- Given a connected client, POST with `{\"script_id\": \"deploy\", \"context\": \"hotfix\"}` results in a `{\"type\": \"run_script\", \"script_id\": \"deploy\", \"context\": \"hotfix\"}` message being sent to the client's WebSocket.\n- Response is 200 with `{\"status\": \"ok\"}`.\n\n**Behavior:** Missing script_id returns 400.\n- POST with `{\"script_id\": \"\"}` or `{}` returns 400 with error message.\n\n**Behavior:** Non-POST method returns 405.\n- GET `/api/clients/{id}/run-script` returns 405.\n\n**Behavior:** Unauthenticated request is rejected.\n- POST without valid auth key returns 401/403.\n\n**Behavior:** Invalid JSON body returns 400.\n- POST with malformed body returns 400.\n\n### 1.5 Go Server \u2014 State Structs (`server/hub.go`)\n\n**Behavior:** ScriptInfo and ScriptState fields are parsed from state_update.\n- When a pipeline client sends a `state_update` message with `scripts` and `script_status` fields, these are correctly parsed into `ClientState.Scripts` and `ClientState.ScriptStatus`.\n\n**Behavior:** ScriptStatus with exit_code null is handled.\n- When `script_status.exit_code` is null in JSON, `ScriptState.ExitCode` is nil (pointer type).\n\n**Behavior:** Missing scripts field results in empty/nil.\n- A `state_update` without `scripts` or `script_status` fields leaves those ClientState fields as their zero values.\n\n### 1.6 TUI Integration (`pipeline/tui.py`)\n\n**Behavior:** Scripts are loaded at startup.\n- `PipelineApp._scripts` is populated from `.mad/scripts.json` during initialization.\n\n**Behavior:** \"S\" keybinding opens RunScriptModal.\n- Pressing S (or configured key) when scripts are configured opens the modal with script options.\n\n**Behavior:** No-scripts notification.\n- If no scripts are configured, pressing S shows a notification \"No scripts configured\".\n\n**Behavior:** Already-running guard.\n- If a script is already running, pressing S shows \"A script is already running\" instead of opening the modal.\n\n**Behavior:** RunScriptModal shows all scripts.\n- The modal's Select dropdown contains all loaded scripts with their labels.\n\n**Behavior:** Confirmation dialog shown when confirm=true.\n- Selecting a script with `confirm=true` and clicking Run shows a confirmation dialog before execution.\n\n**Behavior:** No confirmation when confirm=false.\n- Selecting a script with `confirm=false` and clicking Run starts execution immediately.\n\n**Behavior:** Cancel dismisses modal.\n- Clicking Cancel or pressing Escape dismisses the modal without running anything.\n\n**Behavior:** Script status is pushed to server.\n- While a script is running, `_push_to_server()` includes `scripts` and `script_status` in the state pushed to the server.\n\n**Behavior:** WebUI-triggered scripts skip TUI confirmation.\n- When `_handle_run_script` is called from server callback, the script runs directly without TUI confirmation (WebUI has its own confirmation).\n\n**Behavior:** Kill action terminates running script.\n- When a script is running, the kill action sets `kill_requested=True` on the script status, which propagates to the agent subprocess.\n\n### 1.7 WebUI (`server/templates/client.html`)\n\n**Behavior:** Scripts section is visible when scripts exist.\n- When state includes non-empty `scripts` array, the scripts section is displayed.\n\n**Behavior:** Scripts section is hidden when no scripts.\n- When state has no `scripts` or empty array, the scripts section is hidden.\n\n**Behavior:** Run button triggers API call.\n- Clicking Run on a script card sends POST to `/api/clients/{id}/run-script` with the script_id and optional context.\n\n**Behavior:** Confirmation prompt shown for confirm=true scripts.\n- When a script has `confirm=true`, a browser confirm dialog appears before the API call.\n\n**Behavior:** Context prompt is shown.\n- Before running, a prompt dialog asks for optional additional context.\n\n**Behavior:** Running script disables buttons.\n- While `script_status.running` is true, all Run buttons are disabled.\n\n**Behavior:** Live output displayed during execution.\n- When `script_status` is present and running, the output modal shows the last lines with auto-scroll.\n\n**Behavior:** Status indicator shows correct state.\n- Running: shows \"Running...\"\n- Completed (exit_code 0): shows \"Completed\"\n- Failed (exit_code != 0): shows \"Failed\"\n\n---\n\n## 2. Edge Cases\n\n### 2.1 Empty/Null Inputs\n- `scripts.json` is an empty array `[]` \u2014 returns empty list, no errors.\n- `scripts.json` contains `null` \u2014 handles gracefully (returns empty list or logs warning).\n- `scripts.json` is not valid JSON \u2014 logs error, returns empty list.\n- Script entry has `\"description\": null` \u2014 treated as empty string.\n- Script entry has `\"model\": \"\"` \u2014 treated as no model override (empty string = no override).\n- Context passed to `run_script()` is empty string \u2014 no context section in prompt.\n- Context passed to `run_script()` is None \u2014 no context section in prompt.\n\n### 2.2 Boundary Conditions\n- Script with very long command string (10K+ chars) \u2014 should work, passed through to agent.\n- Script ID at edge of valid pattern: single char `\"a\"`, very long `\"a-b-c-d-e-f-g-h-i-j\"` \u2014 both accepted.\n- 50+ scripts in `scripts.json` \u2014 all loaded, all shown in modal/WebUI.\n- `status.lines` with exactly 50 entries \u2014 all 50 sent in push_state.\n- `status.lines` with 51 entries \u2014 only last 50 sent.\n- `status.lines` empty \u2014 empty array sent.\n\n### 2.3 Invalid States\n- `scripts.json` exists but is not an array (e.g., object `{}`) \u2014 handles gracefully.\n- Agent name in script.agent doesn't exist in config.agents \u2014 appropriate error raised/handled.\n- Client ID in run-script API doesn't exist \u2014 message send fails gracefully (no crash).\n- Client disconnects while script is running \u2014 script continues to completion, status is preserved.\n\n### 2.4 Concurrent Operations\n- Running a script while a plan/implement agent is also running \u2014 both should coexist.\n- Two rapid run-script API calls \u2014 second should be rejected (already running guard).\n- Push state while script is running and lines are being appended \u2014 thread-safe read of lines list.\n- Kill requested while script output is being streamed \u2014 kill propagates, script terminates.\n\n### 2.5 Error Conditions\n- `runner.headless()` throws exception \u2014 caught, exit_code=1, error in lines, model restored.\n- `.mad/logs/` directory doesn't exist \u2014 created by `_save_script_log()` (mkdir exist_ok).\n- Log file write fails (permissions) \u2014 should not crash the application.\n- WebSocket disconnected when run_script message arrives \u2014 handled gracefully.\n- `scripts.json` has BOM or unusual encoding \u2014 handled or fails gracefully.\n\n---\n\n## 3. What Constitutes Failure\n\n### 3.1 Script Loading Failures\n- FAIL: `load_scripts()` raises an unhandled exception for any malformed input.\n- FAIL: Valid entries are not loaded because an invalid entry earlier in the list caused a crash.\n- FAIL: Duplicate ID entries are both loaded instead of the second being skipped.\n- FAIL: An entry with invalid ID format (e.g., containing underscores or spaces) is accepted.\n\n### 3.2 Script Execution Failures\n- FAIL: `status.running` remains True after `run_script()` returns.\n- FAIL: `agent_config.model` is not restored after an exception during execution.\n- FAIL: `status.started_at` or `status.finished_at` is not set after execution.\n- FAIL: Log file is not written after execution.\n- FAIL: `run_script()` raises an unhandled exception to the caller (should always return 0 or 1).\n\n### 3.3 Server Failures\n- FAIL: POST to `/api/clients/{id}/run-script` returns 500 for valid input.\n- FAIL: State update with `scripts`/`script_status` causes server crash or JSON parse error.\n- FAIL: `ScriptState.ExitCode` cannot represent null (must be pointer type).\n\n### 3.4 TUI Failures\n- FAIL: Pressing S when no scripts configured causes crash instead of showing notification.\n- FAIL: RunScriptModal doesn't dismiss on Cancel or Escape.\n- FAIL: Two scripts can run simultaneously (missing already-running guard).\n- FAIL: Script status is not included in push_state during execution.\n\n### 3.5 WebUI Failures\n- FAIL: Scripts section appears when there are no scripts.\n- FAIL: Run button still active while a script is running.\n- FAIL: XSS vulnerability via script label or description (must be escaped in HTML rendering).\n- FAIL: API call missing auth key.\n\n### 3.6 Integration Failures\n- FAIL: Full flow (WebUI click \u2192 API \u2192 WebSocket \u2192 Python callback \u2192 execution \u2192 status push \u2192 WebUI display) doesn't complete end-to-end.\n- FAIL: Script output lines are never visible in WebUI during execution.\n- FAIL: Kill from TUI doesn't terminate the running script agent.\n\n---\n\n## 4. Out of Scope\n\n- **Visual/UI assertions:** Exact styling, colors, layout positioning, CSS classes of script cards or modals.\n- **Performance benchmarks:** How fast scripts load, execute, or how quickly output streams.\n- **UI timing:** Exact timing of HTMX/WebSocket polling intervals, animation durations.\n- **Agent behavior:** Whether the AI agent actually executes the command correctly \u2014 only that the agent is invoked with the right prompt.\n- **Script content:** Testing specific shell commands or their outcomes \u2014 only that the execution framework works.\n- **Auto-triggering:** Scripts triggered by stage transitions (explicitly out of scope per plan).\n- **WebUI script editing:** Editing scripts.json from the browser (out of scope per plan).\n- **Script scheduling/cron:** Timed or periodic script execution.\n- **Per-board scoping:** Scripts scoped to specific boards.\n- **Script dependencies/chaining:** Running scripts in sequence or with dependencies.\n- **Browser compatibility:** Testing across different browsers or browser versions.\n- **Load testing:** Multiple simultaneous WebUI users triggering scripts.\n- **File system permissions:** Testing with read-only `.mad/` directories (beyond basic error handling).\n- **Agent model availability:** Whether the specified model actually exists or is accessible.",
+  "impl_notes": "Implemented the concept of scripts/actions feature. Scripts can be defined in .mad/scripts.json and executed via AI agent from TUI or WebUI. Fixed the bug in hub.go to clear ScriptStatus when absent in state_update messages to prevent stale 'Running...' state in WebUI after script completion. All 29 script tests pass. Go server builds successfully.",
+  "history": [
+    {
+      "ts": "2026-03-08T01:33Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-08T05:11Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-08T05:12Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T05:13Z",
+      "stage": "PLANNING",
+      "note": "Questions raised via claude"
+    },
+    {
+      "ts": "2026-03-08T05:29Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T05:33Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-08T05:33Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-08T05:36Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T05:36Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Key issues to address:\n\nStreaming implementation unclear: The plan says 'Use AgentRunner.headless() pattern but with streaming', but headless() blocks until completion and returns stdout. Need to specify whether to use subprocess with real-time stdout capture, or a different approach entirely.\n\nPrompt template formatting: The run-script.md template has an unclosed fenced code block - the \n\nMissing timeout handling: No specification for how long a script can run, or what happens on timeout.\n\nMissing client disconnection handling: If the MAD client disconnects (network issue, user closes app) while a script is running, what happens? Should scripts be cancellable remotely?\n\nSecurity considerations: Running arbitrary shell commands via AI agent is risky. The plan should include:\n   - Warning about the security implications in documentation\n   - Option to restrict which commands can be run\n   - Audit logging of script executions\n\nEdge cases not addressed:\n   - What if working_dir doesn't exist or isn't accessible?\n   - What if the specified agent/model isn't available in the config?\n   - What if scripts.json is malformed JSON?\n\nMissing from Files to Modify: pipeline/state.py should be included since scripts may need to be included in state pushes (the plan mentions this but doesn't list it in the modification list).\n\nLog directory creation: Ensure .mad/logs directory is created before writing script logs (similar to how runner.py handles this)."
+    },
+    {
+      "ts": "2026-03-08T05:36Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T05:39Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-08T05:39Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-08T05:42Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T05:42Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Critical issues:\n\nServer message forwarding undefined (lines 243-244, 287): hub.go only handles 'register', 'state_update', and 'disconnect' messages - everything else is discarded (line 305-307). The plan says 'ensure run_script is forwarded' but doesn't specify HOW. Need to either add HTTP endpoint like '/api/clients/{id}/run-script' (similar to start_agent at api.go:643) or modify hub.go to forward WebUI messages to pipeline client. This requires identifying which client is the pipeline client vs WebUI.\n\nMissing label validation (line 57): Plan specifies 'label' as required (line 44) but load_scripts() validation section doesn't mention validating it. Add: 'if not entry.get(\"label\"): skip or warn'.\n\nThread safety not addressed (line 209): Plan mentions _script_status.kill_requested but doesn't address how this flag is safely communicated between Textual worker thread and main TUI thread. Textual's @work runs in separate thread - need explicit synchronization or verify Textual handles this safely.\n\nModel override unclear (line 119): 'If script.model is set, override the agent's model' - need to specify exactly how this override works in command construction (append --model flag with value).\n\nWebUI template unspecified (line 288): Plan says 'client_full.html (or equivalent active template)' but doesn't identify which template is actually served. Need to verify actual active template.\n\nMinor:\nLine 51: 'confirm' defaults to true but should default to false for safety\nLine 126: Only stdout monitored via select.select; stderr buffer could theoretically fill up and block (same pattern as runner.py:438, acceptable but worth noting)"
+    },
+    {
+      "ts": "2026-03-08T05:42Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T05:48Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-08T05:48Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-08T05:50Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-08T05:50Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-08T05:51Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-08T05:51Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-08T05:55Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T05:57Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T05:57Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T06:10Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T06:10Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T06:10Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T06:14Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T06:14Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T06:16Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T06:16Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T06:18Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T06:18Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T06:18Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T06:22Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T06:22Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T06:24Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T06:24Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T06:27Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T06:27Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T06:27Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T06:30Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T06:30Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T06:31Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T06:32Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T06:34Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T06:34Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T06:34Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T06:37Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T06:37Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T06:39Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T06:39Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T06:41Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T06:41Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T06:41Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T06:44Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T06:44Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T06:46Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T06:46Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T06:49Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T06:49Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T06:49Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T06:52Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T06:52Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T06:54Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T06:54Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T06:56Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T06:56Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T06:56Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T06:59Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T06:59Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T07:01Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T07:01Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T07:04Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:04Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T07:04Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T07:08Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:08Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T07:09Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T07:09Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T07:12Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:12Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T07:12Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T07:15Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:15Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T07:16Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T07:16Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T07:20Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:20Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T07:20Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T07:22Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:22Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T07:24Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T07:24Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T07:27Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:27Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T07:27Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T07:30Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:30Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T07:31Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T07:31Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T07:34Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:34Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T07:34Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T07:38Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:38Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T07:39Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T07:40Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T07:42Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:42Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T07:42Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T07:45Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:45Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T07:47Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T07:47Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T07:49Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:49Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T07:49Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T07:53Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:53Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T07:54Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T07:54Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T07:56Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:56Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T07:56Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T07:59Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T07:59Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T08:01Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T08:01Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T08:06Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T08:06Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T08:06Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T08:10Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-08T08:10Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T08:11Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T08:11Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T08:13Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T08:13Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T08:13Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T08:16Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T08:16Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T08:18Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T08:18Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T08:22Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T08:22Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T08:22Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T08:26Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T08:26Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T08:27Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-08T08:27Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-09T00:56Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-08T05:36Z",
+      "verdict": "FAIL",
+      "feedback": "Key issues to address:\n\nStreaming implementation unclear: The plan says 'Use AgentRunner.headless() pattern but with streaming', but headless() blocks until completion and returns stdout. Need to specify whether to use subprocess with real-time stdout capture, or a different approach entirely.\n\nPrompt template formatting: The run-script.md template has an unclosed fenced code block - the \n\nMissing timeout handling: No specification for how long a script can run, or what happens on timeout.\n\nMissing client disconnection handling: If the MAD client disconnects (network issue, user closes app) while a script is running, what happens? Should scripts be cancellable remotely?\n\nSecurity considerations: Running arbitrary shell commands via AI agent is risky. The plan should include:\n   - Warning about the security implications in documentation\n   - Option to restrict which commands can be run\n   - Audit logging of script executions\n\nEdge cases not addressed:\n   - What if working_dir doesn't exist or isn't accessible?\n   - What if the specified agent/model isn't available in the config?\n   - What if scripts.json is malformed JSON?\n\nMissing from Files to Modify: pipeline/state.py should be included since scripts may need to be included in state pushes (the plan mentions this but doesn't list it in the modification list).\n\nLog directory creation: Ensure .mad/logs directory is created before writing script logs (similar to how runner.py handles this)."
+    },
+    {
+      "ts": "2026-03-08T05:42Z",
+      "verdict": "FAIL",
+      "feedback": "Critical issues:\n\nServer message forwarding undefined (lines 243-244, 287): hub.go only handles 'register', 'state_update', and 'disconnect' messages - everything else is discarded (line 305-307). The plan says 'ensure run_script is forwarded' but doesn't specify HOW. Need to either add HTTP endpoint like '/api/clients/{id}/run-script' (similar to start_agent at api.go:643) or modify hub.go to forward WebUI messages to pipeline client. This requires identifying which client is the pipeline client vs WebUI.\n\nMissing label validation (line 57): Plan specifies 'label' as required (line 44) but load_scripts() validation section doesn't mention validating it. Add: 'if not entry.get(\"label\"): skip or warn'.\n\nThread safety not addressed (line 209): Plan mentions _script_status.kill_requested but doesn't address how this flag is safely communicated between Textual worker thread and main TUI thread. Textual's @work runs in separate thread - need explicit synchronization or verify Textual handles this safely.\n\nModel override unclear (line 119): 'If script.model is set, override the agent's model' - need to specify exactly how this override works in command construction (append --model flag with value).\n\nWebUI template unspecified (line 288): Plan says 'client_full.html (or equivalent active template)' but doesn't identify which template is actually served. Need to verify actual active template.\n\nMinor:\nLine 51: 'confirm' defaults to true but should default to false for safety\nLine 126: Only stdout monitored via select.select; stderr buffer could theoretically fill up and block (same pattern as runner.py:438, acceptable but worth noting)"
+    },
+    {
+      "ts": "2026-03-08T05:50Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-08T06:16Z",
+      "verdict": "FAIL",
+      "feedback": "CRITICAL: No tests exist for the scripts feature. Create test file(s) covering at minimum:\n   - load_scripts(): valid loading, missing file, required field validation, ID format validation, duplicate IDs, default values\n   - run_script(): success/failure paths, status lifecycle, model override/restore, prompt content, log file creation\n   - server_client: run_script message dispatch, push_state with scripts/script_status, lines truncation to 50\n\nMINOR: In _save_script_log() (scripts.py:167-173), wrap the file write in try/except to prevent crashes on permission errors:\n   \n\nThe implementation itself is solid - all plan items are correctly implemented across pipeline/scripts.py, server_client.py, tui.py, server/api.go, server/hub.go, and client.html."
+    },
+    {
+      "ts": "2026-03-08T06:24Z",
+      "verdict": "FAIL",
+      "feedback": "Critical Issues\n\nZERO Tests Exist\nThe test spec requires 50+ behaviors to be verified across load_scripts(), run_script(), server_client, Go server, TUI, and WebUI. No test files exist at all. This is the primary blocker.\n\nRequired test file: pipeline/test_scripts.py covering at minimum:\nload_scripts() with valid JSON, missing file, invalid JSON, missing required fields, invalid ID formats, duplicate IDs, optional field defaults\nrun_script() with successful execution (mocked runner), failed execution, status lifecycle, model override/restore, agent selection, prompt content, log file creation\nServer client run_script message dispatch and push_state script fields\n\n_save_script_log() Missing Error Handling\nIn pipeline/scripts.py:173, log_path.write_text() can raise OSError (e.g., permissions). The plan and test spec both call this out. Wrap in try/except:\n\nWebUI Doesn't Disable ALL Run Buttons When Script Running\nThe test spec (1.7) says 'While script_status.running is true, all Run buttons are disabled.' The current implementation only disables the button for the specific running script (line 500-506 in client.html). Other scripts' Run buttons remain enabled, which could trigger a second script execution. The TUI's exclusive worker would cancel the first script if this happens.\n\nFix: Change the isRunning check to also disable buttons for non-running scripts:\n\nMinor Issues\n\npush_state includes script_status even when not running\nThe plan says 'if script_status and script_status.running' but the implementation (server_client.py:203) only checks 'if script_status:' without checking .running. This means finished script status will be pushed until the TUI sets _script_status = None. This is actually fine in practice since the TUI nulls it in the finally block, but doesn't match the plan exactly.\n\nConfirmModal callback lambda issue\nIn RunScriptModal (tui.py:1000), the lambda 'lambda ok: self._handle_confirm(ok, script_id, context) if ok else None' - when ok=False, it returns None instead of calling _handle_confirm(False, ...). This means the confirmation dialog dismissal on 'No' doesn't propagate back. However, since _handle_confirm only acts on ok=True, the behavior is correct in practice - pressing No just leaves the RunScriptModal open, which is acceptable UX."
+    },
+    {
+      "ts": "2026-03-08T06:31Z",
+      "verdict": "FAIL",
+      "feedback": "Critical Issues\n\nNo Tests (Blocker)\nZero test files exist for this feature. The test spec requires 50+ behaviors to be verified including:\nScript loading/validation (load_scripts)\nScript execution lifecycle (run_script)\nServer client message handling\nGo API endpoint behavior\nHub state struct parsing\nTUI integration\nWebUI rendering\n\nCreate pipeline/test_scripts.py covering at minimum:\nload_scripts: valid file, missing file, invalid JSON, missing required fields, invalid ID format, duplicates, defaults\nrun_script: success path, failure path, status lifecycle, model override/restore, agent selection, prompt content, log file creation\nServerClient: run_script message dispatch, missing callback handling, push_state with scripts/script_status, lines truncation\n\n_save_script_log lacks error handling\nIn pipeline/scripts.py:173, log_path.write_text(...) has no try/except. If the write fails (e.g., permissions), the exception propagates from the finally block in run_script(), potentially crashing the caller. Wrap in try/except:\n\nWebUI doesn't disable ALL Run buttons during execution\nIn client.html renderScripts(), line 500: var isRunning = scriptStatus && scriptStatus.running && scriptStatus.script_id === s.id only disables the button for the specific script that's running. Per the test spec (1.7), ALL Run buttons should be disabled while any script is running. Fix:\n\nMinor Issues\n\nPrompt is shown before confirmation in WebUI\nIn runScript() (client.html:514-515), the context prompt dialog appears before the confirmation dialog. If a user enters context then clicks Cancel on the confirmation, they wasted effort. Consider swapping the order: confirm first, then prompt for context."
+    },
+    {
+      "ts": "2026-03-08T06:39Z",
+      "verdict": "FAIL",
+      "feedback": "Issues to Fix\n\nZERO Test Coverage (Critical)\nNo test files exist for this feature. The test spec requires 50+ behaviors to be verified across load_scripts(), run_script(), server_client message handling, push_state extensions, Go API endpoint, Go state structs, TUI integration, and WebUI. Create pipeline/test_scripts.py covering at minimum:\nload_scripts: valid config, missing file, required field validation, ID format validation, duplicate IDs, optional field defaults, confirm defaults\nrun_script: successful execution (mock runner.headless), failed execution, status lifecycle, model override + restore, model restore on exception, agent selection, prompt content, log file creation\nServerClient: run_script message dispatch, missing callback handling, push_state with scripts/script_status, lines truncation to 50\n\n_save_script_log Lacks Error Handling (Medium)\nIn pipeline/scripts.py:167-173, log_path.write_text() has no try/except. If the log directory has permission issues or disk is full, this will raise an unhandled exception from the finally block of run_script(), potentially masking the original return value. Wrap in try/except:\n\nWebUI: All Run Buttons Should Be Disabled While Any Script Runs (Low)\nIn client.html:500-506, isRunning checks scriptStatus.script_id === s.id, so only the running script's button is disabled. The test spec requires: 'While script_status.running is true, all Run buttons are disabled.' Change to:\n\nKeep isRunning only for the button label ('Running...' vs 'Run')."
+    },
+    {
+      "ts": "2026-03-08T06:46Z",
+      "verdict": "FAIL",
+      "feedback": "Issues to Fix\n\nZERO Test Coverage (Critical)\nNo test files exist for any script functionality. The test spec defines 50+ behaviors that MUST be verified across:\nload_scripts() validation (valid input, missing file, required fields, ID format, duplicates, defaults)\nrun_script() lifecycle (success/failure exit codes, status lifecycle, model override/restore, agent selection, prompt content, log file creation, kill propagation)\nServerClient (run_script message dispatch, missing callback, push_state with scripts/script_status, lines truncation)\nTUI integration (scripts loaded at startup, keybindings, already-running guard, modal behavior, confirmation flow)\n\nCreate a test file pipeline/test_scripts.py covering at minimum the load_scripts() and run_script() behaviors.\n\n_save_script_log Missing Error Handling (Bug)\nIn pipeline/scripts.py:173, log_path.write_text('\\n'.join(status.lines)) will crash on permission errors. Wrap in try/except:\n\nWebUI: Only Running Script's Button Disabled (Bug)\nIn client.html line ~500, isRunning checks scriptStatus.script_id === s.id, so only the currently running script's button is disabled. Per spec, ALL Run buttons should be disabled while any script is running. Fix:"
+    },
+    {
+      "ts": "2026-03-08T06:54Z",
+      "verdict": "FAIL",
+      "feedback": "Issues to Fix\n\nCRITICAL: No Tests Exist\nZero test files were created despite the test spec requiring 50+ behaviors to be verified. Create a test file pipeline/test_scripts.py covering at minimum:\nload_scripts(): valid loading, missing file, required field validation, ID format validation, duplicate IDs, optional field defaults, confirm defaults\nrun_script(): successful execution (exit 0), failed execution (exit 1), status lifecycle (running/started_at/finished_at), model override applied and restored, model restore on exception, agent selection, prompt contents, log file creation\nServer client: run_script message dispatch, missing callback handling, push_state scripts array, push_state script_status, lines truncation to 50\n\nBUG: _save_script_log crashes on permission errors (pipeline/scripts.py:167-173)\n_save_script_log() is called in the finally block of run_script(). If log_path.write_text() raises (e.g., permission denied), the exception propagates out of the finally block, masking the original return value and potentially crashing the caller.\n\nFix: Wrap _save_script_log body in try/except:\n\nBUG: WebUI only disables the running script's button (server/templates/client.html)\nThe renderScripts function checks scriptStatus.script_id === s.id to determine if a button should be disabled. Per the test spec, ALL Run buttons must be disabled while any script is running.\n\nFix: Change the isRunning variable to check if ANY script is running:\n\nThen use anyRunning for the disabled attribute and isThisRunning for the 'Running...' label."
+    },
+    {
+      "ts": "2026-03-08T07:01Z",
+      "verdict": "FAIL",
+      "feedback": "Issues to Fix\n\nCRITICAL: No Tests Exist\nThe test spec requires 50+ behaviors to be verified across load_scripts(), run_script(), server_client, API endpoints, TUI integration, and WebUI. Zero test files were created. Create pipeline/test_scripts.py covering at minimum:\nload_scripts: valid file, missing file, invalid JSON, required field validation, ID format validation, duplicate IDs, optional field defaults, confirm defaults\nrun_script: successful execution (mock runner.headless), failed execution (exception), status lifecycle (running/started_at/finished_at), model override applied and restored (including on exception), agent selection, prompt content, log file creation\nServerClient: run_script message dispatch, missing callback handling, push_state with scripts/script_status, lines truncation to 50\n\nBUG: _save_script_log crashes in finally block (pipeline/scripts.py:167-173)\n_save_script_log() is called from the finally block in run_script() (line 164). If log_path.write_text() raises (e.g., PermissionError), the exception propagates through the finally block, potentially masking the original exception and crashing the caller. The test spec explicitly states: \"Log file write fails (permissions) \u2014 should not crash the application.\"\n\nFix: Wrap the write in try/except:\n\nBUG: WebUI only disables running script's button (client.html:500)\nThe spec says \"While script_status.running is true, all Run buttons are disabled.\" But the implementation checks scriptStatus.script_id === s.id, only disabling the specific running script's button. Other scripts remain clickable.\n\nFix on line 500:\n\nThis disables ALL Run buttons while any script is running, matching the spec and the TUI's already-running guard."
+    },
+    {
+      "ts": "2026-03-08T07:09Z",
+      "verdict": "FAIL",
+      "feedback": "Issues to Fix\n\nZero Tests (Critical)\nNo test files exist. The test spec requires verification of 50+ behaviors across load_scripts(), run_script(), server_client message handling, push_state(), and edge cases. Create pipeline/test_scripts.py covering at minimum:\nload_scripts: valid config, missing file, required field validation, ID format validation, duplicate IDs, defaults\nrun_script: success/failure exit codes, status lifecycle, model override + restoration, agent selection, prompt content, log file creation\nServerClient: run_script message dispatch, missing callback handling, push_state with scripts/script_status, lines truncation to 50\n\n_save_script_log Crash in Finally Block (Bug)\nIn pipeline/scripts.py:167-173, _save_script_log is called from the finally block of run_script(). If log_path.write_text() raises (e.g., permission error), it will mask the original exception. Wrap the body in try/except:\n\nWebUI Button Disable Bug\nIn server/templates/client.html around line 500:\n\nThis only disables the button for the currently running script. Per the spec, ALL Run buttons should be disabled while any script is running. Fix:\n\nThen use anyRunning for the disabled attribute and isThisRunning for the 'Running...' label."
+    },
+    {
+      "ts": "2026-03-08T07:16Z",
+      "verdict": "FAIL",
+      "feedback": "Issues to Fix\n\nCRITICAL: No tests exist\nThe test spec requires verification of 50+ behaviors across load_scripts(), run_script(), server_client, Go server, TUI, and WebUI. Zero test files were created. At minimum, create pipeline/test_scripts.py covering:\nload_scripts() with valid/invalid/missing scripts.json\nRequired field validation (missing id, label, command)\nID format validation (reject underscores/spaces, accept alphanumeric+hyphens)\nDuplicate ID rejection\nOptional field defaults (confirm=True, model=None, agent=None)\nrun_script() success/failure paths with mocked AgentRunner\nStatus lifecycle (running, started_at, finished_at, exit_code)\nModel override applied and restored (including on exception)\nLog file creation\nserver_client run_script message dispatch\npush_state with scripts and script_status\n\n_save_script_log can crash in finally block (pipeline/scripts.py:173)\nlog_path.write_text() can raise on permission errors. Since this runs in the finally block of run_script(), an unhandled exception here would propagate up and mask the actual script result. Wrap in try/except:\n\nWebUI: Only the running script's button is disabled, not all buttons\nIn client.html line ~500, the isRunning check is:\n\nPer the test spec: 'While script_status.running is true, all Run buttons are disabled.' Change to:\n\nThen use anyRunning for the disabled attribute and isThisRunning for the 'Running...' label."
+    },
+    {
+      "ts": "2026-03-08T07:24Z",
+      "verdict": "FAIL",
+      "feedback": "Issues to Fix\n\nCRITICAL: Zero Tests\nNo test file exists for any of the 50+ behaviors specified in the test spec. Create pipeline/test_scripts.py covering at minimum:\nload_scripts(): valid loading, missing file, required field validation, ID format validation, duplicate IDs, optional field defaults, confirm defaults\nrun_script(): successful execution (exit 0), failed execution (exit 1), status lifecycle, model override/restore, model restore on exception, agent selection, prompt content, log file creation\nServer client: run_script message dispatch, missing callback handling, push_state with scripts/script_status, lines truncation to 50\n\n_save_script_log can crash in finally block\nIn scripts.py:164, _save_script_log() is called in the finally block of run_script(). If log_path.write_text() raises (e.g., permission error), the exception propagates up and can mask the original exception. Wrap the call in try/except:\n\nWebUI: Only running script button disabled, not all\nIn client.html, the isRunning check only disables the button for the specific running script:\n\nThe test spec (\u00a71.7) requires ALL Run buttons to be disabled while any script is running. Change to:\n\nAnd use anyRunning for the disabled attribute on all buttons."
+    },
+    {
+      "ts": "2026-03-08T07:31Z",
+      "verdict": "FAIL",
+      "feedback": "Issues to Fix\n\nCritical: No Tests\nThe test spec requires verification of 50+ behaviors across load_scripts(), run_script(), server_client message handling, Go API endpoint, TUI integration, and WebUI. Zero test files exist. Create tests covering at minimum:\nload_scripts() validation (valid input, missing fields, invalid IDs, duplicates, defaults)\nrun_script() lifecycle (success, failure, model override/restore, status transitions, log saving)\nServerClient run_script message dispatch\npush_state() with scripts and script_status\n\nBug: WebUI Button Disabling\nIn client.html line 500, isRunning checks scriptStatus.script_id === s.id, which only disables the specific running script's button. Per the test spec (\u00a71.7), ALL Run buttons should be disabled while any script is running. Fix:\n\nBug: _save_script_log Can Crash in Finally Block\nIn scripts.py line 164, _save_script_log() is called in the finally block of run_script(). If it raises (e.g., permission error on log_path.write_text()), it will mask the original exception. Wrap in try/except:\n\nMinor: push_state sends script_status even when not running\nPlan \u00a74.3 says if script_status and script_status.running, but implementation (server_client.py line 203) only checks if script_status:. This means finished/completed status is also sent. While arguably useful for showing completion in WebUI, it deviates from the plan. Consider whether this is intentional and document it."
+    },
+    {
+      "ts": "2026-03-08T07:39Z",
+      "verdict": "FAIL",
+      "feedback": "Critical Issues\n\nZero Test Coverage\nNo test files exist for any script functionality. The test spec requires verification of 50+ behaviors across load_scripts(), run_script(), server_client message handling, Go API endpoints, TUI integration, and WebUI. Create a test file (e.g., pipeline/test_scripts.py) covering at minimum:\nload_scripts() with valid/invalid/missing scripts.json\nRequired field validation (missing id, label, command)\nID format validation (rejects underscores/spaces, accepts alphanumeric+hyphens)\nDuplicate ID rejection\nOptional field defaults (confirm=True, description='', model=None, agent=None)\nrun_script() success/failure paths with mocked AgentRunner\nModel override applied and restored (including on exception)\nStatus lifecycle (running/started_at/finished_at set correctly)\nLog file creation\nServerClient run_script message dispatch\npush_state() with scripts and script_status\nLines truncation to last 50\n\nWebUI: Only Running Script Button Disabled\nIn client.html line ~500:\n\nThis only disables the button for the specific running script. Per spec, ALL Run buttons should be disabled while any script is running. Fix:\n\nAnd use anyRunning for the disabled check.\n\n_save_script_log Can Crash in Finally Block\nIn scripts.py line 164, _save_script_log() is called from the finally block of run_script() but has no try/except wrapper. If log_path.write_text() fails (e.g., permissions), it will:\nMask the original exception\nPropagate an unhandled exception to the caller\nViolate the spec that run_script() should always return 0 or 1\n\nWrap _save_script_log() call in try/except:"
+    },
+    {
+      "ts": "2026-03-08T07:47Z",
+      "verdict": "FAIL",
+      "feedback": "Issues to Fix\n\nCRITICAL: No tests exist\nThe test spec defines 50+ behaviors that MUST be verified, but no test file exists (e.g., pipeline/test_scripts.py). This is the primary blocker. At minimum, tests must cover:\nload_scripts(): valid loading, missing file, required field validation, ID format validation, duplicate IDs, optional field defaults, confirm defaults\nrun_script(): successful execution, failed execution, status lifecycle, model override/restore, agent selection, prompt content, log file saving\nserver_client.py: run_script message dispatch, missing callback handling, push_state with scripts/script_status, lines truncation to 50\n\nWebUI: Only the running script's button is disabled, not ALL buttons\nPer test spec 1.7: 'While script_status.running is true, all Run buttons are disabled.' The current code at client.html:500 only disables the specific running script's button (scriptStatus.script_id === s.id), not all script buttons. This allows users to trigger a second script while one is running.\n\nFix: Change line 500 from:\nvar isRunning = scriptStatus && scriptStatus.running && scriptStatus.script_id === s.id;\nto:\nvar isRunning = scriptStatus && scriptStatus.running;\n\n_save_script_log can crash in run_script's finally block\nIf log_path.write_text() fails (permissions, disk full), it will raise an exception inside the finally block of run_script(), potentially masking the original exception. Wrap _save_script_log body in try/except:\ntry:\n    ...\n    log_path.write_text('\\n'.join(status.lines))\nexcept Exception as e:\n    log.warning(f'Failed to save script log: {e}')\n\nMinor: push_state sends script_status even when not running\nPer plan 4.3: 'if script_status and script_status.running' - only send when running. The current server_client.py code (line 203) checks 'if script_status:' without checking .running, so it sends status even after script finishes. This is arguably better for showing completion status in WebUI, but deviates from the plan.\n\nPriority\nWrite comprehensive tests (BLOCKING)\nFix WebUI button disabling (BUG)\nAdd error handling to _save_script_log (BUG)\nClarify push_state behavior (MINOR)"
+    },
+    {
+      "ts": "2026-03-08T07:54Z",
+      "verdict": "FAIL",
+      "feedback": "THREE issues must be fixed:\n\nCRITICAL \u2014 ZERO TESTS: No test file exists for the scripts feature. The test spec requires verification of 50+ behaviors across:\n   - load_scripts(): valid loading, missing file, field validation, ID format, duplicates, defaults\n   - run_script(): exit codes, status lifecycle, model override/restore, agent selection, prompt content, log file creation\n   - server_client.py: run_script message dispatch, missing callback, push_state with scripts/script_status, lines truncation to 50\n   - TUI: scripts loaded at startup, keybinding, modal, confirmation, already-running guard, kill action\n   Create pipeline/test_scripts.py covering at minimum: load_scripts (7 test cases), run_script (8 test cases), server_client message handling (4 test cases).\n\nWebUI button disabling (server/templates/client.html line 500-506): Currently var isRunning = scriptStatus && scriptStatus.running && scriptStatus.script_id === s.id only disables the button for the specific running script. The test spec \u00a71.7 requires 'While script_status.running is true, all Run buttons are disabled.' Fix: change to var isRunning = scriptStatus && scriptStatus.running; so ALL run buttons are disabled when any script is running.\n\n_save_script_log crash risk (pipeline/scripts.py line 164-173): _save_script_log() is called in the finally block of run_script(). If log_path.write_text() raises (e.g., permissions error), the exception propagates from the finally block, masking the original exception and potentially crashing the caller. Wrap the body of _save_script_log in a try/except that logs the error, e.g.:"
+    },
+    {
+      "ts": "2026-03-08T08:01Z",
+      "verdict": "FAIL",
+      "feedback": "Critical Issues\n\nNo Tests Exist\nThe test spec defines 50+ behaviors that MUST be verified, but zero test files exist for scripts. At minimum, tests are needed for:\nload_scripts(): valid loading, missing file, required field validation, ID format validation, duplicate IDs, default values\nrun_script(): success/failure exit codes, status lifecycle, model override and restoration, agent selection, prompt content, log file saving\nserver_client.py: run_script message dispatch, missing callback handling, push_state with scripts/script_status, lines truncation to 50\nTUI: scripts loaded at startup, S keybinding behavior, already-running guard, kill action\n\nWebUI: Not All Buttons Disabled During Script Execution\nIn client.html line 500, isRunning only checks scriptStatus.script_id === s.id, so only the running script's button is disabled. Per test spec 1.7: 'While script_status.running is true, all Run buttons are disabled.' Fix: use scriptStatus && scriptStatus.running for ALL buttons.\n\n_save_script_log Can Crash in Finally Block\nIn scripts.py line 164, _save_script_log is called in the finally block. If log_path.write_text() fails (permissions), it raises an exception that masks the original. Wrap in try/except.\n\nMinor Issues\n\npush_state Sends script_status Even When Not Running\nIn server_client.py line 203, 'if script_status:' sends status even when finished (running=False). Plan specifies 'if script_status and script_status.running:'. Stale finished state may linger.\n\nrun_script is synchronous, not async\nPlan defines 'async def run_script(...)' but implementation uses synchronous 'def run_script(...)'. Works due to @work(thread=True) but diverges from plan."
+    },
+    {
+      "ts": "2026-03-08T08:11Z",
+      "verdict": "FAIL",
+      "feedback": "Bug: Stale ScriptStatus in hub.go\n\nIn server/hub.go lines 323-330, when a state_update message does NOT include a script_status key (which happens after a script finishes, since server_client.py:203 only sends it when script_status.running is True), the server never clears client.state.ScriptStatus. This means the WebUI will continue showing the last running state forever after a script completes.\n\nFix option A (hub.go): Add an else clause to clear ScriptStatus when the key is absent:\n\nFix option B (server_client.py): Always send script_status in push_state \u2014 send null/finished state when not running, so the server always receives the field."
+    },
+    {
+      "ts": "2026-03-08T08:18Z",
+      "verdict": "FAIL",
+      "feedback": "Bug: Stale ScriptStatus in hub.go\n\nThe state_update handler in hub.go (lines 323-329) only enters the script_status block when the key is present in the JSON message. But server_client.py (line 203) only includes script_status in the message when script_status and script_status.running is true:\n\nAfter a script finishes, tui.py:2647 sets self._script_status = None, so subsequent push_state() calls don't include the script_status key at all. The hub's ClientState.ScriptStatus retains the old value with Running: true, causing the WebUI to permanently show 'Running...' with disabled buttons after a script completes.\n\nFix (Go-side, recommended):\n\nIn hub.go's state_update handler, clear ScriptStatus when the key is absent:\n\nThis is defensive and ensures the server always reflects the latest state \u2014 absence of the field means 'no running script'."
+    },
+    {
+      "ts": "2026-03-08T08:27Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ],
+  "questions": [
+    {
+      "question": "Where should scripts be defined? Options: (a) in .mad/config.json under a new 'scripts' key, (b) in a separate .mad/scripts.json file, or (c) as actual shell script files in a .mad/scripts/ directory with metadata.",
+      "answer": "Option b, .mad/scripts.json"
+    },
+    {
+      "question": "Should scripts be scoped globally (available to all boards) or per-board? For example, a 'deploy' script might only apply to the 'mad' board.",
+      "answer": "I think they are project-scoped, so they can be available in all boards, I think.  Boards are just ways to organize ideas for a project."
+    },
+    {
+      "question": "Should scripts receive feature context when triggered? E.g., if you click 'deploy' on a specific feature, should the script receive the feature's title, slug, plan, etc. as environment variables or arguments?",
+      "answer": "I don't think we will be deploying a specific feature.  I think that we should be allowed to provide context though, optionally, and I would like it to be an agent that actually runs the script so that it can work through issues that arise as well.  If the agent needs more context, it can read it in as needed."
+    },
+    {
+      "question": "Should scripts only be triggerable manually from the WebUI, or should there also be an option to auto-trigger scripts on stage transitions (e.g., automatically deploy when a feature reaches 'done')?",
+      "answer": "For now, let's only do it manually from the python TUI or from the webui.  We may want to do things automatically, eventually, but not yet."
+    },
+    {
+      "question": "What level of output feedback do you want in the WebUI? Options: (a) just success/failure status, (b) full streaming output visible in real-time, or (c) output captured and viewable after completion (like the existing log ring buffer).",
+      "answer": "Streaming output in real time would be great!  But we should capture the output in a log file as well."
+    },
+    {
+      "question": "Should there be any safety controls? E.g., a confirmation dialog in the WebUI before running a script, or a whitelist of allowed scripts that can't be modified from the WebUI (only from config files on the local machine).",
+      "answer": "Confirmation in the webui is good.  No scripts should be modifiable via the webui, just executable.  Probably prompt for additional context to provide to the AI agent as well."
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-08T00:26:18.783741",
+    "verdict": "FAIL",
+    "results": {
+      "passed": 29,
+      "failed": 4,
+      "errors": 0
+    },
+    "feedback": "Python test_scripts.py: All 29 tests passed - covers load_scripts() and run_script() functionality. Go tests: 4 failures (TestCreateIdeaMissingTitle, TestConcurrentStatePushes, TestAutoModeAuthWithAPIKey, TestAPIEndpointDashboardKeyWorksForIdeas) - these failures are unrelated to scripts feature (WebSocket closure issues). Missing test coverage: (1) Server client push_state with scripts/script_status, (2) Go server run-script API endpoint, (3) Go server state structs parsing for scripts, (4) TUI integration (RunScriptModal, keybindings), (5) WebUI scripts feature. The implementation exists but lacks integration tests at these boundaries."
+  }
+}

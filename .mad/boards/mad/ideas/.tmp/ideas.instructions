@@ -1,12 +1,12 @@
 Code Path: /home/paule/MAD
 Context File: /home/paule/MAD/.mad/CONTEXT.md
 
-**Feature Iteration: kill-hung-agent**
+**Feature Iteration: Add indicator in TUI for actively-worked items**
 
-The feature file is at: `kill-hung-agent.json`
+The feature file is at: `add-indicator-in-tui-for-actively-worked-items.json`
 
 **Current Description:**
-Need a way to kill a hung agent (ideally, restart it) that has not done anything.  Ideally, we have some sort of indicator in the agent field in the TUI that shows the last time it logged something so we can tell.
+Add an indicator in the TUI (and webui?) for the items that an agent is actively working on, if we track that in some way.
 
 **Current Plan:**
 (no plan yet)

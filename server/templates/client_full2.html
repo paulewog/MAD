@@ -102,6 +102,19 @@
             margin-bottom: 0.25rem;
             word-break: break-word;
         }
+        .item-type-badge {
+            padding: 0 4px;
+            border-radius: 3px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            margin-left: 0.25rem;
+            color: white;
+            text-transform: uppercase;
+        }
+        .item-type-feature { background: #238636; }
+        .item-type-bug { background: #f85149; }
+        .item-type-enhancement { background: #1f6feb; }
+        .item-type-task { background: #8957e5; }
         .feature-card .meta {
             color: #484f58;
             font-size: 0.7rem;
@@ -242,11 +255,48 @@
                 <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Description</label>
                 <textarea id="new-idea-description" placeholder="Optional description" rows="3" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit;resize:vertical"></textarea>
             </div>
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Done Script (optional)</label>
+                <select id="new-idea-done-script" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
+                    <option value="">(none)</option>
+                </select>
+            </div>
             <div style="display:flex;gap:0.5rem;justify-content:flex-end">
                 <button onclick="closeNewIdeaModal()" style="padding:0.5rem 1rem;background:#30363d;color:#c9d1d9;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-family:inherit">Cancel</button>
                 <button onclick="submitNewIdea()" id="submit-idea-btn" style="padding:0.5rem 1rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-family:inherit">Create Idea</button>
             </div>
             <div id="new-idea-feedback" style="margin-top:0.75rem;font-size:0.85rem"></div>
+        </div>
+    </div>
+    <!-- Edit Feature Modal -->
+    <div class="modal-overlay" id="edit-modal" onclick="closeEditModal(event)">
+        <div class="modal" onclick="event.stopPropagation()" style="max-width:500px">
+            <h3 style="color:#58a6ff;font-size:1rem;margin-bottom:1rem">Edit Feature</h3>
+            <input type="hidden" id="edit-feature-id">
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Title</label>
+                <input type="text" id="edit-title" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
+            </div>
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Type</label>
+                <div style="display:flex;gap:1rem">
+                    <label style="color:#c9d1d9;font-size:0.85rem;cursor:pointer"><input type="radio" name="edit-type" value="feature" style="margin-right:0.3rem">Feature</label>
+                    <label style="color:#c9d1d9;font-size:0.85rem;cursor:pointer"><input type="radio" name="edit-type" value="bug" style="margin-right:0.3rem">Bug</label>
+                </div>
+            </div>
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Description</label>
+                <textarea id="edit-description" rows="5" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit;resize:vertical"></textarea>
+            </div>
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Done Script</label>
+                <input type="text" id="edit-done-script" placeholder="Optional script to run when done" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
+            </div>
+            <div style="display:flex;gap:0.5rem;justify-content:flex-end">
+                <button onclick="closeEditModal()" style="padding:0.5rem 1rem;background:#30363d;color:#c9d1d9;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-family:inherit">Cancel</button>
+                <button onclick="saveEdits()" id="save-edit-btn" style="padding:0.5rem 1rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-family:inherit">Save</button>
+            </div>
+            <div id="edit-feedback" style="margin-top:0.75rem;font-size:0.85rem"></div>
         </div>
     </div>
     <h2>Logs</h2>
@@ -304,7 +354,9 @@
                                 card.getAttribute('data-description'),
                                 card.getAttribute('data-history'),
                                 card.getAttribute('data-questions') || '',
-                                card.getAttribute('data-available-actions') || ''].join('|');
+                                card.getAttribute('data-available-actions') || '',
+                                card.getAttribute('data-type') || '',
+                                card.getAttribute('data-done-script') || ''].join('|');
                     }
                     // Quick check: same number of cards with same hashes?
                     var same = curStageCards.length === newCards.length;
@@ -410,17 +462,21 @@
             }
             var detail = document.createElement('div');
             detail.className = 'feature-detail';
+            var doneScript = card.getAttribute('data-done-script') || '';
             var html =
                 '<div class="detail-row"><span class="detail-label">Title</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-title')) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Stage</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-stage')) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Board</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-board')) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-created')) + '</span></div>' +
-                '<div class="detail-row"><span class="detail-label">ID</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-id')) + '</span></div>';
+                '<div class="detail-row"><span class="detail-label">ID</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-id')) + '</span></div>' +
+                (doneScript ? '<div class="detail-row"><span class="detail-label">Done Script</span><span class="detail-value" style="color:#d2a8ff">' + escapeHtml(doneScript) + '</span></div>' : '');
             var description = card.getAttribute('data-description') || '';
-            if (description) {
+            // Decode any residual HTML entities that may have been baked into the stored data
+            var descriptionDecoded = decodeHtmlEntities(description);
+            if (descriptionDecoded) {
                 html += '<div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d">' +
                     '<div style="color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem">Description</div>' +
-                    '<div style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap">' + escapeHtml(description) + '</div></div>';
+                    '<div style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap">' + escapeHtml(descriptionDecoded) + '</div></div>';
             }
             try {
                 var history = JSON.parse(card.getAttribute('data-history') || '[]');
@@ -476,6 +532,11 @@
                     html += '</div>';
                 }
             } catch(e) {}
+            // Edit button
+            var fid = card.getAttribute('data-id');
+            html += '<div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d">' +
+                '<button onclick="event.stopPropagation();showEditModal(this.closest(\'.feature-detail\').previousElementSibling)" ' +
+                'style="padding:0.35rem 0.8rem;background:#30363d;color:#c9d1d9;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-family:inherit">Edit</button></div>';
             detail.innerHTML = html;
             card.after(detail);
         }
@@ -550,8 +611,25 @@
             document.getElementById('new-idea-title').value = '';
             document.getElementById('new-idea-board').value = '';
             document.getElementById('new-idea-description').value = '';
+            document.getElementById('new-idea-done-script').value = '';
             document.getElementById('new-idea-feedback').textContent = '';
+            var btn = document.getElementById('submit-idea-btn');
+            btn.disabled = false;
+            btn.textContent = 'Create Idea';
             document.getElementById('new-idea-title').focus();
+            fetchScriptsForNewIdea();
+        }
+        function fetchScriptsForNewIdea() {
+            var scriptSelect = document.getElementById('new-idea-done-script');
+            scriptSelect.innerHTML = '<option value="">(none)</option>';
+            fetch('/api/clients/' + encodeURIComponent(_clientID) + '/scripts?key=' + encodeURIComponent(_dashKey)).then(function(r) { return r.json(); }).then(function(scripts) {
+                scripts.forEach(function(s) {
+                    var opt = document.createElement('option');
+                    opt.value = s.id;
+                    opt.textContent = s.label;
+                    scriptSelect.appendChild(opt);
+                });
+            }).catch(function() {});
         }
         function closeNewIdeaModal(event) {
             if (!event || event.target === document.getElementById('new-idea-modal')) {
@@ -562,6 +640,7 @@
             var title = document.getElementById('new-idea-title').value.trim();
             var board = document.getElementById('new-idea-board').value.trim();
             var description = document.getElementById('new-idea-description').value.trim();
+            var doneScript = document.getElementById('new-idea-done-script').value;
             var feedback = document.getElementById('new-idea-feedback');
             var btn = document.getElementById('submit-idea-btn');
             if (!title) {
@@ -579,7 +658,7 @@
             fetch('/api/clients/' + encodeURIComponent(_clientID) + '/ideas?key=' + encodeURIComponent(_dashKey), {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({title: title, board: board, description: description})
+                body: JSON.stringify({title: title, board: board, description: description, done_script: doneScript})
             }).then(function(resp) {
                 return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
             }).then(function(result) {
@@ -604,6 +683,119 @@
                 btn.textContent = 'Create Idea';
             });
         }
+        function decodeHtmlEntities(text) {
+            var ta = document.createElement('textarea');
+            ta.innerHTML = text;
+            return ta.value;
+        }
+        var _editOriginals = {};
+        function showEditModal(card) {
+            var modal = document.getElementById('edit-modal');
+            document.getElementById('edit-feature-id').value = card.getAttribute('data-id');
+            var title = card.getAttribute('data-title') || '';
+            var type = card.getAttribute('data-type') || 'feature';
+            var description = decodeHtmlEntities(card.getAttribute('data-description') || '');
+            var doneScript = card.getAttribute('data-done-script') || '';
+            document.getElementById('edit-title').value = title;
+            document.getElementById('edit-description').value = description;
+            document.getElementById('edit-done-script').value = doneScript;
+            var radios = document.querySelectorAll('input[name="edit-type"]');
+            for (var i = 0; i < radios.length; i++) {
+                radios[i].checked = (radios[i].value === type);
+            }
+            _editOriginals = {title: title, type: type, description: description, doneScript: doneScript};
+            document.getElementById('edit-feedback').textContent = '';
+            var btn = document.getElementById('save-edit-btn');
+            btn.disabled = false;
+            btn.textContent = 'Save';
+            modal.classList.add('active');
+            document.getElementById('edit-title').focus();
+        }
+        function closeEditModal(event) {
+            if (!event || event.target === document.getElementById('edit-modal')) {
+                document.getElementById('edit-modal').classList.remove('active');
+            }
+        }
+        function saveEdits() {
+            var featureID = document.getElementById('edit-feature-id').value;
+            var title = document.getElementById('edit-title').value.trim();
+            var description = document.getElementById('edit-description').value;
+            var doneScript = document.getElementById('edit-done-script').value;
+            var type = 'feature';
+            var radios = document.querySelectorAll('input[name="edit-type"]');
+            for (var i = 0; i < radios.length; i++) {
+                if (radios[i].checked) { type = radios[i].value; break; }
+            }
+            var feedback = document.getElementById('edit-feedback');
+            var btn = document.getElementById('save-edit-btn');
+            if (!title) {
+                feedback.style.color = '#f85149';
+                feedback.textContent = 'Title is required';
+                return;
+            }
+            var baseURL = '/api/clients/' + encodeURIComponent(_clientID) + '/features/' + encodeURIComponent(featureID);
+            var keyParam = '?key=' + encodeURIComponent(_dashKey);
+            var promises = [];
+            if (title !== _editOriginals.title) {
+                promises.push(fetch(baseURL + '/edit-title' + keyParam, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({title: title})
+                }));
+            }
+            if (type !== _editOriginals.type) {
+                promises.push(fetch(baseURL + '/edit-type' + keyParam, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({item_type: type})
+                }));
+            }
+            if (description !== _editOriginals.description) {
+                promises.push(fetch(baseURL + '/edit-description' + keyParam, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({description: description})
+                }));
+            }
+            if (doneScript !== _editOriginals.doneScript) {
+                promises.push(fetch(baseURL + '/edit-done-script' + keyParam, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({done_script: doneScript})
+                }));
+            }
+            if (promises.length === 0) {
+                feedback.style.color = '#8b949e';
+                feedback.textContent = 'No changes to save';
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = 'Saving...';
+            Promise.all(promises).then(function(responses) {
+                var allOk = true;
+                var errors = [];
+                return Promise.all(responses.map(function(r) {
+                    if (!r.ok) allOk = false;
+                    return r.json().catch(function() { return {}; });
+                })).then(function(bodies) {
+                    if (allOk) {
+                        feedback.style.color = '#3fb950';
+                        feedback.textContent = 'Saved!';
+                        setTimeout(function() {
+                            closeEditModal();
+                            smartPollFeatures();
+                        }, 800);
+                    } else {
+                        var errMsgs = bodies.filter(function(b) { return b.error; }).map(function(b) { return b.error; });
+                        feedback.style.color = '#f85149';
+                        feedback.textContent = errMsgs.join('; ') || 'Failed to save some changes';
+                        btn.disabled = false;
+                        btn.textContent = 'Save';
+                    }
+                });
+            }).catch(function() {
+                feedback.style.color = '#f85149';
+                feedback.textContent = 'Network error';
+                btn.disabled = false;
+                btn.textContent = 'Save';
+            });
+        }
         function escapeHtml(text) {
             var div = document.createElement('div');
             div.textContent = text;
@@ -625,11 +817,13 @@
             data-board="{{.Board}}"
             data-created="{{.Created}}"
             data-id="{{.ID}}"
-            data-description="{{.Description}}"
+            data-description="{{escapeAttr .Description}}"
             data-history="{{toJSON .History}}"
             data-questions="{{toJSON .Questions}}"
-            data-available-actions="{{toJSON .AvailableActions}}">
-            <div class="title">{{.Title}}</div>
+            data-available-actions="{{toJSON .AvailableActions}}"
+            data-done-script="{{.DoneScript}}"
+            data-type="{{.ItemType}}">
+            <div class="title">{{.Title}}{{if and .ItemType (ne .ItemType "feature")}} <span class="item-type-badge item-type-{{.ItemType}}" aria-label="Item type: {{.ItemType}}">{{.ItemType}}</span>{{end}}{{if .DoneScript}} <span class="done-script-badge" style="background:#a855f7;color:white;padding:0 4px;border-radius:3px;font-size:0.7rem">Script</span>{{end}}</div>
             <div class="meta"><span>{{.Board}}</span><span>{{.Created}}</span></div>
         </div>{{end}}{{else}}<div class="empty-stage">No features in this stage</div>{{end}}
     </div>

@@ -2,6 +2,8 @@ You are a senior code reviewer tasked with critically evaluating an implementati
 
 ## Feature: {title}
 
+**Feature Data:** `{feature_file_path}`
+
 ### Original Plan:
 {plan}
 
@@ -16,6 +18,19 @@ You should have received test results from the verification phase. Analyze them 
 - Which tests passed? Which failed?
 - Are failures due to implementation bugs, test bugs, or mock issues?
 - If tests failed, provide specific feedback about what needs fixing
+
+---
+
+## Modifying Feature Files
+
+IMPORTANT: Use the `pipeline edit-feature` CLI to modify feature JSON files instead of direct JSON editing:
+
+- Read a field: `pipeline edit-feature <slug> get-field <field_name>`
+- Get field as JSON: `pipeline edit-feature <slug> get-field <field_name> --json`
+
+Available fields: title, description, plan, impl_spec, test_spec, impl_notes, type, design_ref, done_script, questions
+
+This prevents JSON corruption and ensures proper validation.
 
 ---
 
@@ -53,4 +68,5 @@ For each item below, explicitly assess and document your findings:
 
 Your output JSON must have:
 - "verdict": "PASS" or "FAIL"
-- "feedback": If FAIL, provide specific actionable feedback listing issues found. If PASS, use null.
+- "summary": A concise summary of your review findings (REQUIRED, 1-3 sentences, max 500 chars). On PASS, describe what was reviewed and why it passed. On FAIL, describe the main issues found.
+- "feedback": Detailed actionable feedback. If FAIL, provide specific issues to fix (required, non-empty). If PASS, use null.

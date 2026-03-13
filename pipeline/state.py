@@ -1,6 +1,8 @@
 """Feature file state management — JSON-based storage for feature data."""
 
 import json
+import logging
+import re
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -9,15 +11,21 @@ from typing import Any, List, Optional
 
 from config import Config
 
+logger = logging.getLogger("pipeline")
+
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
+MAX_HISTORY_NOTE_LENGTH = 100
+
 
 STAGES = [
-    "ideas", "plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing",
+    "ideas", "ideating", "plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing",
     "implementing", "testing", "review", "final-human-approval", "done", "rejected",
 ]
 
 STAGE_ACTIONS = {
     "plan": ["plan-inbox", "reviewing-plan", "requested-input", "approved"],
     "implement": ["approved", "spec-writing"],
+    "ideate": ["ideas"],
 }
 
 
@@ -98,6 +106,24 @@ class FeatureFile:
         self._data["design_ref"] = ref
         self._save()
 
+    @property
+    def done_script(self) -> str:
+        return self._data.get("done_script", "")
+
+    def set_done_script(self, script_id: str) -> None:
+        if script_id:
+            from scripts import load_scripts
+            config = Config()
+            scripts = load_scripts(config.mad_dir)
+            script = next((s for s in scripts if s.id == script_id), None)
+            if not script:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Done script '{script_id}' not found in scripts.json"
+                )
+        self._data["done_script"] = script_id or ""
+        self._save()
+
     # --- Field accessors ---
 
     @property
@@ -108,12 +134,34 @@ class FeatureFile:
         self._data["description"] = value
         self._save()
 
+    def set_title(self, new_title: str) -> None:
+        if not new_title.strip():
+            raise ValueError("Title cannot be empty")
+        self._data["title"] = new_title
+        self._save()
+        self.add_history(self.current_stage.upper(), "Title edited")
+
+    def set_item_type(self, new_type: str) -> None:
+        if new_type not in ("feature", "bug"):
+            raise ValueError('Type must be "feature" or "bug"')
+        self._data["type"] = new_type
+        self._save()
+        self.add_history(self.current_stage.upper(), "Type edited")
+
     @property
     def plan(self) -> str:
         return self._data.get("plan", "")
 
     def set_plan(self, value: str) -> None:
         self._data["plan"] = value
+        self._save()
+
+    @property
+    def plan_exploration_summary(self) -> str:
+        return self._data.get("plan_exploration_summary", "")
+
+    def set_plan_exploration_summary(self, value: str) -> None:
+        self._data["plan_exploration_summary"] = value
         self._save()
 
     @property
@@ -141,6 +189,24 @@ class FeatureFile:
         self._save()
 
     @property
+    def ideation_summaries(self) -> list:
+        return self._data.get("ideation_summaries", [])
+
+    def add_ideation_summary(self, summary: str) -> None:
+        if "ideation_summaries" not in self._data:
+            self._data["ideation_summaries"] = []
+        self._data["ideation_summaries"].append(summary)
+        self._save()
+
+    @property
+    def Ideation(self) -> str:
+        return self._data.get("Ideation", "")
+
+    def set_Ideation(self, value: str) -> None:
+        self._data["Ideation"] = value
+        self._save()
+
+    @property
     def test_results(self) -> dict:
         return self._data.get("test_results", {})
 
@@ -156,25 +222,27 @@ class FeatureFile:
     def impl_reviews(self) -> list:
         return self._data.get("impl_reviews", [])
 
-    def add_plan_review(self, verdict: str, feedback: str) -> None:
+    def add_plan_review(self, verdict: str, summary: str, feedback: str | None) -> None:
         normalized = "PASS" if verdict and verdict.upper() == "PASS" else "FAIL"
         if "plan_reviews" not in self._data:
             self._data["plan_reviews"] = []
         self._data["plan_reviews"].append({
             "ts": _now_iso(),
             "verdict": normalized,
-            "feedback": feedback if feedback else "",
+            "summary": summary,
+            "feedback": feedback if feedback else None,
         })
         self._save()
 
-    def add_impl_review(self, verdict: str, feedback: str) -> None:
+    def add_impl_review(self, verdict: str, summary: str, feedback: str | None) -> None:
         normalized = "PASS" if verdict and verdict.upper() == "PASS" else "FAIL"
         if "impl_reviews" not in self._data:
             self._data["impl_reviews"] = []
         self._data["impl_reviews"].append({
             "ts": _now_iso(),
             "verdict": normalized,
-            "feedback": feedback if feedback else "",
+            "summary": summary,
+            "feedback": feedback if feedback else None,
         })
         self._save()
 
@@ -240,10 +308,14 @@ class FeatureFile:
         ts = _now_iso()
         if "history" not in self._data:
             self._data["history"] = []
+        # Strip ANSI escape codes and truncate
+        clean_note = _ANSI_RE.sub('', note).strip()
+        if len(clean_note) > MAX_HISTORY_NOTE_LENGTH:
+            clean_note = clean_note[:MAX_HISTORY_NOTE_LENGTH - 3] + "..."
         self._data["history"].append({
             "ts": ts,
             "stage": stage.upper(),
-            "note": note,
+            "note": clean_note,
         })
         self._save()
 
@@ -327,11 +399,12 @@ class FeatureFile:
     # --- Static finders ---
 
     @staticmethod
-    def create(board: str, title: str, description: str = "", item_type: str = "feature") -> "FeatureFile":
+    def create(board: str, title: str, description: str = "", item_type: str = "feature", done_script: str = "") -> "FeatureFile":
         """Create a new feature file in the board's ideas stage.
 
         Args:
             item_type: "feature" (default) or "bug"
+            done_script: Script ID to run when item is completed (optional)
         """
         config = Config()
         slug = _slugify(title)
@@ -347,10 +420,14 @@ class FeatureFile:
             "type": item_type,
             "created": _now_iso(),
             "description": description or "No description provided.",
+            "done_script": done_script,
             "plan": "",
+            "plan_exploration_summary": "",
             "impl_spec": "",
             "test_spec": "",
             "impl_notes": "",
+            "ideation_summaries": [],
+            "Ideation": "",
             "history": [
                 {"ts": _now_iso(), "stage": "IDEAS", "note": "Idea created"}
             ],
@@ -403,7 +480,8 @@ class FeatureFile:
                 for json_file in sorted(stage_dir.glob("*.json")):
                     try:
                         results.append(FeatureFile(json_file))
-                    except Exception:
+                    except (json.JSONDecodeError, KeyError, ValueError, PermissionError, OSError) as e:
+                        logger.error(f"Failed to load feature file {json_file}: {e}")
                         continue
 
         return results

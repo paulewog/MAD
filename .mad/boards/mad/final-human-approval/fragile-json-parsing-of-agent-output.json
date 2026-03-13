@@ -1,0 +1,136 @@
+{
+  "id": "a1b2c301",
+  "board": "mad",
+  "title": "Fragile JSON parsing of agent output",
+  "type": "bug",
+  "created": "2026-03-08T06:00Z",
+  "description": "phases.py uses regex fallback to extract JSON from agent output when json.loads fails. The regex fails on deeply nested structures and can extract malformed partial JSON. There is no schema validation on the parsed result either. Solution: Use json5 for relaxed parsing and jsonschema for validation against expected output schemas.",
+  "plan": "## Root Cause Analysis\n\nThe issue is in the `_parse_json_output()` and `_parse_verdict()` functions in `phases.py`. When `json.loads()` fails, the code falls back to a fragile regex pattern `r'\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}'` that has critical limitations:\n\n- **Poor nesting support**: Only handles simple one-level nesting \n- **No escape handling**: Fails on JSON strings containing escaped braces\n- **No validation**: Can extract incomplete/malformed JSON fragments\n- **Greedy matching**: May capture wrong JSON blocks in mixed content\n\n## Bug Fix Implementation Plan\n\n### 1. Add Dependencies\n- Add `json5>=0.9.0` to `pipeline/requirements.txt` for relaxed JSON parsing\n- Add `jsonschema>=4.0.0` for output validation against expected schemas\n\n### 2. Improve JSON Parsing Functions\nReplace fragile regex fallback in `_parse_json_output()` and `_parse_verdict()` with:\n\n**Primary**: `json5.loads()` for relaxed parsing (handles trailing commas, comments, etc.)\n**Fallback**: Improved regex that handles nested structures better\n**Validation**: Use `jsonschema` to validate extracted data against expected schemas\n\n### 3. Enhanced Parsing Logic\n```python\ndef _parse_json_output_robust(output: str, field: str, schema: dict = None):\n    # 1. Try standard JSON parsing\n    # 2. Try json5 for relaxed parsing\n    # 3. Improved regex fallback for mixed content\n    # 4. Schema validation of extracted data\n    # 5. Detailed error logging with context\n```\n\n### 4. Add Schema Validation\n- Define JSON schemas for each phase's expected output structure using the existing `output_schema` from `PHASE_CONFIG`\n- Validate parsed results before returning them\n- Provide helpful error messages when validation fails\n\n### 5. Enhanced Error Handling\n- Log specific parsing failures with context (agent, phase, output snippet)\n- Preserve original agent output for debugging\n- Graceful degradation when all parsing attempts fail\n\n### 6. Testing & Verification\n- Add test cases for deeply nested JSON structures  \n- Test edge cases: mixed content, escaped braces, malformed JSON\n- Verify schema validation catches invalid outputs\n- Ensure existing functionality remains intact\n- Confirm complex agent outputs now parse successfully\n\n### 7. Implementation Files\n- `pipeline/phases.py`: Update `_parse_json_output()` and `_parse_verdict()` functions\n- `pipeline/requirements.txt`: Add json5 and jsonschema dependencies\n- `pipeline/test_json_parsing.py`: Add comprehensive test coverage\n\nThis approach will make JSON parsing much more robust while maintaining backward compatibility and adding proper validation to catch schema violations early.",
+  "impl_spec": "## Implementation Spec: Fragile JSON Parsing of Agent Output\n\n### Task 1: Add Dependencies to requirements.txt\n**File:** `pipeline/requirements.txt`\n**Action:** Add two new dependencies:\n- `json5>=0.9.0` \u2014 relaxed JSON parser that handles trailing commas, comments, unquoted keys, etc.\n- `jsonschema>=4.0.0` \u2014 JSON schema validation library\n**Dependencies:** None\n\n### Task 2: Create a Robust JSON Extraction Helper\n**File:** `pipeline/phases.py`\n**Action:** Add a new function `_extract_json_robust(text: str) -> list[str]` above `_parse_json_output`.\n\nThis function replaces the fragile regex `r'\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}'` with a brace-counting algorithm:\n1. Scan for `{` characters in the text.\n2. For each `{`, walk forward tracking nesting depth (incrementing on `{`, decrementing on `}`), skipping braces inside quoted strings (handling `\\\"` escapes).\n3. When depth returns to 0, extract the substring as a candidate JSON block.\n4. Return all candidate substrings as raw strings.\n\nThis correctly handles:\n- Arbitrary nesting depth\n- Escaped braces inside strings\n- Multiple JSON objects in mixed content\n\n**Dependencies:** None\n\n### Task 3: Rewrite `_parse_json_output()` with Robust Parsing\n**File:** `pipeline/phases.py`\n**Action:** Replace the body of `_parse_json_output(output, field)` (lines 220-258):\n\n1. **Step 1 \u2014 Direct `json.loads()`:** Try `json.loads(output.strip())`. If it succeeds and contains `field`, return it.\n2. **Step 2 \u2014 `json5.loads()`:** Try `json5.loads(output.strip())`. This handles trailing commas, single-quoted strings, comments, and other common agent output quirks. If it succeeds and contains `field`, return it.\n3. **Step 3 \u2014 Extract and parse candidates:** Call `_extract_json_robust(output)` to get candidate JSON blocks. For each candidate (last first), try `json.loads()` then `json5.loads()`. If parsed dict contains `field` with a truthy value, return it.\n4. **Step 4 \u2014 Logging:** On complete failure, log a warning with the first 200 chars of output for debugging context.\n5. Return `\"\"` if all attempts fail.\n\n**Dependencies:** Task 1, Task 2\n\n### Task 4: Rewrite `_parse_verdict()` with Robust Parsing\n**File:** `pipeline/phases.py`\n**Action:** Replace the regex fallback in `_parse_verdict(output)` (lines 261-353):\n\n1. Replace the regex `r'\\{[^{}]*(?:\\{[^{}]*\\}[^{}]*)*\\}'` (line 281) with `_extract_json_robust(output)`.\n2. For each candidate from `_extract_json_robust()` (last first), try `json.loads()` then `json5.loads()`. Use the first result that is a dict.\n3. Keep all existing post-parse logic unchanged (plan detection, verdict extraction, test_results handling, text fallback).\n\n**Dependencies:** Task 2\n\n### Task 5: Add Schema Validation to Parsing\n**File:** `pipeline/phases.py`\n**Action:** Add optional schema validation to `_parse_json_output()`:\n\n1. Add an optional `schema` parameter to `_parse_json_output(output, field, schema=None)`.\n2. Define a `PHASE_SCHEMAS` dict mapping phase keys to JSON Schema dicts:\n   - `planning`: `{\"type\": \"object\", \"properties\": {\"questions\": {\"type\": [\"array\", \"null\"]}, \"plan\": {\"type\": [\"string\", \"null\"]}}}`\n   - `reviewing_plan` / `review_impl`: `{\"type\": \"object\", \"required\": [\"verdict\"], \"properties\": {\"verdict\": {\"type\": \"string\"}, \"summary\": {\"type\": \"string\"}, \"feedback\": {\"type\": [\"string\", \"null\"]}}}`\n   - `spec_impl`: `{\"type\": \"object\", \"required\": [\"implementation_spec\"], \"properties\": {\"implementation_spec\": {\"type\": \"string\"}}}`\n   - `spec_test`: `{\"type\": \"object\", \"required\": [\"test_spec\"], \"properties\": {\"test_spec\": {\"type\": \"string\"}}}`\n   - `implementing` / `fix_feedback`: `{\"type\": \"object\", \"properties\": {\"summary\": {\"type\": \"string\"}, \"files_changed\": {\"type\": \"array\"}}}`\n3. When schema is provided, validate the full parsed result using `jsonschema.validate()`. On `ValidationError`, log a warning but still return the value (graceful degradation \u2014 never block the pipeline over a schema mismatch).\n4. At call sites (lines 618, 636, 675, 719), pass the appropriate schema from `PHASE_SCHEMAS`.\n\n**Dependencies:** Task 1, Task 3\n\n### Task 6: Add Comprehensive Tests\n**File:** `pipeline/test_json_parsing.py` (new file)\n**Action:** Create test file with the following test cases:\n\n1. **test_parse_clean_json** \u2014 Pure JSON input parses correctly via `_parse_json_output`.\n2. **test_parse_json_with_trailing_comma** \u2014 json5 fallback handles `{\"key\": \"value\",}`.\n3. **test_parse_json_embedded_in_text** \u2014 JSON block surrounded by markdown/prose is extracted.\n4. **test_parse_deeply_nested_json** \u2014 3+ levels of nesting parse correctly.\n5. **test_parse_json_with_escaped_braces** \u2014 Strings containing `\\{` and `\\}` don't break extraction.\n6. **test_parse_json_with_code_blocks** \u2014 JSON inside markdown code fences is extracted.\n7. **test_parse_multiple_json_blocks** \u2014 Last valid block with the target field is used.\n8. **test_parse_empty_and_none** \u2014 Empty string and None return `\"\"`.\n9. **test_parse_verdict_clean** \u2014 `_parse_verdict` with clean JSON.\n10. **test_parse_verdict_embedded** \u2014 `_parse_verdict` with JSON embedded in prose.\n11. **test_parse_verdict_deeply_nested** \u2014 `_parse_verdict` with nested test_results.\n12. **test_parse_verdict_text_fallback** \u2014 `_parse_verdict` falls back to text parsing when no JSON found.\n13. **test_schema_validation_warning** \u2014 Schema mismatch logs a warning but still returns data.\n14. **test_extract_json_robust_balanced_braces** \u2014 Brace-counting handles complex nesting.\n\nAll tests import `_parse_json_output`, `_parse_verdict`, and `_extract_json_robust` from `pipeline.phases`.\n\n**Dependencies:** Tasks 2, 3, 4\n\n### Task 7: Integration Verification\n**Action:** Run existing tests (`test_consolidate_phase_execution.py`, `test_specific_review_slots.py`, etc.) to confirm no regressions. Run new `test_json_parsing.py` to confirm all edge cases pass.\n**Dependencies:** Tasks 1-6\n\n### Execution Order\n1. Task 1 (dependencies)\n2. Task 2 (extraction helper)\n3. Task 3 + Task 4 (can be done in parallel \u2014 both depend on Task 2)\n4. Task 5 (schema validation, depends on Task 3)\n5. Task 6 (tests, depends on Tasks 2-4)\n6. Task 7 (integration verification)",
+  "test_spec": "## Test Specification: Fragile JSON Parsing of Agent Output\n\n### 1. Behaviors That MUST Be Verified\n\n#### 1.1 Clean JSON Parsing via `_parse_json_output`\n- **Behavior:** When agent output is valid, well-formed JSON containing the target field, it should be parsed and the field value returned.\n- **Success criteria:** `_parse_json_output('{\"plan\": \"do stuff\"}', 'plan')` returns `\"do stuff\"`.\n- **Expected output:** The exact field value from the JSON.\n\n#### 1.2 json5 Relaxed Parsing Fallback\n- **Behavior:** When agent output is almost-valid JSON (trailing commas, single-quoted strings, comments), `json5.loads()` should handle it after `json.loads()` fails.\n- **Success criteria:** Input like `{\"plan\": \"my plan\",}` (trailing comma) still returns the plan value. Input like `{/* comment */ \"plan\": \"value\"}` still returns the value.\n- **Expected output:** The correct field value despite non-standard JSON syntax.\n\n#### 1.3 Brace-Counting JSON Extraction from Mixed Content\n- **Behavior:** When agent output contains JSON embedded in prose/markdown, the new brace-counting extractor should find and extract the JSON block.\n- **Success criteria:** Input like `Here is my output:\\n```json\\n{\"plan\": \"the plan\"}\\n```\\nDone!` returns `\"the plan\"`.\n- **Expected output:** The field value extracted from the embedded JSON block.\n\n#### 1.4 Deeply Nested JSON Structures\n- **Behavior:** JSON with 3+ levels of nesting should be extracted correctly, unlike the old regex which only handled one level.\n- **Success criteria:** Input containing `{\"result\": {\"inner\": {\"deep\": \"value\"}}, \"plan\": \"nested plan\"}` returns the plan.\n- **Expected output:** Correct field value from deeply nested JSON.\n\n#### 1.5 JSON with Escaped Braces in Strings\n- **Behavior:** JSON strings containing literal brace characters (e.g., code snippets with `{` and `}`) should not break the extraction.\n- **Success criteria:** Input like `{\"plan\": \"use dict = {key: val}\"}` parses correctly.\n- **Expected output:** The plan value including the brace characters in the string.\n\n#### 1.6 Multiple JSON Blocks \u2014 Last Valid Wins\n- **Behavior:** When output contains multiple JSON objects, the last one containing the target field should be used (agents often output intermediate JSON before the final answer).\n- **Success criteria:** Input with `{\"plan\": \"draft\"} some text {\"plan\": \"final\"}` returns `\"final\"`.\n- **Expected output:** The field value from the last matching JSON block.\n\n#### 1.7 `_parse_verdict` with Clean JSON\n- **Behavior:** A well-formed JSON verdict response like `{\"verdict\": \"PASS\", \"summary\": \"All good\", \"feedback\": \"\"}` should parse correctly.\n- **Success criteria:** Returns tuple `(\"PASS\", \"All good\", \"\")`.\n\n#### 1.8 `_parse_verdict` with Embedded JSON\n- **Behavior:** Verdict JSON embedded in agent prose should be extracted and parsed.\n- **Success criteria:** Input like `After review:\\n{\"verdict\": \"FAIL\", \"summary\": \"Issues found\", \"feedback\": \"Fix X\"}\\nEnd.` returns `(\"FAIL\", \"Issues found\", \"Fix X\")`.\n\n#### 1.9 `_parse_verdict` with Deeply Nested test_results\n- **Behavior:** Verdict output containing nested `test_results` with `failed`/`errors` counts should parse correctly.\n- **Success criteria:** Input `{\"tests_pass\": false, \"test_results\": {\"passed\": 5, \"failed\": 2, \"errors\": 0}}` returns verdict `\"FAIL\"` with appropriate summary mentioning 2 failures.\n\n#### 1.10 `_parse_verdict` Text Fallback\n- **Behavior:** When no JSON is found at all, the text-based fallback (`VERDICT: PASS`, `SUMMARY: ...`, `FEEDBACK: ...`) should still work.\n- **Success criteria:** Input `**VERDICT**: PASS\\n**SUMMARY**: Looks good\\n**FEEDBACK**: None` returns `(\"PASS\", \"Looks good\", \"None\")`.\n\n#### 1.11 `_parse_verdict` Plan-Shaped Output Rejection\n- **Behavior:** If a review agent mistakenly returns a plan object (has `plan` key but no `verdict` key), it should be rejected and not treated as a valid verdict.\n- **Success criteria:** Input `{\"plan\": \"some plan\"}` should result in verdict `\"FAIL\"` with an error message about the agent returning a plan instead of a review.\n\n#### 1.12 Schema Validation (Warning, Not Blocking)\n- **Behavior:** When a schema is provided and the parsed JSON doesn't match it, a warning should be logged but the parsed value should still be returned (graceful degradation).\n- **Success criteria:** Parsing succeeds and returns the value. A warning is logged about schema mismatch.\n- **Expected output:** The field value is returned despite schema violation; pipeline is not blocked.\n\n#### 1.13 Schema Validation Passes for Valid Output\n- **Behavior:** When parsed JSON matches the provided schema, no warning is logged and the value is returned normally.\n- **Success criteria:** No validation warnings in logs; correct value returned.\n\n#### 1.14 `_extract_json_robust` Brace-Counting Accuracy\n- **Behavior:** The new extraction function should correctly identify balanced JSON blocks in arbitrary text using brace counting with string-escape awareness.\n- **Success criteria:** Given text with multiple interleaved JSON and non-JSON content, all valid JSON blocks are extracted as separate candidates.\n\n### 2. Edge Cases\n\n#### 2.1 Empty/Null Inputs\n- `_parse_json_output(\"\", \"plan\")` should return `\"\"`.\n- `_parse_json_output(None, \"plan\")` should return `\"\"` (or handle gracefully without crashing).\n- `_parse_json_output(\"   \", \"plan\")` (whitespace only) should return `\"\"`.\n- `_parse_verdict(\"\")` should return `(\"FAIL\", \"\", \"\")` or similar default tuple without crashing.\n\n#### 2.2 Field Not Present\n- `_parse_json_output('{\"other\": \"value\"}', 'plan')` should return `\"\"` since the target field is missing.\n- `_parse_json_output('{\"plan\": \"\"}', 'plan')` should return `\"\"` since the field is empty/falsy.\n- `_parse_json_output('{\"plan\": null}', 'plan')` should return `\"\"` since the field is null.\n\n#### 2.3 Malformed JSON\n- Truncated JSON like `{\"plan\": \"hello` (no closing brace/quote) should not crash; should return `\"\"`.\n- Completely non-JSON text like `This is just a paragraph of text` should return `\"\"`.\n- JSON array `[1, 2, 3]` (not an object) should return `\"\"` for `_parse_json_output`.\n\n#### 2.4 Very Large Output\n- Agent output with thousands of lines of text with a small JSON block at the end should still find and parse the JSON.\n- Should not hang or take excessive time on large inputs.\n\n#### 2.5 Unicode and Special Characters\n- JSON with unicode values like `{\"plan\": \"Support f\u00fcr \u00dcmlauts\"}` should parse correctly.\n- JSON with newlines in string values (escaped as `\\n`) should parse correctly.\n\n#### 2.6 Nested Braces in String Values\n- `{\"plan\": \"function() { return {a: 1}; }\"}` \u2014 braces inside a JSON string value should not confuse the brace-counter.\n- `{\"plan\": \"regex: /\\\\{.*\\\\}/g\"}` \u2014 escaped braces and backslashes should be handled.\n\n#### 2.7 Summary Truncation in `_parse_verdict`\n- Summary longer than 500 characters should be truncated to 497 chars + \"...\".\n\n#### 2.8 Verdict Case Insensitivity\n- `{\"verdict\": \"pass\"}`, `{\"verdict\": \"Pass\"}`, `{\"verdict\": \"PASS\"}` should all be recognized as PASS.\n- `{\"verdict\": \"APPROVED\"}` should remain FAIL (only PASS keyword triggers PASS).\n\n### 3. What Constitutes Failure\n\n- **Crash on any input:** Any input to `_parse_json_output` or `_parse_verdict` that causes an unhandled exception is a failure. These functions must be defensive and never crash.\n- **Regression on clean JSON:** If previously-working clean JSON inputs stop parsing correctly, that is a failure.\n- **Deeply nested JSON not extracted:** If a JSON block with 3+ levels of nesting cannot be extracted when embedded in prose, the brace-counting fix has failed.\n- **Escaped braces break extraction:** If `{\"key\": \"value with { braces }\"}` fails to parse, the string-awareness in brace counting has failed.\n- **Schema validation blocks pipeline:** If a schema mismatch causes the function to return `\"\"` instead of the parsed value, graceful degradation has failed. Schema violations must warn, not block.\n- **Text fallback broken:** If `_parse_verdict` can no longer parse `VERDICT: PASS` style text output, the text fallback has regressed.\n- **Wrong JSON block selected:** If multiple JSON blocks exist and the wrong one is selected (not the last valid one with the target field), selection logic has failed.\n- **json5 not used:** If inputs with trailing commas or comments fail to parse when they should succeed via json5, the json5 integration is missing or broken.\n\n### 4. Out of Scope\n\n- **Performance benchmarks:** We do not test parsing speed or set timing thresholds. As long as it doesn't hang, it's fine.\n- **UI/TUI behavior:** How parsed results are displayed in the TUI or web UI is not part of this test spec.\n- **Agent prompt quality:** Whether agents produce good JSON is not tested here \u2014 we test that bad JSON is handled gracefully.\n- **Network/API calls:** No tests should make real API calls to LLM providers.\n- **Concurrent/parallel parsing:** The parsing functions are pure and stateless; concurrency testing is not needed.\n- **File I/O:** Tests should operate on in-memory strings, not read from disk.\n- **Pipeline integration end-to-end:** We test the parsing functions in isolation, not the full pipeline flow. Existing integration tests cover that.\n- **jsonschema library internals:** We don't test that jsonschema itself works correctly, only that we call it correctly and handle its errors.\n- **Backward compatibility of output format:** We don't test that the output format hasn't changed \u2014 only that parsing is more robust.",
+  "impl_notes": "Implemented robust JSON parsing for agent output in phases.py. Added _extract_json_robust() helper using brace-counting algorithm that handles arbitrary nesting depth, escaped braces in strings, and multiple JSON blocks. Updated _parse_json_output() and _parse_verdict() to use json5 for relaxed parsing as fallback, with optional jsonschema validation. Created 42 comprehensive tests covering all edge cases. Replaced all fragile regex patterns in the codebase with robust extraction.",
+  "history": [
+    {
+      "ts": "2026-03-08T06:00Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-09T04:40Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-09T04:47Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T04:50Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T04:50Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T04:51Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible. It correctly identifies the fra..."
+    },
+    {
+      "ts": "2026-03-09T04:51Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-09T05:57Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-09T05:57Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-09T05:59Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-09T06:00Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-09T06:00Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T06:12Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T06:12Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T06:12Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T06:15Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-09T06:15Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T06:16Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation is complete and correct. All 42 tests pass covering clean JSON, js..."
+    },
+    {
+      "ts": "2026-03-09T06:16Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-09T04:51Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible. It correctly identifies the fragile regex issue, proposes json5 for relaxed parsing and jsonschema for validation against existing PHASE_CONFIG schemas, includes comprehensive testing, and maintains backward compatibility.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-09T06:16Z",
+      "verdict": "PASS",
+      "summary": "Implementation is complete and correct. All 42 tests pass covering clean JSON, json5 relaxed parsing, brace-counting extraction, deeply nested structures, escaped braces, multiple blocks, verdict parsing, text fallback, schema validation, and all edge cases. Old fragile regex replaced throughout.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-08T23:15:32.310967",
+    "verdict": "PASS",
+    "results": {
+      "passed": 42,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 42 tests pass. Coverage verified against test spec: Clean JSON parsing (1.1), json5 relaxed parsing (1.2), brace-counting extraction (1.3), deeply nested JSON (1.4), escaped braces (1.5), multiple JSON blocks (1.6), verdict clean JSON (1.7), verdict embedded (1.8), verdict nested test_results (1.9), verdict text fallback (1.10), verdict plan-shaped rejection (1.11), schema validation warning (1.12), schema validation pass (1.13), _extract_json_robust brace-counting (1.14), edge cases (empty/null inputs, field not present, malformed JSON, unicode, nested braces, summary truncation, case insensitivity). All required behaviors from the test spec are covered and passing."
+  }
+}

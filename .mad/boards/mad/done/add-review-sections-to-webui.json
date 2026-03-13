@@ -1,0 +1,138 @@
+{
+  "id": "a179a36b",
+  "board": "mad",
+  "title": "Add review sections to webui",
+  "created": "2026-03-07T19:30Z",
+  "description": "Needs to make sure the new \"review\" sections are added to the webui and also TUI interfaces.",
+  "plan": "# Add Review Sections to WebUI\n\nThe TUI (`pipeline/tui.py:384-397`) already displays plan_reviews and impl_reviews in a collapsible \"Review History\" section. The Python client (`pipeline/server_client.py:152-153`) already sends `plan_reviews` and `impl_reviews` in its state updates to the Go server. However, the Go server and WebUI templates do not handle this data. This plan addresses the WebUI side only since TUI is already complete.\n\n## Changes Required\n\n### 1. Go Server: Add review fields to FeatureSummary struct (`server/hub.go`)\n\nAdd two new fields to the `FeatureSummary` struct (around line 47, after `TestResults`):\n\n```go\nPlanReviews   []interface{} `json:\"plan_reviews,omitempty\"`\nImplReviews   []interface{} `json:\"impl_reviews,omitempty\"`\n```\n\nUsing `[]interface{}` matches the pattern used for `TestResults` (which uses `interface{}`) and avoids needing to define a separate struct since the Python client sends these as arrays of dicts with `ts`, `verdict`, and `feedback` fields.\n\n### 2. WebUI: Add review data to feature cards in `server/templates/client.html`\n\nIn the feature card template (around line 823, after `data-test-results`), add:\n\n```html\ndata-plan-reviews=\"{{toJSON .PlanReviews}}\"\ndata-impl-reviews=\"{{toJSON .ImplReviews}}\"\n```\n\n### 3. WebUI: Add review rendering in client.html JavaScript detail view\n\nIn the `toggleFeatureDetail` function (around line 568, after the Implementation Notes section), add JavaScript to render review sections:\n\n- Parse `data-plan-reviews` and `data-impl-reviews` JSON arrays\n- For each review, display: timestamp, verdict (colored green for PASS, red for FAIL), and feedback text\n- Use `makeCollapsibleSection()` (already exists in client.html) to create collapsible sections\n- Create one section titled \"Plan Reviews (N)\" and one titled \"Impl Reviews (N)\" \n- Each review entry should show: `{ts} | {verdict} | {feedback (truncated to ~200 chars)}`\n- Collapse by default, similar to how history is handled\n\n### 4. WebUI: Add review data to feature cards in `server/templates/index.html`\n\nIn the board_fragment template (around line 651, after `data-checkpoint`), add:\n\n```html\ndata-plan-reviews=\"{{toJSON .PlanReviews}}\"\ndata-impl-reviews=\"{{toJSON .ImplReviews}}\"\n```\n\n### 5. WebUI: Add review rendering in index.html JavaScript modal\n\nIn the `showFeature` function (around line 533, after the History section), add JavaScript to render review data:\n\n- Parse `data-plan-reviews` and `data-impl-reviews` from the clicked card\n- If either has entries, render a \"Reviews\" section showing each review with verdict (color-coded) and feedback\n- Format similar to the History entries display already in that function\n\n### 6. Update Go server tests if needed (`server/feature_summary_test.go`)\n\nAdd test cases for the new `PlanReviews` and `ImplReviews` fields to `TestFeatureSummarySerialization` to verify:\n- Fields serialize correctly with `omitempty` (omitted when nil/empty)\n- Fields round-trip through JSON marshal/unmarshal\n\n## Implementation Notes\n\n- The TUI implementation at `pipeline/tui.py:384-397` can serve as a reference for the display format\n- The Python client already sends the data (no changes needed to `server_client.py`)\n- The Go hub already handles the JSON unmarshal of features generically, so adding the fields to the struct is sufficient for the data to flow through\n- Review entries have the structure: `{\"ts\": \"...\", \"verdict\": \"PASS|FAIL\", \"feedback\": \"...\"}`\n- Keep feedback display truncated in the list view (~200 chars) to avoid overwhelming the UI, matching the TUI behavior",
+  "impl_spec": "# Implementation Spec: Add Review Sections to WebUI\n\n## Task 1: Add PlanReviews and ImplReviews fields to FeatureSummary struct\n**File:** `server/hub.go`\n**Approach:** Add two new fields after the `Checkpoint` field (line 47):\n```go\nPlanReviews    []interface{} `json:\"plan_reviews,omitempty\"`\nImplReviews    []interface{} `json:\"impl_reviews,omitempty\"`\n```\nUsing `[]interface{}` matches the pattern of `TestResults` (which uses `interface{}`). The `omitempty` tag ensures empty/nil slices are omitted from JSON output.\n**Dependencies:** None. This is the foundation all other tasks depend on.\n\n## Task 2: Add data attributes to feature cards in client.html\n**File:** `server/templates/client.html`\n**Approach:** After the `data-checkpoint` attribute (line 827), add:\n```html\ndata-plan-reviews=\"{{toJSON .PlanReviews}}\"\ndata-impl-reviews=\"{{toJSON .ImplReviews}}\"\n```\nThis follows the same pattern used by `data-test-results` and `data-history` which also use `toJSON`.\n**Dependencies:** Task 1 (fields must exist on struct).\n\n## Task 3: Add review rendering JavaScript in client.html detail view\n**File:** `server/templates/client.html`\n**Approach:** In the `toggleFeatureDetail` function, after the Implementation Notes section (after line 568), add JavaScript to:\n1. Parse `data-plan-reviews` and `data-impl-reviews` from the card element using `JSON.parse(card.getAttribute('data-plan-reviews') || '[]')`\n2. If either array has entries, build review content:\n   - For plan reviews: iterate entries, render each as `{ts} | {verdict} | {feedback[:200]}`\n   - Color-code verdict: green (#3fb950) for PASS, red (#f85149) for FAIL\n   - Repeat for impl reviews\n3. Use `makeCollapsibleSection()` (already defined at line 482) to wrap:\n   - `makeCollapsibleSection('Plan Reviews (N)', content, false, !hasPlanReviews)`\n   - `makeCollapsibleSection('Impl Reviews (N)', content, false, !hasImplReviews)`\n4. Sections collapsed by default (3rd param = false), hidden when empty (4th param = true when empty)\n**Dependencies:** Task 2 (data attributes must be present).\n\n## Task 4: Add data attributes to feature cards in index.html\n**File:** `server/templates/index.html`\n**Approach:** After the `data-checkpoint` attribute (line 655), add:\n```html\ndata-plan-reviews=\"{{toJSON .PlanReviews}}\"\ndata-impl-reviews=\"{{toJSON .ImplReviews}}\"\n```\n**Dependencies:** Task 1 (fields must exist on struct).\n\n## Task 5: Add review rendering in index.html modal\n**File:** `server/templates/index.html`\n**Approach:** In the `showFeature` function, after the History section (after line 537, after the `} catch(e) {}` block), add:\n1. Parse `data-plan-reviews` and `data-impl-reviews` from card\n2. If either has entries, render a \"Reviews\" section using the same HTML pattern as the History section:\n   - Section header: `Reviews (N)` styled like History header (color:#8b949e, uppercase, etc.)\n   - Each review entry styled like history entries with: ts (color:#484f58), verdict (green #3fb950 for PASS, red #f85149 for FAIL, bold), feedback truncated to 200 chars (color:#c9d1d9)\n   - Use same div structure: outer div with margin-top/padding-top/border-top, inner divs for each entry\n3. Wrap in try/catch like the History section\n**Dependencies:** Task 4 (data attributes must be present).\n\n## Task 6: Add test cases to feature_summary_test.go\n**File:** `server/feature_summary_test.go`\n**Approach:** Add two new test cases to the `TestFeatureSummarySerialization` table:\n1. \"plan_reviews and impl_reviews serialize correctly\":\n   - Create FeatureSummary with PlanReviews and ImplReviews populated as `[]interface{}` containing `map[string]interface{}` entries with ts, verdict, feedback keys\n   - Verify round-trip: marshal then unmarshal, check arrays preserved with correct length\n2. \"plan_reviews and impl_reviews omitted when empty\":\n   - Add checks to existing \"empty fields omitted with omitempty\" test case\n   - Verify plan_reviews and impl_reviews keys are absent when slices are nil\nAlso add PlanReviews/ImplReviews to the \"all fields populated\" test case (with sample data) and verify round-trip in its checkFn. Add to `TestFeatureSummaryFieldPreservation` with sample review data and verify length preserved after round-trip.\n**Dependencies:** Task 1 (fields must exist on struct).\n\n## Execution Order\nTask 1 first (all others depend on it), then Tasks 2-6 can proceed in parallel. Within client.html, Task 2 before Task 3. Within index.html, Task 4 before Task 5.",
+  "test_spec": "# Test Spec: Add Review Sections to WebUI\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Go Server: FeatureSummary struct fields (hub.go)\n\n**Behavior:** PlanReviews and ImplReviews fields exist on FeatureSummary with correct JSON tags.\n- Success: JSON marshal of a FeatureSummary with populated PlanReviews produces a key `plan_reviews` in the output JSON.\n- Success: JSON marshal of a FeatureSummary with populated ImplReviews produces a key `impl_reviews` in the output JSON.\n- Success: Round-trip (marshal then unmarshal) preserves the array contents including ts, verdict, and feedback fields for both PlanReviews and ImplReviews.\n- Success: Both fields use `omitempty` \u2014 when nil or empty, the keys are absent from marshaled JSON.\n\n### 1.2 client.html: Data attributes on feature cards\n\n**Behavior:** Feature cards in client.html include `data-plan-reviews` and `data-impl-reviews` attributes.\n- Success: When a feature has plan_reviews data, the rendered card element has a `data-plan-reviews` attribute containing valid JSON array.\n- Success: When a feature has impl_reviews data, the rendered card element has a `data-impl-reviews` attribute containing valid JSON array.\n- Success: When a feature has no reviews, the attributes contain empty arrays `[]` or `null`.\n\n### 1.3 client.html: Review rendering in detail view\n\n**Behavior:** The toggleFeatureDetail function renders review sections when reviews exist.\n- Success: When plan_reviews has entries, a collapsible section titled \"Plan Reviews (N)\" appears where N is the count of plan reviews.\n- Success: When impl_reviews has entries, a collapsible section titled \"Impl Reviews (N)\" appears where N is the count of impl reviews.\n- Success: Each review entry displays: timestamp, verdict, and feedback text.\n- Success: Verdict text is color-coded \u2014 green (#3fb950) for PASS, red (#f85149) for FAIL.\n- Success: Feedback text is truncated to approximately 200 characters.\n- Success: Review sections are collapsed by default (not expanded on load).\n- Success: The makeCollapsibleSection() function is used to create these sections (consistent with existing UI patterns).\n\n### 1.4 index.html: Data attributes on feature cards\n\n**Behavior:** Feature cards in the board_fragment template of index.html include `data-plan-reviews` and `data-impl-reviews` attributes.\n- Success: Same criteria as 1.2 above but for the index.html board view cards.\n\n### 1.5 index.html: Review rendering in modal\n\n**Behavior:** The showFeature function renders review data in the feature detail modal.\n- Success: When either plan_reviews or impl_reviews has entries, a \"Reviews\" section appears in the modal.\n- Success: Each review shows timestamp, color-coded verdict, and truncated feedback.\n- Success: The display style matches the existing History entries format (same HTML structure, similar styling).\n- Success: Section is wrapped in try/catch to prevent rendering errors from breaking the modal.\n\n### 1.6 Go server tests (feature_summary_test.go)\n\n**Behavior:** Test cases cover the new fields.\n- Success: TestFeatureSummarySerialization includes a test case that populates PlanReviews and ImplReviews with sample review objects (containing ts, verdict, feedback) and verifies round-trip preservation.\n- Success: The \"empty fields omitted\" test case verifies plan_reviews and impl_reviews keys are absent when nil.\n- Success: The \"all fields populated\" test case includes PlanReviews and ImplReviews with sample data.\n- Success: TestFeatureSummaryFieldPreservation includes PlanReviews and ImplReviews and verifies array length is preserved after round-trip.\n\n## 2. Edge Cases\n\n### 2.1 Empty/null reviews\n- When plan_reviews is null/nil/undefined, no \"Plan Reviews\" section should appear in client.html or index.html.\n- When impl_reviews is an empty array [], no \"Impl Reviews\" section should appear.\n- When the data-plan-reviews attribute is missing entirely from a card, JavaScript should not throw an error (should default to empty array).\n- When data-plan-reviews contains the string \"null\", parsing should handle gracefully without error.\n\n### 2.2 Malformed review data\n- A review entry missing the \"ts\" field should still render without crashing (show empty string for timestamp).\n- A review entry missing the \"verdict\" field should render without color-coding.\n- A review entry missing the \"feedback\" field should render with empty feedback.\n- A review entry with verdict value other than PASS/FAIL (e.g., \"WARN\", empty string) should render without crashing, using default text color.\n\n### 2.3 Feedback truncation boundary\n- Feedback exactly 200 characters long should display in full without truncation indicator.\n- Feedback of 201+ characters should be truncated to ~200 characters.\n- Feedback containing HTML/special characters should be escaped properly to prevent XSS (e.g., `<script>` tags in feedback should render as text, not execute).\n- Feedback containing newlines should display reasonably (not break the layout).\n\n### 2.4 Large number of reviews\n- A feature with 50+ plan reviews should render all entries without crashing or significant layout breakage.\n- JSON parsing of a large reviews array should not cause a visible delay.\n\n### 2.5 Mixed presence\n- Feature with plan_reviews but no impl_reviews: only Plan Reviews section appears.\n- Feature with impl_reviews but no plan_reviews: only Impl Reviews section appears.\n- Feature with both: both sections appear.\n\n### 2.6 JSON serialization edge cases (Go)\n- PlanReviews set to nil vs empty slice []: nil should omit the key, empty slice should also omit (due to omitempty on slice).\n- Review entries containing unicode characters in feedback should serialize and deserialize correctly.\n- Review entries with empty string values for all fields should still be included in the array.\n\n## 3. What Constitutes Failure\n\n### 3.1 Go struct failures\n- FAIL if PlanReviews or ImplReviews fields do not exist on FeatureSummary struct.\n- FAIL if JSON tags are incorrect (e.g., \"planReviews\" instead of \"plan_reviews\").\n- FAIL if omitempty is missing and empty features produce `\"plan_reviews\":null` in JSON output.\n- FAIL if data round-trip loses review entries or corrupts their fields.\n\n### 3.2 WebUI rendering failures\n- FAIL if data-plan-reviews or data-impl-reviews attributes are missing from feature card elements.\n- FAIL if toJSON template function is not applied (raw Go objects rendered instead of JSON).\n- FAIL if JavaScript throws an uncaught exception when parsing review data, breaking the detail view or modal.\n- FAIL if review sections appear when there are no reviews (empty state should show nothing).\n- FAIL if verdict color-coding is reversed (PASS shown in red, FAIL in green).\n- FAIL if feedback is not truncated and very long feedback breaks the layout.\n- FAIL if XSS is possible through review feedback content (unescaped HTML in feedback).\n\n### 3.3 Test failures\n- FAIL if new test cases do not compile.\n- FAIL if existing tests break due to the struct changes.\n- FAIL if `go test ./server/...` does not pass with the new test cases.\n\n## 4. Out of Scope\n\n- **Visual/CSS testing:** Exact pixel positioning, font sizes, spacing, or visual appearance of review sections.\n- **Performance benchmarks:** Load time with large review datasets.\n- **TUI changes:** The TUI already handles reviews \u2014 no changes or testing needed there.\n- **Python client changes:** The server_client.py already sends review data \u2014 no changes or testing needed.\n- **WebSocket real-time updates:** Whether review data updates live via WebSocket push (this is handled by existing infrastructure).\n- **Browser compatibility:** Testing across different browsers or browser versions.\n- **Accessibility:** Screen reader support, ARIA labels, keyboard navigation of review sections.\n- **Animation/transition:** Smoothness of collapsible section expand/collapse.\n- **Review content validation:** Whether the review data itself is valid or meaningful (that's the pipeline's responsibility).\n- **client_full.html and client_full2.html:** These alternative client templates are not in scope unless explicitly required.",
+  "impl_notes": "Added review sections to WebUI by: (1) Adding PlanReviews and ImplReviews fields to FeatureSummary struct in server/hub.go with []interface{} type and omitempty JSON tags; (2) Adding data attributes to feature cards in both client.html and index.html templates; (3) Implementing JavaScript rendering in toggleFeatureDetail (client.html) and showFeature (index.html) functions with collapsible sections, color-coded verdicts (green for PASS, red for FAIL), and feedback truncated to ~200 chars; (4) Adding comprehensive test cases in feature_summary_test.go for serialization, omitempty, and field preservation. All tests pass.",
+  "history": [
+    {
+      "ts": "2026-03-07T19:30Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-07T19:40Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-07T22:58Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T23:00Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T23:00Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T23:03Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-07T23:03Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-08T01:04Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-08T01:04Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-08T01:06Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T01:07Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T01:07Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T01:11Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T01:11Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T01:11Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T01:14Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-08T01:14Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T01:14Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-08T01:14Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-09T00:53Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-07T23:03Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-08T01:14Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-07T17:14:01.001687",
+    "verdict": "PASS",
+    "results": {
+      "passed": 200,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All Go tests pass (200 passed, 0 failed). Verified: (1) FeatureSummary struct has PlanReviews and ImplReviews fields with correct JSON tags (plan_reviews, impl_reviews with omitempty); (2) client.html has data-plan-reviews and data-impl-reviews attributes with toJSON function; (3) client.html toggleFeatureDetail renders review sections with collapsible sections, color-coded verdicts (green #3fb950 for PASS, red #f85149 for FAIL), feedback truncated to 200 chars, wrapped in try/catch; (4) index.html has same data attributes; (5) index.html showFeature renders reviews in modal with same styling; (6) TestFeatureSummarySerialization includes test cases for plan_reviews and impl_reviews serialization and omitempty; (7) TestFeatureSummaryFieldPreservation includes review fields and verifies array length preservation. Test coverage aligns with spec requirements."
+  }
+}

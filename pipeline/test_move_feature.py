@@ -51,9 +51,10 @@ class TestHandleMoveFeature:
     async def test_move_feature_dispatches_to_callback(self):
         received = {}
 
-        def on_move(feature_id, target_stage):
+        async def on_move(feature_id, target_stage, request_id, reason):
             received["feature_id"] = feature_id
             received["target_stage"] = target_stage
+            received["reason"] = reason
 
         sc = ServerClient("ws://localhost:8080", "key", "c", on_move_requested=on_move)
         msg = json.dumps({
@@ -65,6 +66,7 @@ class TestHandleMoveFeature:
 
         assert received["feature_id"] == "feat-123"
         assert received["target_stage"] == "plan-inbox"
+        assert received["reason"] == ""
 
     @pytest.mark.asyncio
     async def test_move_feature_no_callback_no_crash(self):
@@ -80,7 +82,7 @@ class TestHandleMoveFeature:
     async def test_move_feature_empty_feature_id_ignored(self):
         called = False
 
-        def on_move(feature_id, target_stage):
+        async def on_move(feature_id, target_stage, request_id, reason):
             nonlocal called
             called = True
 
@@ -97,7 +99,7 @@ class TestHandleMoveFeature:
     async def test_move_feature_missing_feature_id_ignored(self):
         called = False
 
-        def on_move(feature_id, target_stage):
+        async def on_move(feature_id, target_stage, request_id, reason):
             nonlocal called
             called = True
 
@@ -113,7 +115,7 @@ class TestHandleMoveFeature:
     async def test_move_feature_empty_target_stage_ignored(self):
         called = False
 
-        def on_move(feature_id, target_stage):
+        async def on_move(feature_id, target_stage, request_id, reason):
             nonlocal called
             called = True
 
@@ -130,7 +132,7 @@ class TestHandleMoveFeature:
     async def test_move_feature_missing_target_stage_ignored(self):
         called = False
 
-        def on_move(feature_id, target_stage):
+        async def on_move(feature_id, target_stage, request_id, reason):
             nonlocal called
             called = True
 
@@ -146,7 +148,7 @@ class TestHandleMoveFeature:
     async def test_move_feature_null_feature_id_ignored(self):
         called = False
 
-        def on_move(feature_id, target_stage):
+        async def on_move(feature_id, target_stage, request_id, reason):
             nonlocal called
             called = True
 
@@ -163,7 +165,7 @@ class TestHandleMoveFeature:
     async def test_move_feature_null_target_stage_ignored(self):
         called = False
 
-        def on_move(feature_id, target_stage):
+        async def on_move(feature_id, target_stage, request_id, reason):
             nonlocal called
             called = True
 
@@ -178,7 +180,7 @@ class TestHandleMoveFeature:
 
     @pytest.mark.asyncio
     async def test_move_feature_callback_error_does_not_crash(self):
-        def on_move(feature_id, target_stage):
+        async def on_move(feature_id, target_stage, request_id, reason):
             raise ValueError("handler exploded")
 
         sc = ServerClient("ws://localhost:8080", "key", "c", on_move_requested=on_move)
@@ -193,7 +195,7 @@ class TestHandleMoveFeature:
     async def test_move_feature_special_characters_preserved(self):
         received = {}
 
-        def on_move(feature_id, target_stage):
+        async def on_move(feature_id, target_stage, request_id, reason):
             received["feature_id"] = feature_id
             received["target_stage"] = target_stage
 
@@ -213,7 +215,7 @@ class TestHandleMoveFeature:
 class TestOnMoveRequestedCallbackWiring:
 
     def test_callback_stored_on_init(self):
-        def cb(fid, stage):
+        async def cb(fid, stage, rid, r):
             pass
 
         sc = ServerClient("ws://localhost:8080", "key", "c", on_move_requested=cb)
@@ -230,7 +232,7 @@ class TestReconnectLoopMoveFeature:
     async def test_reconnect_loop_dispatches_move_feature(self):
         received = {}
 
-        def on_move(feature_id, target_stage):
+        async def on_move(feature_id, target_stage, request_id, reason):
             received["feature_id"] = feature_id
             received["target_stage"] = target_stage
 

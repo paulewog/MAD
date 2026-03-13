@@ -1,8 +1,8 @@
 """Schedule management for MAD pipeline.
 
 Provides:
-  - Schedule data model and persistence (~/MAD/schedules.json)
-  - RunRecord data model and persistence (~/MAD/runs.json)
+  - Schedule data model and persistence (config-aware path)
+  - RunRecord data model and persistence (config-aware path)
   - Validation helpers for cron expressions and intervals
   - SchedulerDaemon that polls for due schedules and triggers pipeline runs
 """
@@ -17,9 +17,6 @@ from typing import List, Optional
 
 from phases import run_pipeline
 from state import FeatureFile
-
-SCHEDULES_PATH = Path("~/MAD/schedules.json").expanduser()
-RUNS_PATH = Path("~/MAD/runs.json").expanduser()
 
 _store_lock = Lock()
 _runs_lock = Lock()
@@ -257,7 +254,13 @@ class RunRecord:
 class ScheduleStore:
     """Thread-safe JSON-backed store for Schedule objects."""
 
-    def __init__(self, path: Path = SCHEDULES_PATH):
+    def __init__(self, path: Optional[Path] = None):
+        if path is None:
+            try:
+                from config import Config
+                path = Config().mad_dir / "schedules.json"
+            except Exception:
+                path = Path("~/MAD/schedules.json").expanduser()
         self._path = path
 
     def _load(self) -> List[dict]:
@@ -318,7 +321,13 @@ class ScheduleStore:
 class RunStore:
     """Thread-safe JSON-backed store for RunRecord objects."""
 
-    def __init__(self, path: Path = RUNS_PATH):
+    def __init__(self, path: Optional[Path] = None):
+        if path is None:
+            try:
+                from config import Config
+                path = Config().mad_dir / "runs.json"
+            except Exception:
+                path = Path("~/MAD/runs.json").expanduser()
         self._path = path
 
     def _load(self) -> List[dict]:

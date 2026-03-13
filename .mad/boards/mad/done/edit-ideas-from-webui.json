@@ -1,0 +1,194 @@
+{
+  "id": "96242379",
+  "board": "mad",
+  "title": "edit-ideas-from-webui",
+  "created": "2026-03-07T18:38Z",
+  "description": "I want to be able to edit an idea's description from the webui.",
+  "plan": "# Plan: Edit Idea Description from Web UI\n\nAllow users to edit a feature's description directly from the web UI modal. This follows the existing pattern of server -> WebSocket -> TUI handler -> FeatureFile mutation -> push_state.\n\n## Step 1: Add `edit_description` WebSocket message handler in server_client.py\n\n**File:** `pipeline/server_client.py`\n\n- Add `on_edit_description` callback parameter to `ServerClient.__init__()`, following the existing pattern (e.g. `on_idea_created`).\n  - Type: `Optional[Callable[[str, str], Awaitable[None]]]` (feature_id, new_description)\n  - Store as `self._on_edit_description`\n- In `_handle_incoming()`, add a new `elif msg_type == \"edit_description\":` block:\n  - Extract `feature_id = data.get(\"feature_id\", \"\")` and `description = data.get(\"description\", \"\")`\n  - Call `await self._on_edit_description(feature_id, description)` (positional args, matching existing pattern like `on_idea_created`)\n\n## Step 2: Add handler in tui.py\n\n**File:** `pipeline/tui.py`\n\n- Add `on_edit_description=self._handle_edit_description` to the `ServerClient(...)` constructor call (around line 1462).\n- Add new method `async def _handle_edit_description(self, feature_id: str, description: str) -> None:`\n  - Find the feature: `feature = FeatureFile.find(feature_id)`\n  - If not found, log warning and return\n  - Call `feature.set_description(description)`\n  - Call `feature.add_history(feature.current_stage.upper(), \"Description edited via web UI\")`\n  - Refresh the board: `self._refresh_board(self.active_board)`\n  - Push updated state to server (same pattern as `_handle_create_idea`):\n    ```python\n    if self._server_client and self._server_client.connected:\n        features = self._load_features(self.active_board)\n        asyncio.create_task(self._server_client.push_state(\n            features, self._plan_agent_status, self._implement_agent_status,\n            auto_plan_enabled=self.auto_plan_enabled,\n            auto_impl_enabled=self.auto_implement_enabled,\n        ))\n    ```\n\n## Step 3: Add server-side API endpoint in api.go\n\n**File:** `server/api.go`\n\n- Add a new route handler function `serveEditDescription(w, r, hub, cfg, clientID, featureID string)`:\n  - POST only, check `checkAnyAuth(r, cfg)`\n  - Parse body JSON: `{ \"description\": \"new text\" }`\n  - Validate client exists and is connected\n  - Validate feature exists in client state\n  - Send WebSocket message to client: `{\"type\": \"edit_description\", \"feature_id\": featureID, \"description\": description}`\n  - Return `{\"status\": \"ok\"}`\n- Register the route in the `features/` sub-path routing (around line 255-269):\n  ```go\n  if len(featureParts) == 2 && featureParts[1] == \"edit-description\" && featureID != \"\" {\n      serveEditDescription(w, r, hub, cfg, clientID, featureID)\n      return\n  }\n  ```\n\n## Step 4: Add edit UI in index.html\n\n**File:** `server/templates/index.html`\n\n- Declare module-level variables before the `showFeature` function (around line 501):\n  ```javascript\n  var _modalClientId = null;\n  var _modalFeatureId = null;\n  ```\n\n- In the `showFeature(card)` function (line 502):\n  - At the start of the function, set:\n    ```javascript\n    _modalClientId = card.getAttribute('data-client');\n    _modalFeatureId = card.getAttribute('data-id');\n    ```\n  - Replace the static description display (lines 515-518) with an editable textarea + save button:\n    ```javascript\n    html += '<div style=\"margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid #21262d\">' +\n        '<div style=\"color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase;margin-bottom:0.3rem\">Description</div>' +\n        '<textarea id=\"edit-description\" style=\"width:100%;min-height:60px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:0.4rem;font-size:0.8rem;resize:vertical\">' + escapeHtml(description) + '</textarea>' +\n        '<button onclick=\"saveDescription()\" style=\"margin-top:0.3rem;padding:0.3rem 0.7rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem\">Save Description</button>' +\n        '<span id=\"desc-feedback\" style=\"margin-left:0.5rem;font-size:0.75rem\"></span>' +\n        '</div>';\n    ```\n    Note: Always show the description area (even when empty) so users can add a description to ideas that don't have one yet.\n\n- Add a `saveDescription()` function:\n  ```javascript\n  function saveDescription() {\n      var desc = document.getElementById('edit-description').value;\n      var feedback = document.getElementById('desc-feedback');\n      if (!_modalClientId || !_modalFeatureId) return;\n      var key = typeof getKey === 'function' ? getKey() : new URLSearchParams(window.location.search).get('key') || '';\n      feedback.textContent = 'Saving...';\n      feedback.style.color = '#8b949e';\n      fetch('/api/clients/' + encodeURIComponent(_modalClientId) + '/features/' + encodeURIComponent(_modalFeatureId) + '/edit-description?key=' + encodeURIComponent(key), {\n          method: 'POST',\n          headers: {'Content-Type': 'application/json'},\n          body: JSON.stringify({description: desc})\n      }).then(function(r) {\n          return r.json().then(function(data) {\n              if (r.ok) {\n                  feedback.style.color = '#3fb950';\n                  feedback.textContent = 'Saved!';\n                  var cards = document.querySelectorAll('.feature-card[data-id=\"' + _modalFeatureId + '\"]');\n                  for (var i = 0; i < cards.length; i++) {\n                      cards[i].setAttribute('data-description', desc);\n                  }\n              } else {\n                  feedback.style.color = '#f85149';\n                  feedback.textContent = data.error || 'Failed';\n              }\n          });\n      }).catch(function() {\n          feedback.style.color = '#f85149';\n          feedback.textContent = 'Network error';\n      });\n  }\n  ```\n\n## Summary of review feedback addressed:\n\n1. **push_state() not send_state()**: Step 2 uses `push_state(features, self._plan_agent_status, self._implement_agent_status, auto_plan_enabled=..., auto_impl_enabled=...)` matching the exact signature.\n2. **showFeature() not showFeatureDetail()**: Step 4 modifies the existing `showFeature(card)` function.\n3. **_modalClientId/_modalFeatureId**: Step 4 explicitly declares these module-level variables and sets them from `card.getAttribute('data-client')` and `card.getAttribute('data-id')` inside `showFeature()`.\n4. **Positional args for callbacks**: Step 1 calls `await self._on_edit_description(feature_id, description)` with positional args, matching the `on_idea_created` pattern.",
+  "impl_spec": "# Implementation Spec: Edit Idea Description from Web UI\n\n## Task 1: Add `on_edit_description` callback to ServerClient (server_client.py)\n\n**File:** `pipeline/server_client.py`\n**Dependencies:** None\n\n1. Add `on_edit_description` parameter to `ServerClient.__init__()` signature (after `on_move_requested`):\n   - Type: `Optional[Callable[[str, str], Awaitable[None]]]` \u2014 takes `(feature_id, description)`\n   - Store as `self._on_edit_description`\n2. In `_handle_incoming()`, add a new `elif msg_type == \"edit_description\":` block after the `move_feature` block (after line 263):\n   - Extract `feature_id = data.get(\"feature_id\", \"\")` and `description = data.get(\"description\", \"\")`\n   - Guard: `if self._on_edit_description and feature_id:`\n   - Call `await self._on_edit_description(feature_id, description)` inside try/except, logging warnings on error\n\n## Task 2: Add `_handle_edit_description` handler in TUI (tui.py)\n\n**File:** `pipeline/tui.py`\n**Dependencies:** Task 1\n\n1. Add `on_edit_description=self._handle_edit_description` to the `ServerClient(...)` constructor call (line 1545, after `on_move_requested`).\n2. Add new method `async def _handle_edit_description(self, feature_id: str, description: str) -> None:` \u2014 place it after `_on_move_requested` (around line 1675):\n   - `feature = FeatureFile.find(feature_id)` \u2014 if not found, log warning and return\n   - `feature.set_description(description)`\n   - `feature.add_history(feature.current_stage.upper(), \"Description edited via web UI\")`\n   - `self._refresh_board(self.active_board)`\n   - Push state to server (same pattern as `_handle_create_idea`): check `self._server_client and self._server_client.connected`, then `asyncio.create_task(self._server_client.push_state(features, self._plan_agent_status, self._implement_agent_status, auto_plan_enabled=self.auto_plan_enabled, auto_impl_enabled=self.auto_implement_enabled))`\n\n## Task 3: Add `serveEditDescription` API endpoint (api.go)\n\n**File:** `server/api.go`\n**Dependencies:** None (can be done in parallel with Tasks 1-2)\n\n1. Add route matching in the `features/` sub-path routing block (around line 290-293, after the `move` route):\n   ```go\n   if len(featureParts) == 2 && featureParts[1] == \"edit-description\" && featureID != \"\" {\n       serveEditDescription(w, r, hub, cfg, clientID, featureID)\n       return\n   }\n   ```\n2. Add `serveEditDescription` function (after `serveMoveFeature`, around line 899):\n   - POST only, check `checkAnyAuth(r, cfg)`\n   - Read body, parse JSON into `struct { Description string \\`json:\"description\"\\` }`\n   - Validate client exists (`hub.GetClient(clientID)`) and is connected\n   - Validate feature exists in client state (loop through `state.Features`)\n   - Send WebSocket message: `{\"type\": \"edit_description\", \"feature_id\": featureID, \"description\": description}`\n   - Return `{\"status\": \"ok\"}`\n\n## Task 4: Add edit UI in index.html\n\n**File:** `server/templates/index.html`\n**Dependencies:** Task 3 (API endpoint must exist)\n\n1. Declare module-level variables before `showFeature` function (before line 505):\n   ```javascript\n   var _modalClientId = null;\n   var _modalFeatureId = null;\n   ```\n2. In `showFeature(card)` (line 505), at the start after variable declarations, add:\n   ```javascript\n   _modalClientId = card.getAttribute('data-client');\n   _modalFeatureId = card.getAttribute('data-id');\n   ```\n3. Replace the static description display (lines 518-522) with editable textarea + save button. Always show the description area (even when empty):\n   ```javascript\n   html += '<div style=\"margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid #21262d\">' +\n       '<div style=\"color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase;margin-bottom:0.3rem\">Description</div>' +\n       '<textarea id=\"edit-description\" style=\"width:100%;min-height:60px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:0.4rem;font-size:0.8rem;resize:vertical\">' + escapeHtml(description) + '</textarea>' +\n       '<button onclick=\"saveDescription()\" style=\"margin-top:0.3rem;padding:0.3rem 0.7rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem\">Save Description</button>' +\n       '<span id=\"desc-feedback\" style=\"margin-left:0.5rem;font-size:0.75rem\"></span>' +\n       '</div>';\n   ```\n4. Add `saveDescription()` function (before `closeModal`, around line 586):\n   - Get textarea value and feedback span\n   - Guard: if `!_modalClientId || !_modalFeatureId` return\n   - Get key via `getKey()` if available, else from URL params\n   - POST to `/api/clients/{clientId}/features/{featureId}/edit-description?key={key}` with `{description: desc}`\n   - On success: show green \"Saved!\", update `data-description` attribute on matching feature cards\n   - On error: show red error message\n   - On network error: show red \"Network error\"\n\n## Execution Order\n\nTasks 1+3 can be done in parallel. Task 2 depends on Task 1. Task 4 depends on Task 3. Recommended order: 1 -> 2, 3 -> 4 (with 1 and 3 in parallel).",
+  "test_spec": "# Test Specification: Edit Idea Description from Web UI\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 ServerClient: on_edit_description callback wiring (server_client.py)\n- **Behavior**: ServerClient.__init__() accepts an optional `on_edit_description` callback parameter of type `Optional[Callable[[str, str], Awaitable[None]]]`.\n- **Success criteria**: When `on_edit_description` is provided, it is stored and invocable. When omitted or None, no error occurs.\n- **Expected output**: The callback is stored as `self._on_edit_description`.\n\n### 1.2 ServerClient: _handle_incoming dispatches edit_description messages (server_client.py)\n- **Behavior**: When a JSON message with `\"type\": \"edit_description\"` is received, the handler extracts `feature_id` and `description` from the message data, then calls `await self._on_edit_description(feature_id, description)` with positional args.\n- **Success criteria**: The callback is called exactly once with the correct feature_id and description values.\n- **Expected output**: Callback receives (feature_id_string, description_string).\n\n### 1.3 ServerClient: edit_description ignored when no callback set (server_client.py)\n- **Behavior**: When `on_edit_description` is None/not provided and an `edit_description` message arrives, it is silently ignored (no crash, no error log).\n- **Success criteria**: No exception raised, message processing continues normally.\n\n### 1.4 ServerClient: edit_description callback error is caught and logged (server_client.py)\n- **Behavior**: If the `on_edit_description` callback raises an exception, the error is caught and logged as a warning (following the pattern of other handlers like `on_idea_created`).\n- **Success criteria**: Exception does not propagate; a warning log entry is produced.\n\n### 1.5 TUI: _handle_edit_description finds feature and updates description (tui.py)\n- **Behavior**: When `_handle_edit_description(feature_id, description)` is called, it finds the feature via `FeatureFile.find(feature_id)`, calls `feature.set_description(description)`, adds a history entry, refreshes the board, and pushes updated state to the server.\n- **Success criteria**: The feature's description is updated on disk; history entry reads \"Description edited via web UI\" with the correct stage; board is refreshed; push_state is called with full required arguments.\n\n### 1.6 TUI: _handle_edit_description with unknown feature_id (tui.py)\n- **Behavior**: When `_handle_edit_description` is called with a feature_id that doesn't match any feature, a warning is logged and the method returns early without crashing.\n- **Success criteria**: Warning logged, no exception, no state change, no push_state call.\n\n### 1.7 TUI: _handle_edit_description pushes state after update (tui.py)\n- **Behavior**: After successfully updating description, if server_client is connected, push_state is called with features, agent statuses, and auto mode flags.\n- **Success criteria**: push_state receives (features_list, plan_agent_status, impl_agent_status, auto_plan_enabled=bool, auto_impl_enabled=bool).\n\n### 1.8 API endpoint: POST /api/clients/{id}/features/{fid}/edit-description (api.go)\n- **Behavior**: A POST request with valid auth, valid client ID, valid feature ID, and JSON body `{\"description\": \"new text\"}` sends a WebSocket message to the client with type `edit_description`, the feature_id, and the description, then returns `{\"status\": \"ok\"}`.\n- **Success criteria**: HTTP 200 with `{\"status\": \"ok\"}`; WebSocket message dispatched to correct client.\n\n### 1.9 API endpoint: rejects non-POST methods (api.go)\n- **Behavior**: GET, PUT, DELETE requests to the edit-description endpoint return HTTP 405 Method Not Allowed.\n- **Success criteria**: Response status 405.\n\n### 1.10 API endpoint: rejects unauthenticated requests (api.go)\n- **Behavior**: Requests without valid auth (no key or wrong key) return HTTP 401/403.\n- **Success criteria**: Request is rejected before any WebSocket message is sent.\n\n### 1.11 API endpoint: rejects invalid client ID (api.go)\n- **Behavior**: Requests with a client ID that doesn't exist or isn't connected return an appropriate error.\n- **Success criteria**: HTTP error response (e.g., 404); no WebSocket message sent.\n\n### 1.12 API endpoint: rejects invalid feature ID (api.go)\n- **Behavior**: Requests with a feature ID that doesn't exist in the client's state return an appropriate error.\n- **Success criteria**: HTTP error response; no WebSocket message sent.\n\n### 1.13 Web UI: modal displays editable description textarea (index.html)\n- **Behavior**: When `showFeature(card)` is called, the modal includes a textarea pre-filled with the feature's current description (or empty if no description), plus a \"Save Description\" button and feedback span.\n- **Success criteria**: Textarea element with id `edit-description` is present and contains the feature's description text.\n\n### 1.14 Web UI: modal displays description area even when description is empty (index.html)\n- **Behavior**: Features with no description still show the Description section with an empty textarea, allowing users to add a description.\n- **Success criteria**: The textarea and save button are rendered regardless of whether description is empty.\n\n### 1.15 Web UI: saveDescription() sends correct API request (index.html)\n- **Behavior**: Clicking \"Save Description\" reads the textarea value and sends a POST to `/api/clients/{clientId}/features/{featureId}/edit-description?key={key}` with JSON body `{\"description\": value}`.\n- **Success criteria**: Correct URL constructed using _modalClientId and _modalFeatureId; correct HTTP method and Content-Type header; body contains textarea value.\n\n### 1.16 Web UI: saveDescription() shows success feedback (index.html)\n- **Behavior**: On successful API response (HTTP 200, `{\"status\": \"ok\"}`), the feedback span shows \"Saved!\" in green (#3fb950), and the feature card's `data-description` attribute is updated to match the new description.\n- **Success criteria**: Feedback text is \"Saved!\"; feedback color is green; card attribute updated.\n\n### 1.17 Web UI: saveDescription() shows error feedback (index.html)\n- **Behavior**: On API error response, the feedback span shows the error message in red (#f85149). On network error, it shows \"Network error\" in red.\n- **Success criteria**: Feedback text reflects the error; feedback color is red.\n\n### 1.18 Web UI: _modalClientId and _modalFeatureId are set correctly (index.html)\n- **Behavior**: When showFeature(card) is called, _modalClientId is set from card's `data-client` attribute and _modalFeatureId from card's `data-id` attribute.\n- **Success criteria**: Both variables match the card's attributes.\n\n## 2. Edge Cases\n\n### 2.1 Empty description string\n- Sending `{\"description\": \"\"}` should be accepted and clear the feature's description. The empty string is a valid description (user may want to clear it).\n\n### 2.2 Very long description\n- A description with thousands of characters should be accepted and stored. No truncation should occur at the API or handler level (storage is the feature file's responsibility).\n\n### 2.3 Description with special characters\n- Descriptions containing HTML entities, quotes, newlines, unicode, and markdown should be preserved exactly. The escapeHtml() function in the UI should prevent XSS when displaying.\n\n### 2.4 Missing description field in API body\n- If the POST body is `{}` (no description field), the behavior should be well-defined: either reject with an error or treat as empty string. Should not crash.\n\n### 2.5 Missing feature_id in WebSocket message\n- If the `edit_description` WebSocket message has no `feature_id`, the handler should gracefully handle it (empty string from `.get()` default will cause the find to fail, which logs a warning and returns).\n\n### 2.6 Feature in any stage\n- Editing description should work for features in any stage (ideas, approved, spec-writing, implementing, etc.). There should be no stage restriction on editing descriptions.\n\n### 2.7 Concurrent edits\n- If two users edit the same feature's description simultaneously, the last write wins. No corruption should occur.\n\n### 2.8 Server client not connected when TUI handler runs\n- If the server client is disconnected when _handle_edit_description runs, the description should still be updated locally but push_state should be skipped (guarded by the `if self._server_client and self._server_client.connected` check).\n\n### 2.9 saveDescription() called with no modal context\n- If _modalClientId or _modalFeatureId is null (e.g., modal was closed or never opened), saveDescription() should return early without making an API call.\n\n### 2.10 Malformed JSON in API request body\n- If the POST body is not valid JSON, the API should return an appropriate error (400 Bad Request).\n\n## 3. What Constitutes Failure\n\n### 3.1 Data loss\n- If editing a description causes any other feature data (title, plan, history, etc.) to be lost or corrupted, that is a failure.\n\n### 3.2 Crash or unhandled exception\n- If any component (server_client handler, TUI handler, API endpoint) crashes or throws an unhandled exception for any valid or invalid input, that is a failure.\n\n### 3.3 Silent failure without feedback\n- If the web UI's save button fails but shows no error feedback to the user, that is a failure. Users must always see either \"Saved!\" or an error message.\n\n### 3.4 Wrong feature updated\n- If the description update is applied to a different feature than the one shown in the modal, that is a critical failure.\n\n### 3.5 Missing history entry\n- If the description is updated but no history entry is added, that is a failure. The history entry should contain the correct stage and the message \"Description edited via web UI\".\n\n### 3.6 State not pushed after successful edit\n- If the description is updated but push_state is not called (when server is connected), other connected web UI clients will not see the update, which is a failure.\n\n### 3.7 Auth bypass\n- If the edit-description endpoint accepts requests without valid authentication, that is a security failure.\n\n### 3.8 XSS vulnerability\n- If a description containing `<script>alert('xss')</script>` is rendered unescaped in the UI, that is a security failure.\n\n## 4. Out of Scope\n\n- **Visual/CSS testing**: Exact styling, colors, spacing, and responsive layout of the textarea and save button are not tested.\n- **Performance benchmarks**: Response time for the API call or WebSocket round-trip is not measured.\n- **UI timing/animations**: How quickly the feedback text appears or disappears is not tested.\n- **Browser compatibility**: Testing across different browsers is out of scope.\n- **WebSocket reconnection**: Testing that the edit works after a WebSocket reconnect is out of scope (covered by existing reconnect tests).\n- **Load testing**: Sending many concurrent edit requests to stress-test the system is out of scope.\n- **Undo/redo functionality**: There is no undo for description edits; this is by design and not tested.\n- **Markdown rendering of descriptions**: Whether the description is rendered as markdown in the UI is not in scope for this feature.\n- **Mobile UI testing**: Touch interactions and mobile layout are not tested.",
+  "impl_notes": "Implemented edit-ideas-from-webui feature allowing users to edit feature descriptions directly from the web UI modal. Added on_edit_description callback to ServerClient, _handle_edit_description handler in TUI, serveEditDescription API endpoint in api.go, and editable textarea UI in index.html. Go server builds successfully.",
+  "history": [
+    {
+      "ts": "2026-03-07T18:38Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-07T18:39Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-07T18:41Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T18:44Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T18:44Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T18:45Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL \u2014 Step ordering issue: Step 4 (state.py helper) should come BEFORE Step 3 (TUI handler), since Step 3 depends on the helper method. Move Step 4 to be Step 2.\nMissing error handling: No handling for WebSocket send failures, Python save errors, or network issues. Plan should specify error responses.\nMissing validation: No validation for description content (max length, empty allowed?, sanitization).\nFeature not found: Step 1 doesn't specify what happens if featureID doesn't exist - should return 404 error.\nMissing loading state: Web UI edit flow doesn't show loading state while saving or handle save failures with user feedback.\nNo callback return value: Step 2 doesn't specify how the Python handler should signal success/failure back to Go server for proper error reporting to user."
+    },
+    {
+      "ts": "2026-03-07T18:45Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Step ordering issue: Step 4 (state.py helper) should come BEFORE Step 3 (TUI handler), since Step 3 depends on the helper method. Move Step 4 to be Step 2.\nMissing error handling: No handling for WebSocket send failures, Python save errors, or network issues. Plan should specify error responses.\nMissing validation: No validation for description content (max length, empty allowed?, sanitization).\nFeature not found: Step 1 doesn't specify what happens if featureID doesn't exist - should return 404 error.\nMissing loading state: Web UI edit flow doesn't show loading state while saving or handle save failures with user feedback.\nNo callback return value: Step 2 doesn't specify how the Python handler should signal success/failure back to Go server for proper error reporting to user."
+    },
+    {
+      "ts": "2026-03-07T19:17Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T19:19Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T19:19Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T19:21Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-07T19:21Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Found several issues:\n\nStep 3 (tui.py): Uses send_state(...) but the actual method is push_state(...) with signature push_state(features, plan_status, impl_status, auto_plan_enabled=..., auto_impl_enabled=...). The plan must use the correct method name and include all required arguments (see lines 1474-1478 in tui.py).\n\nStep 5 (index.html): References function showFeatureDetail but the actual function is showFeature(card) at line 502.\n\nStep 5 (index.html): Assumes _modalClientId and _modalFeatureId module-level variables exist, but they don't. The plan needs to add code to store these when showFeature() is called (extracting from card.getAttribute('data-id') and card.getAttribute('data-client')).\n\nStep 2 (server_client.py): The callback signature should match existing patterns. Looking at on_idea_created (line 51), callbacks are stored and called with positional args, not keyword args."
+    },
+    {
+      "ts": "2026-03-07T19:21Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-07T19:23Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-07T19:23Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-07T19:26Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-07T19:26Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-08T03:19Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-08T03:19Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-08T03:21Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T03:23Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T03:23Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T03:29Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T03:29Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T03:29Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T03:34Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T03:34Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T03:35Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-08T03:35Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-09T23:47Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-07T19:21Z",
+      "verdict": "FAIL",
+      "feedback": "Found several issues:\n\nStep 3 (tui.py): Uses send_state(...) but the actual method is push_state(...) with signature push_state(features, plan_status, impl_status, auto_plan_enabled=..., auto_impl_enabled=...). The plan must use the correct method name and include all required arguments (see lines 1474-1478 in tui.py).\n\nStep 5 (index.html): References function showFeatureDetail but the actual function is showFeature(card) at line 502.\n\nStep 5 (index.html): Assumes _modalClientId and _modalFeatureId module-level variables exist, but they don't. The plan needs to add code to store these when showFeature() is called (extracting from card.getAttribute('data-id') and card.getAttribute('data-client')).\n\nStep 2 (server_client.py): The callback signature should match existing patterns. Looking at on_idea_created (line 51), callbacks are stored and called with positional args, not keyword args."
+    },
+    {
+      "ts": "2026-03-07T19:26Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-07T19:34:00.884889",
+    "verdict": "FAIL",
+    "results": {
+      "passed": 0,
+      "failed": 0,
+      "errors": 0,
+      "note": "No tests exist specifically for edit-ideas-from-webui feature"
+    },
+    "feedback": "CRITICAL: No tests exist to verify the edit-ideas-from-webui feature. The implementation appears complete in all 4 components: (1) server_client.py - on_edit_description callback parameter and handler exists at lines 53, 67, 266-273; (2) tui.py - _handle_edit_description method exists at lines 1546, 1679-1699; (3) api.go - serveEditDescription API endpoint exists at lines 905-960; (4) index.html - Web UI edit-description textarea and saveDescription() function exists at lines 524-526, 592-621. However, there are ZERO tests in the test suite that specifically test any of the 18 required behaviors or 10 edge cases defined in the test specification. Searched Python (test.py) and Go (*_test.go) test files - no matches for 'edit_description', 'edit-description', or 'EditDescription'. Without tests, cannot verify: callback wiring, message dispatch, error handling, unknown feature handling, state push, API endpoint behavior, Web UI modal and save functionality, or any edge cases."
+  },
+  "impl_reviews": [
+    {
+      "ts": "2026-03-08T03:35Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ]
+}

@@ -1,0 +1,214 @@
+{
+  "id": "b298ac3b",
+  "board": "mad",
+  "title": "Planning agent asking too many questions",
+  "type": "bug",
+  "created": "2026-03-09T17:32Z",
+  "description": "The planning agent is still asking way too may clarifying questions.  I opened a simple bug about 'editing an item crashing TUI' and it was asking a bunch of reproduction questions, such as whether it's on all items or one item, whether it happens wiht items in all phases, whether I was in an up to date TUI (I think), etc.  It doesn't seem like it tried to investigate the failure at all before just asking a whole bunch of questions.",
+  "done_script": "",
+  "plan": "# Fix Planning Agent Ignoring Exploration Instructions\n\n## Root Cause Analysis\n\n**Investigation Findings:**\n\nThe planning prompts (`plan-bug.md` and `plan-headless.md`) already contain correct exploration instructions:\n- Lines 50-62 in `plan-bug.md`: \"**FIRST, explore the codebase** to understand the context before asking questions\"\n- Lines 43-53 in `plan-headless.md`: Similar exploration guidance with Read, Grep, and Glob tool specifications\n\n**Why Current Instructions Are Ignored:**\n\n1. **No Validation Mechanism**: The planning pipeline (`run_planning()` in `phases.py`) accepts any JSON output from agents without checking if exploration was actually performed\n\n2. **No Enforcement**: Agents can skip exploration with zero consequences - the system happily accepts questions without requiring proof of prior exploration\n\n3. **No Exploration Artifacts Required**: Unlike other phases that validate outputs, planning has no check for exploration evidence (file reads, grep results, etc.)\n\n**Concrete Evidence:**\n\nThe \"editing-an-item-in-tui-fails\" bug demonstrates this perfectly:\n- **Error message**: \"TextArea.__init__() got an unexpected keyword argument 'value'\"\n- **Obvious code bug**: `UnifiedEditModal.compose()` uses `value=` instead of `text=` for TextArea\n- **Agent behavior**: Asked 4 generic reproduction questions instead of searching for `UnifiedEditModal`\n- **Exploration would have found it in 30 seconds**: Search for \"UnifiedEditModal\" \u2192 Read the code \u2192 See the obvious parameter error\n\n## Fix Approach: Validation-Based Enforcement\n\n### 1. Add Exploration Validation to Planning Pipeline\n\n**Problem**: `run_planning()` accepts any agent output without validation.\n\n**Solution**: Modify `phases.py` to validate exploration artifacts before accepting questions.\n\n**Implementation**:\n```python\ndef _validate_exploration_artifacts(feature: FeatureFile, agent_output: str) -> tuple[bool, str]:\n    \"\"\"Check if agent output shows evidence of exploration before asking questions.\n    \n    Returns: (is_valid, error_message)\n    \"\"\"\n    # Parse for JSON with questions\n    result = _parse_agent_json(agent_output)\n    if not result or 'questions' not in result:\n        return True, \"\"  # No questions = no validation needed\n    \n    questions = result.get('questions', [])\n    if not questions:\n        return True, \"\"  # Empty questions = no validation needed\n    \n    # Check for exploration indicators in the agent output text\n    exploration_indicators = [\n        'I searched for',\n        'I found in the code',\n        'Reading the file',\n        'Looking at the',\n        'Exploring the codebase',\n        'Using Grep to search',\n        'Using Read to examine',\n        'Using Glob to find'\n    ]\n    \n    output_lower = agent_output.lower()\n    has_exploration_evidence = any(indicator.lower() in output_lower for indicator in exploration_indicators)\n    \n    if not has_exploration_evidence:\n        return False, \"Agent asked questions without providing evidence of codebase exploration. Agent must use Read, Grep, or Glob tools and reference specific files/code before asking questions.\"\n    \n    return True, \"\"\n```\n\n**Integration**: Modify `run_planning()` to call validation before accepting questions:\n```python\n# In run_planning(), before line 683:\nif \"questions\" in result and isinstance(result[\"questions\"], list) and result[\"questions\"]:\n    # Validate exploration was performed\n    is_valid, error_msg = _validate_exploration_artifacts(feature, output)\n    if not is_valid:\n        feature.add_history(\"PLANNING\", f\"FAILED: {error_msg}\")\n        feature.save()\n        logger.warning(f\"[planning] Validation failed for {feature.title}: {error_msg}\")\n        raise RuntimeError(f\"Planning validation failed: {error_msg}\")\n    \n    questions = result[\"questions\"]\n    # ... continue with existing question handling\n```\n\n### 2. Strengthen Prompt Language\n\n**Problem**: Current \"FIRST, explore\" language is ignored.\n\n**Solution**: Use stronger enforcement language in both prompt templates:\n\n**Changes to `plan-bug.md` and `plan-headless.md`:**\n```markdown\n**MANDATORY EXPLORATION REQUIREMENT:**\nYou MUST explore the codebase before asking any questions. Your response must show evidence of exploration:\n\n\u2705 **REQUIRED**: Use Read, Grep, and Glob tools to investigate the issue\n\u2705 **REQUIRED**: Reference specific files, functions, or code patterns you found\n\u2705 **REQUIRED**: Show understanding of existing codebase architecture\n\n\u274c **PROHIBITED**: Asking questions without demonstrating prior exploration\n\u274c **PROHIBITED**: Generic reproduction questions answerable through code analysis\n\n**Only ask questions for information that cannot be determined from code exploration.**\n```\n\n### 3. Add Exploration Checklist Enforcement\n\n**Problem**: Agents don't know what constitutes adequate exploration.\n\n**Solution**: Add mandatory checklist to prompts:\n\n```markdown\n**EXPLORATION CHECKLIST - Complete ALL before asking questions:**\n\nFor Bug Reports:\n\u25a1 Search for error messages, class names, or function names mentioned\n\u25a1 Read the source files where the error occurs\n\u25a1 Check how similar functionality works elsewhere\n\u25a1 Identify the root cause from code analysis\n\nFor Features:\n\u25a1 Search for similar existing features or patterns\n\u25a1 Read key architecture files to understand structure\n\u25a1 Identify integration points and existing APIs\n\u25a1 Understand current conventions and patterns\n\n**Your response must reference specific findings from each checklist item.**\n```\n\n### 4. Implement Two-Phase Validation\n\n**Problem**: Mixed exploration/question guidance is confusing.\n\n**Solution**: Restructure prompts with explicit phase separation:\n\n```markdown\n## PHASE 1: MANDATORY EXPLORATION (Complete First)\n\nBefore proceeding to Phase 2, you MUST:\n1. Use Read/Grep/Glob tools to investigate the codebase\n2. Document specific files and code patterns you found\n3. Identify what can be determined from code vs. what requires user input\n\nShow your exploration work in your response.\n\n## PHASE 2: TARGETED QUESTIONS (Only If Needed)\n\nOnly proceed to questions if information cannot be determined from exploration:\n- [specific question categories for each template type]\n\nEach question must explain why it cannot be answered through code exploration.\n```\n\n### 5. Add Anti-Pattern Detection\n\n**Problem**: Agents don't recognize bad questions.\n\n**Solution**: Add validation for common anti-patterns:\n\n```python\ndef _check_question_antipatterns(questions: list) -> tuple[bool, str]:\n    \"\"\"Check for questions that should be answered through exploration.\"\"\"\n    antipatterns = [\n        (r'does this happen.*all.*items?', \"Item scope can be determined by reading the code paths\"),\n        (r'what.*steps.*reproduce', \"Reproduction steps can be inferred from error location and code flow\"),\n        (r'what.*operating system', \"OS-specific issues should be evident from error messages or code\"),\n        (r'does.*work.*different.*phases', \"Phase-specific behavior can be found by reading the code\")\n    ]\n    \n    for q in questions:\n        question_text = q.get('question', '').lower()\n        for pattern, reason in antipatterns:\n            if re.search(pattern, question_text):\n                return False, f\"Question '{q.get('question', '')}' is an anti-pattern: {reason}\"\n    \n    return True, \"\"\n```\n\n## Files to Modify\n\n1. **`pipeline/phases.py`**:\n   - Add `_validate_exploration_artifacts()` function\n   - Add `_check_question_antipatterns()` function\n   - Modify `run_planning()` to call validation before accepting questions\n\n2. **`pipeline/prompts/plan-bug.md`**:\n   - Replace lines 50-62 with stronger enforcement language\n   - Add mandatory exploration checklist\n   - Add phase separation structure\n\n3. **`pipeline/prompts/plan-headless.md`**:\n   - Apply same prompt improvements for feature planning\n   - Adapt checklist for feature-specific exploration\n\n## Verification Plan\n\n1. **Test with failing example**: Re-run planning on \"editing-an-item-in-tui-fails\" to verify agent explores `UnifiedEditModal` first\n2. **Validation testing**: Verify that agents asking questions without exploration evidence get rejected\n3. **Anti-pattern detection**: Test that generic reproduction questions trigger validation failures\n4. **Success case testing**: Verify that agents showing proper exploration can still ask legitimate questions\n\n## Success Metrics\n\n- **Zero tolerance for unexplored questions**: All question outputs must show exploration evidence\n- **Faster bug resolution**: Code-discoverable bugs get fixed without human Q&A cycles\n- **Higher quality questions**: Remaining questions are informed by codebase understanding\n- **Reduced planning iterations**: Fewer failed plan reviews due to generic questions\n\n**Key Innovation**: This fix doesn't just rely on prompt instructions (which are being ignored) but adds a **validation layer** that enforces exploration requirements at the system level. Agents cannot bypass exploration because the system will reject their output if they try.",
+  "impl_spec": "## Task 1: Add `_validate_exploration_artifacts()` to `pipeline/phases.py`\n\n**Location**: Insert after the `_get_latest_feedback()` function (around line 608), before `run_planning()`.\n\n**What to add**:\n```python\ndef _validate_exploration_artifacts(agent_output: str) -> tuple[bool, str]:\n    \"\"\"Return (True, '') if output shows exploration evidence, else (False, reason).\"\"\"\n    exploration_indicators = [\n        'i searched for', 'i found in the code', 'reading the file', 'looking at the',\n        'exploring the codebase', 'using grep', 'using read', 'using glob',\n        'grep results', 'file contents', 'i read', 'i looked at', 'the code shows',\n        'in the source', 'searching for', 'found in', 'read the'\n    ]\n    output_lower = agent_output.lower()\n    if any(ind in output_lower for ind in exploration_indicators):\n        return True, ''\n    return False, (\n        'Agent asked questions without evidence of codebase exploration. '\n        'Agent must use Read, Grep, or Glob tools and reference specific files/code '\n        'before asking questions.'\n    )\n```\n\n**Dependencies**: None.\n\n---\n\n## Task 2: Add `_check_question_antipatterns()` to `pipeline/phases.py`\n\n**Location**: Insert directly after the function added in Task 1.\n\n**What to add**:\n```python\ndef _check_question_antipatterns(questions: list) -> tuple[bool, str]:\n    \"\"\"Return (True, '') if questions look legitimate, else (False, reason).\"\"\"\n    antipatterns = [\n        (r'does this happen.*all.*items?', 'Item scope can be determined by reading code paths'),\n        (r'what.*steps.*to.*reproduce', 'Reproduction steps can be inferred from error location and code flow'),\n        (r'what.*operating system', 'OS-specific issues should be evident from error messages or code'),\n        (r'does.*work.*different.*phase', 'Phase-specific behaviour can be found by reading the code'),\n        (r'can you.*describe.*steps', 'Reproduction steps can be inferred from code'),\n    ]\n    for q in questions:\n        text = q.get('question', '').lower()\n        for pattern, reason in antipatterns:\n            if re.search(pattern, text):\n                return False, f\"Question '{q.get('question', '')}' is a generic anti-pattern: {reason}\"\n    return True, ''\n```\n\n**Dependencies**: `re` is already imported at the top of `phases.py`.\n\n---\n\n## Task 3: Integrate validation into `run_planning()` in `pipeline/phases.py`\n\n**Location**: `run_planning()` starts at line 611. The question-handling block begins at:\n```python\nif \"questions\" in result and isinstance(result[\"questions\"], list) and result[\"questions\"]:\n    questions = result[\"questions\"]\n```\n\n**Change**: Immediately before the existing `if \"questions\" in result ...` block, insert:\n\n```python\n            # Validate exploration before accepting questions\n            if \"questions\" in result and isinstance(result[\"questions\"], list) and result[\"questions\"]:\n                is_valid, err = _validate_exploration_artifacts(output)\n                if not is_valid:\n                    feature.add_history(\"PLANNING\", f\"FAILED: {err}\")\n                    feature.save()\n                    logger.warning(f\"[planning] Exploration validation failed for {feature.title}: {err}\")\n                    raise RuntimeError(f\"Planning validation failed: {err}\")\n\n                is_valid, err = _check_question_antipatterns(result[\"questions\"])\n                if not is_valid:\n                    feature.add_history(\"PLANNING\", f\"FAILED: {err}\")\n                    feature.save()\n                    logger.warning(f\"[planning] Anti-pattern question detected for {feature.title}: {err}\")\n                    raise RuntimeError(f\"Planning validation failed: {err}\")\n```\n\nThis guard runs the two validation helpers before the existing question-handling logic. If either fails, a RuntimeError is raised, preventing the item from advancing to `requested-input`. No other changes to `run_planning()` are needed.\n\n**Dependencies**: Tasks 1 and 2 must be completed first.\n\n---\n\n## Task 4: Strengthen prompt language in `pipeline/prompts/plan-bug.md`\n\n**Replace** lines 51-65 (the `**Instructions:**` section) with:\n\n```markdown\n**MANDATORY EXPLORATION REQUIREMENT:**\nYou MUST explore the codebase *before* asking any questions. Your response must demonstrate exploration:\n\n- REQUIRED: Use Read, Grep, and Glob tools to investigate the issue\n- REQUIRED: Reference specific files, functions, or code patterns you found\n- REQUIRED: Show understanding of the existing codebase architecture\n- PROHIBITED: Asking questions without demonstrating prior exploration\n- PROHIBITED: Generic reproduction questions answerable through code analysis\n\nOnly ask questions for information that **cannot** be determined from code exploration.\n\n**EXPLORATION CHECKLIST \u2014 Complete ALL before asking questions:**\n- Search for the error message, class name, or function name mentioned in the report\n- Read the source files where the error occurs\n- Check how similar functionality works elsewhere in the codebase\n- Identify the root cause from code analysis\n\nYour response must reference specific findings from each checklist item.\n\n**PHASE 1: MANDATORY EXPLORATION (Complete first)**\nUse Read/Grep/Glob tools to investigate. Document the specific files and code patterns you found. Identify what can be determined from code vs. what requires user input.\n\n**PHASE 2: TARGETED QUESTIONS (Only if needed)**\nOnly ask questions that cannot be answered by code exploration:\n- Reproduction steps and environment details (user-specific information)\n- Observed vs. expected behavior when not inferrable from code\n- Timeline information (when did this start happening?)\n\nEach question must explain why it cannot be answered through code exploration.\n```\n\n**Approach**: Use the Edit tool to replace the old `**Instructions:**` block in-place.\n\n**Dependencies**: None (independent of Python changes).\n\n---\n\n## Task 5: Strengthen prompt language in `pipeline/prompts/plan-headless.md`\n\n**Replace** lines 44-58 (the `**Instructions:**` section) with the same mandatory-exploration structure adapted for features:\n\n```markdown\n**MANDATORY EXPLORATION REQUIREMENT:**\nYou MUST explore the codebase *before* asking any questions. Your response must demonstrate exploration:\n\n- REQUIRED: Use Read, Grep, and Glob tools to find relevant files and existing patterns\n- REQUIRED: Reference specific files, functions, or code patterns you found\n- REQUIRED: Show understanding of the existing codebase architecture\n- PROHIBITED: Asking questions without demonstrating prior exploration\n- PROHIBITED: Questions answerable by reading the existing code\n\nOnly ask questions for information that **cannot** be determined from code exploration.\n\n**EXPLORATION CHECKLIST \u2014 Complete ALL before asking questions:**\n- Search for similar existing features or patterns in the codebase\n- Read key architecture files to understand current structure\n- Identify integration points and existing APIs\n- Understand current conventions and patterns used throughout the project\n\nYour response must reference specific findings from each checklist item.\n\n**PHASE 1: MANDATORY EXPLORATION (Complete first)**\nUse Read/Grep/Glob tools to investigate. Document the specific files and code patterns you found. Identify what can be determined from code vs. what requires user input.\n\n**PHASE 2: TARGETED QUESTIONS (Only if needed)**\nOnly ask questions that cannot be answered by code exploration:\n- Business requirements and user preferences not evident in code\n- Scope boundaries \u2014 what is in scope vs. out of scope\n- Specific user-facing behavior expectations beyond existing patterns\n- Priority or ordering preferences if multiple approaches are possible\n\nEach question must explain why it cannot be answered through code exploration.\n```\n\n**Approach**: Use the Edit tool to replace the old `**Instructions:**` block in-place.\n\n**Dependencies**: None (independent of Python changes).\n\n---\n\n## Execution Order\n\n1. Task 1 \u2014 add `_validate_exploration_artifacts()`\n2. Task 2 \u2014 add `_check_question_antipatterns()`\n3. Task 3 \u2014 integrate both into `run_planning()`\n4. Tasks 4 and 5 \u2014 update prompts (can be done in parallel with 1-3)\n\n## Verification\n\n- Run the existing test suite: `cd pipeline && python -m pytest test_consolidate_phase_execution.py -x -q`\n- Manually verify that re-running planning on the 'editing-an-item-in-tui-fails' bug now causes the agent to search for 'UnifiedEditModal' before asking questions.",
+  "test_spec": "# Test Specification: Planning Agent Asking Too Many Questions\n\n## Overview\n\nThis spec covers validation enforcement for the planning pipeline to ensure agents explore the codebase before asking questions. The fix adds a validation layer in `phases.py` and strengthens language in `plan-bug.md` and `plan-headless.md`.\n\n---\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 `_validate_exploration_artifacts()` Function\n\n**Behavior**: When an agent output contains no questions (or empty questions list), validation always passes.\n- Input: Agent output JSON with `questions: []` or missing `questions` key\n- Expected: Returns `(True, \"\")` \u2014 no error\n\n**Behavior**: When an agent output contains questions AND includes exploration indicators, validation passes.\n- Input: Agent output where text includes phrases like \"I found in the code\", \"Reading the file\", \"Using Grep to search\", etc., along with a non-empty `questions` list\n- Expected: Returns `(True, \"\")` \u2014 exploration evidence recognized\n\n**Behavior**: When an agent output contains questions but NO exploration indicators, validation fails.\n- Input: Agent output with a non-empty `questions` list but no exploration language in the surrounding text\n- Expected: Returns `(False, <error message mentioning codebase exploration>)` \u2014 validation rejects the output\n\n**Behavior**: Exploration indicator matching is case-insensitive.\n- Input: Output containing \"i found in the code\" (lowercase) alongside questions\n- Expected: Returns `(True, \"\")` \u2014 case difference does not cause false rejection\n\n**Behavior**: At least one exploration indicator is sufficient to pass.\n- Input: Output containing exactly one indicator (e.g., \"Reading the file\") along with questions\n- Expected: Returns `(True, \"\")` \u2014 partial indicator presence satisfies the check\n\n### 1.2 `_check_question_antipatterns()` Function\n\n**Behavior**: Questions matching known anti-patterns are rejected.\n- Input: A question like \"Does this happen for all items?\" or \"What steps do you use to reproduce this?\"\n- Expected: Returns `(False, <message explaining why it is an anti-pattern>)`\n\n**Behavior**: Questions that do not match anti-patterns pass through.\n- Input: A question that asks for user intent, business context, or information not discoverable from code (e.g., \"Which specific environment variable controls X?\")\n- Expected: Returns `(True, \"\")` \u2014 legitimate question accepted\n\n**Behavior**: Each anti-pattern check includes a human-readable reason.\n- Input: A question triggering an anti-pattern\n- Expected: The error message includes a short explanation of why the question is inappropriate (e.g., \"can be determined by reading the code paths\")\n\n### 1.3 `run_planning()` Integration\n\n**Behavior**: When agent output has questions with exploration evidence, planning proceeds normally.\n- Input: Agent produces questions AND shows codebase exploration\n- Expected: Questions are presented to the user/system as normal; no exception raised\n\n**Behavior**: When agent output has questions without exploration evidence, planning is rejected.\n- Input: Agent produces questions but shows NO exploration evidence\n- Expected: `RuntimeError` raised with message containing \"Planning validation failed\"; failure event recorded in feature history; feature saved before exception propagates\n\n**Behavior**: When agent output has no questions, no validation is triggered.\n- Input: Agent returns a plan JSON with no `questions` key or `questions: []`\n- Expected: Planning proceeds to the next step without any validation error\n\n**Behavior**: A validation failure adds a history entry to the feature.\n- Input: Agent output rejected by `_validate_exploration_artifacts()`\n- Expected: Feature history contains an entry like \"PLANNING: FAILED: <error message>\" before the exception is raised\n\n### 1.4 Prompt Enforcement Language (`plan-bug.md`)\n\n**Behavior**: The prompt contains a mandatory exploration section (not just soft guidance).\n- Expected: Text like \"MANDATORY EXPLORATION REQUIREMENT\" or equivalent strong language appears before any question guidance\n\n**Behavior**: The prompt explicitly prohibits asking questions without prior exploration.\n- Expected: Text explicitly marks generic reproduction questions or unexplored questions as prohibited\n\n**Behavior**: The prompt includes an exploration checklist for bugs.\n- Expected checklist items include: searching for error messages/class names, reading source files where the error occurs, checking similar functionality, identifying root cause from code analysis\n\n**Behavior**: The prompt explains the two-phase structure (explore first, then optionally ask).\n- Expected: Phase 1 (exploration) and Phase 2 (targeted questions) are clearly labeled and ordered\n\n### 1.5 Prompt Enforcement Language (`plan-headless.md`)\n\n**Behavior**: The feature planning prompt mirrors the same mandatory exploration requirements as the bug prompt.\n- Expected: Equivalent \"MANDATORY EXPLORATION REQUIREMENT\" language present\n\n**Behavior**: The feature checklist is adapted for features (not bugs).\n- Expected checklist items include: searching for similar existing features/patterns, reading architecture files, identifying integration points and existing APIs, understanding current conventions\n\n---\n\n## 2. Edge Cases\n\n### 2.1 Empty and Null Inputs\n\n- **Empty agent output string**: `_validate_exploration_artifacts()` receives an empty string \u2014 should return `(True, \"\")` (no questions found, nothing to validate)\n- **Malformed JSON in agent output**: Output is not valid JSON \u2014 should not crash; treat as no questions found and return `(True, \"\")`\n- **`questions` key present but value is `null`**: Should be treated as no questions and return `(True, \"\")`\n- **`questions` is an empty list `[]`**: Should return `(True, \"\")` \u2014 no questions means no validation needed\n- **Questions list contains items with missing `question` key**: `_check_question_antipatterns()` must not crash; skip items without a `question` field\n\n### 2.2 Boundary Conditions\n\n- **Single exploration indicator in a very long agent output**: Still recognized \u2014 indicator detection is substring-based, not line-limited\n- **Questions list with one question that is an anti-pattern**: Should fail even with only a single question\n- **Questions list with mix of anti-pattern and legitimate questions**: Should fail as soon as the first anti-pattern is detected (fail-fast)\n- **Exploration indicator appears after the JSON block**: Should still count \u2014 full output text is checked, not just pre-JSON preamble\n\n### 2.3 Invalid States\n\n- **Agent output contains exploration language but the JSON cannot be parsed**: No questions extracted, so validation passes (no questions = no problem)\n- **`run_planning()` is called for a feature that already has a failed planning history**: The new validation should still run independently \u2014 past failures do not suppress new validation\n- **Validation raises an unexpected exception inside `_validate_exploration_artifacts()`**: Should not crash the entire pipeline \u2014 log the error and fail safely (treat as validation failure)\n\n### 2.4 Concurrent Operations\n\n- **Two features planned simultaneously both fail validation**: Each failure is recorded to its own feature history independently; no cross-contamination between features\n- **Feature file is saved during a concurrent write**: The `feature.save()` call during failure recording should use existing file-locking/write mechanisms already present in `FeatureFile`\n\n### 2.5 Error Conditions\n\n- **`RuntimeError` raised by validation**: Callers of `run_planning()` must handle this; verify the exception message is descriptive enough for operators to diagnose the issue\n- **Anti-pattern regex fails to compile**: Should be detected at import time, not at runtime \u2014 patterns should be validated as part of code review/unit testing\n- **Feature history add/save fails**: Planning validation still raises the `RuntimeError`; a secondary save failure should be logged but not suppress the primary error\n\n---\n\n## 3. What Constitutes Failure\n\n### 3.1 Validation Function Failures\n\n- `_validate_exploration_artifacts()` returns `(True, \"\")` when agent output has questions but no exploration evidence \u2014 this is a **false negative** and a test failure\n- `_validate_exploration_artifacts()` returns `(False, ...)` when agent output has no questions at all \u2014 this is a **false positive** and a test failure\n- `_check_question_antipatterns()` returns `(True, \"\")` for a question that matches a documented anti-pattern \u2014 **false negative**, test failure\n- Either validation function crashes on any input \u2014 **runtime error**, test failure\n\n### 3.2 Pipeline Integration Failures\n\n- `run_planning()` does NOT raise `RuntimeError` when agent asks questions without exploration evidence \u2014 feature would proceed with bad output, **test failure**\n- `run_planning()` raises `RuntimeError` when agent provides valid exploration evidence alongside questions \u2014 **false rejection**, test failure\n- Feature history does NOT contain a failure entry after validation rejects agent output \u2014 audit trail is missing, **test failure**\n- `run_planning()` raises `RuntimeError` when agent output has no questions \u2014 unnecessary rejection, **test failure**\n\n### 3.3 Prompt Failures\n\n- `plan-bug.md` still contains only soft guidance (\"FIRST, explore\") without mandatory enforcement language \u2014 **test failure** (prompt not updated)\n- `plan-headless.md` missing mandatory exploration section \u2014 **test failure**\n- Either prompt is missing the exploration checklist \u2014 **test failure**\n- Either prompt does not distinguish Phase 1 (explore) from Phase 2 (ask) \u2014 **test failure**\n\n### 3.4 Expected Error Messages\n\n- Validation failure error: must contain the phrase \"exploration\" or \"codebase exploration\" so the cause is obvious\n- Anti-pattern rejection: must include the offending question text and a reason why it is inappropriate\n- `RuntimeError` from `run_planning()`: must begin with \"Planning validation failed:\" to allow callers to distinguish it from other runtime errors\n\n---\n\n## 4. Out of Scope\n\n- **UI/TUI visual rendering**: How validation failures appear on screen or in terminal output is not tested here\n- **Performance benchmarks**: No timing requirements for validation functions (these are lightweight string checks)\n- **Agent intelligence**: We do not test whether a real AI agent will actually explore the codebase \u2014 we test that the system enforces the requirement on its output\n- **End-to-end agent runs**: Full pipeline runs with a live Claude agent are out of scope; these tests use mock/fake agent output\n- **Network or API errors during agent calls**: Timeout and rate-limiting behavior is covered by separate test specs\n- **`plan-interactive.md` or other prompt templates**: Only `plan-bug.md` and `plan-headless.md` are in scope per the plan\n- **Exploration quality scoring**: We only check for presence of exploration indicators, not whether the exploration was thorough or correct\n- **Question content quality beyond anti-patterns**: Subjective quality of questions (e.g., clarity, specificity) is not validated by automated tests\n- **Log output formatting**: Whether warning logs appear at the correct log level is not verified in this spec\n",
+  "impl_notes": "Fixed planning agent asking too many questions by implementing validation enforcement. Added _validate_exploration_artifacts() and _check_question_antipatterns() functions to phases.py with integration into run_planning(). Created test_planning_questions.py with 25 tests covering all spec requirements including empty string handling, exploration indicator detection, anti-pattern detection, and integration validation. The prompts (plan-bug.md, plan-headless.md) were already updated with MANDATORY EXPLORATION REQUIREMENT sections.",
+  "history": [
+    {
+      "ts": "2026-03-09T17:32Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-09T17:32Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-09T17:32Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T17:35Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T17:35Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T17:36Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Plan fails to diagnose root cause - prompts already have exploration instructions..."
+    },
+    {
+      "ts": "2026-03-09T17:36Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Specific issues to fix: 1) Current prompts already contain 'FIRST, explore the codebase..."
+    },
+    {
+      "ts": "2026-03-09T17:36Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T17:43Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T17:43Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T17:45Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan addresses the core issue (no validation for exploration) and provides a ..."
+    },
+    {
+      "ts": "2026-03-09T17:45Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-09T19:36Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-09T19:36Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-09T19:38Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-09T19:40Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-09T19:40Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T19:45Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T19:45Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T19:45Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T19:49Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-09T19:49Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T19:52Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation of validation logic and prompt updates is solid and correctly inte..."
+    },
+    {
+      "ts": "2026-03-09T19:52Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T19:59Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T19:59Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T19:59Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T20:00Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-09T20:00Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T20:02Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation covers all plan requirements: _validate_exploration_artifacts() an..."
+    },
+    {
+      "ts": "2026-03-09T20:02Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-09T23:46Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-09T17:36Z",
+      "verdict": "FAIL",
+      "summary": "Plan fails to diagnose root cause - prompts already have exploration instructions (lines 50-62 in plan-bug.md) that are being ignored. Restructuring alone unlikely to fix agent behavior.",
+      "feedback": "Specific issues to fix: 1) Current prompts already contain 'FIRST, explore the codebase' instructions with detailed steps - plan doesn't explain why these aren't being followed. 2) No validation mechanism proposed to ensure agents actually explore before asking questions. 3) Missing analysis of whether checkpoint instructions or other factors override prompt guidance. 4) Plan should first investigate WHY current instructions fail before proposing restructuring. 5) Consider adding enforcement mechanisms like requiring exploration artifacts (file reads, grep results) before allowing question phase."
+    },
+    {
+      "ts": "2026-03-09T17:45Z",
+      "verdict": "PASS",
+      "summary": "The plan addresses the core issue (no validation for exploration) and provides a comprehensive multi-layered solution. While the string-matching detection approach is imperfect, it would still improve behavior over the current state.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-09T19:52Z",
+      "verdict": "FAIL",
+      "summary": "Implementation of validation logic and prompt updates is solid and correctly integrated into run_planning(). However, no automated test file was created despite a detailed test specification, and _validate_exploration_artifacts() returns (False, ...) for empty string input rather than (True, '') as the spec requires when tested in isolation.",
+      "feedback": "Critical Issue: No Test File\n\nThe test spec (sections 1.1-1.5) describes 15+ specific behaviors to verify, but there is no test_*.py file in pipeline/ for this feature. This is a hard requirement of the test spec and a blocking failure.\n\nCreate pipeline/test_planning_questions.py covering at minimum:\n_validate_exploration_artifacts() returns (True, '') for empty string input (spec section 2.1)\n_validate_exploration_artifacts() returns (True, '') when questions are absent\n_validate_exploration_artifacts() returns (True, '') when exploration indicators are present alongside questions\n_validate_exploration_artifacts() returns (False, ...) when questions present but no indicators found\nCase-insensitive indicator matching\n_check_question_antipatterns() rejects each documented anti-pattern with a reason\n_check_question_antipatterns() passes a legitimate question\n_check_question_antipatterns() handles missing 'question' key without crash\nrun_planning() raises RuntimeError('Planning validation failed: ...') on bad output\nrun_planning() records history entry before raising\nrun_planning() calls feature.save() before raising\n\nSecondary Issue: Empty-String Behavior of _validate_exploration_artifacts()\n\nThe spec (section 2.1) says: 'Empty agent output string -> should return (True, \"\") (no questions found, nothing to validate)'. The current implementation returns (False, ...) for an empty string because no exploration indicators match. The guard against empty/no-questions input lives in run_planning(), not in the function itself.\n\nEither: (a) add an internal check so the function self-guards against no-questions input, or (b) clearly document the precondition and test accordingly.\n\nMinor Issues\n\nIndicators 'found in' and 'read the' are very common English phrases (e.g. 'found in the description', 'read the instructions') and may cause false negatives (unexplored agents slipping through). Consider tightening or accepting the tradeoff with a comment.\nVerify 're' is imported at the top of phases.py since _check_question_antipatterns() uses re.search().\n\nWhat Is Good\n\nrun_planning() integration is correct: validation only triggers when result['questions'] is a non-empty list, history is recorded, feature.save() is called, and RuntimeError message starts with 'Planning validation failed:' as required.\nBoth prompts (plan-bug.md, plan-headless.md) now contain MANDATORY EXPLORATION REQUIREMENT sections, exploration checklists adapted for bugs vs features, and explicit Phase 1/Phase 2 structure matching the spec.\n_check_question_antipatterns() is fail-fast, case-insensitive, and handles missing keys gracefully."
+    },
+    {
+      "ts": "2026-03-09T20:02Z",
+      "verdict": "PASS",
+      "summary": "Implementation covers all plan requirements: _validate_exploration_artifacts() and _check_question_antipatterns() are correctly implemented and integrated into run_planning() with proper history recording, feature saving, and RuntimeError raising. Both prompts updated with MANDATORY EXPLORATION REQUIREMENT, checklists, and phase separation. 24 tests cover the core spec behaviors.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-09T13:00:44.101800",
+    "verdict": "PASS",
+    "results": {
+      "passed": 25,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 25 tests passed. Test coverage verified against spec: _validate_exploration_artifacts() has 10 tests covering empty input, no questions, questions with/without exploration, case insensitivity, single/multiple indicators. _check_question_antipatterns() has 9 tests covering empty list, legitimate questions, 5 anti-pattern types, missing question key, fail-fast behavior. run_planning() integration has 6 tests covering RuntimeError on missing exploration, history recording, feature save before raising, anti-pattern rejection, valid exploration passes, no questions bypasses validation. Prompt files verified: plan-bug.md and plan-headless.md contain MANDATORY EXPLORATION REQUIREMENT sections."
+  }
+}

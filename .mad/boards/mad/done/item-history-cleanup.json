@@ -1,0 +1,169 @@
+{
+  "id": "40f9e614",
+  "board": "mad",
+  "title": "Item history cleanup",
+  "type": "feature",
+  "created": "2026-03-08T05:41Z",
+  "description": "Analyze and clean up what is added to an item's history (need a summary, not the whole agent review, e.g.)",
+  "plan": "# Item History Cleanup Plan\n\n## Goal\nEnsure history notes are short summaries (not full agent output), strip ANSI codes, and enforce a consistent max length.\n\n## Previous Review Feedback Addressed\n- MAX_HISTORY_NOTE_LENGTH: Use **100 chars** to match existing truncation at phases.py:596 and 835\n- ANSI regex: Use one consistent comprehensive pattern: `r'\\x1b\\[[0-9;]*[a-zA-Z]'`\n- Additional long-note sources in tui.py: The safety net in `add_history` handles these\n- Import `re` at module level in state.py\n\n---\n\n## Part 1: Add safety net in `add_history()` (state.py)\n\n**File:** `pipeline/state.py`\n\n1. Add `import re` at module level (after `import json`)\n2. Add module-level constants after imports, before STAGES:\n\n```python\n_ANSI_RE = re.compile(r'\\x1b\\[[0-9;]*[a-zA-Z]')\nMAX_HISTORY_NOTE_LENGTH = 100\n```\n\n3. Modify `add_history()` to strip ANSI codes and truncate notes:\n\n```python\ndef add_history(self, stage: str, note: str) -> None:\n    \"\"\"Add a timestamped entry to history.\"\"\"\n    ts = _now_iso()\n    if \"history\" not in self._data:\n        self._data[\"history\"] = []\n    # Strip ANSI escape codes and truncate\n    clean_note = _ANSI_RE.sub('', note).strip()\n    if len(clean_note) > MAX_HISTORY_NOTE_LENGTH:\n        clean_note = clean_note[:MAX_HISTORY_NOTE_LENGTH - 3] + \"...\"\n    self._data[\"history\"].append({\n        \"ts\": ts,\n        \"stage\": stage.upper(),\n        \"note\": clean_note,\n    })\n    self._save()\n```\n\n## Part 2: Clean up redundant truncation at call sites (phases.py)\n\n**File:** `pipeline/phases.py`\n\nSince `add_history` now handles truncation, remove the manual `[:100]` slicing:\n\n- **Line 596:** Change `f\"Verdict: {verdict} - {summary[:100]}\"` to `f\"Verdict: {verdict} - {summary}\"`\n- **Line 835:** Change `f\"Verdict: {verdict} - {summary[:100]}\"` to `f\"Verdict: {verdict} - {summary}\"`\n\nThe safety net in `add_history` will truncate to 100 chars consistently.\n\n## Part 3: Untruncated long-note sources \u2014 no changes needed\n\nThe safety net in `add_history` will automatically handle these:\n- **tui.py:2430-2460:** User-provided `reason` parameter (could be arbitrarily long)\n- **tui.py:2290:** Stage path strings (unlikely long but covered)\n- **tui.py:3097:** Full `feedback` from plan review (could be very long)\n\nNo code changes needed in tui.py \u2014 all handled by the centralized safety net.\n\n## Part 4: Verify ANSI regex consistency in _parse_verdict (phases.py)\n\nCheck `_parse_verdict` in phases.py for any ANSI stripping regex. If found, update it to use the same pattern `r'\\x1b\\[[0-9;]*[a-zA-Z]'` for consistency. Consider importing the compiled regex from state.py or duplicating the pattern string.\n\n## Summary of Changes\n\n| File | Change |\n|------|--------|\n| `pipeline/state.py` | Add `import re` at module level; add `_ANSI_RE` and `MAX_HISTORY_NOTE_LENGTH` constants; modify `add_history()` to strip ANSI and truncate to 100 chars |\n| `pipeline/phases.py` | Remove `[:100]` from lines 596 and 835; verify ANSI regex consistency in `_parse_verdict` |\n| `pipeline/tui.py` | No changes needed |\n\n## Testing\n\n1. Unit test: Verify `add_history` truncates notes longer than 100 chars with `...` suffix\n2. Unit test: Verify `add_history` strips ANSI escape codes\n3. Unit test: Verify notes exactly 100 chars are not truncated\n4. Unit test: Verify notes of 101 chars get truncated to 100 (97 chars + `...`)\n5. Manual test: Run a feature through the pipeline and verify history entries are clean and concise",
+  "impl_spec": "# Item History Cleanup \u2014 Implementation Spec\n\n## Task 1: Add ANSI regex constant and import to state.py\n**File:** `pipeline/state.py`\n**Action:** Modify\n**Dependencies:** None\n\n1. Add `import re` at module level after `import json` (line 3). Note: `re` is already imported locally in `_slugify` but needs module-level import for the constant.\n2. Add two module-level constants after the imports block (after line 10, before STAGES on line 13):\n   ```python\n   _ANSI_RE = re.compile(r'\\x1b\\[[0-9;]*[a-zA-Z]')\n   MAX_HISTORY_NOTE_LENGTH = 100\n   ```\n\n## Task 2: Modify add_history() in state.py to strip ANSI and truncate\n**File:** `pipeline/state.py`\n**Action:** Modify the `add_history` method (lines 240-250)\n**Dependencies:** Task 1\n\nReplace the current `add_history` method body to:\n1. Strip ANSI escape codes from `note` using `_ANSI_RE.sub('', note).strip()`\n2. Truncate if longer than `MAX_HISTORY_NOTE_LENGTH`: take first `MAX_HISTORY_NOTE_LENGTH - 3` chars and append `...`\n3. Use the cleaned note in the history entry dict\n\nExact new implementation:\n```python\ndef add_history(self, stage: str, note: str) -> None:\n    \"\"\"Add a timestamped entry to history.\"\"\"\n    ts = _now_iso()\n    if \"history\" not in self._data:\n        self._data[\"history\"] = []\n    # Strip ANSI escape codes and truncate\n    clean_note = _ANSI_RE.sub('', note).strip()\n    if len(clean_note) > MAX_HISTORY_NOTE_LENGTH:\n        clean_note = clean_note[:MAX_HISTORY_NOTE_LENGTH - 3] + \"...\"\n    self._data[\"history\"].append({\n        \"ts\": ts,\n        \"stage\": stage.upper(),\n        \"note\": clean_note,\n    })\n    self._save()\n```\n\n## Task 3: Remove redundant [:100] truncation in phases.py\n**File:** `pipeline/phases.py`\n**Action:** Modify two lines\n**Dependencies:** Task 2 (safety net must be in place first)\n\n- **Line 596:** Change `f\"Verdict: {verdict} - {summary[:100]}\"` to `f\"Verdict: {verdict} - {summary}\"`\n- **Line 835:** Change `f\"Verdict: {verdict} - {summary[:100]}\"` to `f\"Verdict: {verdict} - {summary}\"`\n\nThe centralized `add_history` safety net now handles truncation consistently.\n\n## Task 4: Verify ANSI regex in _parse_verdict \u2014 No changes needed\n**File:** `pipeline/phases.py`\n**Action:** None\n**Dependencies:** None\n\n`_parse_verdict` (line 279) does not perform any ANSI stripping. It uses `re` only for JSON extraction and text-based verdict/summary/feedback parsing. No ANSI regex exists there, so no consistency update is needed.\n\n## Task 5: Write unit tests\n**File:** `pipeline/test_history_cleanup.py` (new file)\n**Action:** Create\n**Dependencies:** Tasks 1-3\n\nWrite tests covering:\n1. `add_history` strips ANSI escape codes (e.g., `\\x1b[31mred text\\x1b[0m` -> `red text`)\n2. `add_history` truncates notes longer than 100 chars to 97 chars + `...`\n3. Notes exactly 100 chars are NOT truncated\n4. Notes of 101 chars get truncated to exactly 100 chars (97 + `...`)\n5. Combined: note with ANSI codes that is long gets both stripped and truncated\n6. Short clean notes pass through unchanged\n\nTest approach: Create a temporary JSON feature file, instantiate `FeatureFile`, call `add_history`, and inspect `self._data[\"history\"][-1][\"note\"]`.\n\n## Execution Order\n1. Task 1 (add import and constants to state.py)\n2. Task 2 (modify add_history - depends on Task 1)\n3. Task 3 (remove [:100] in phases.py - depends on Task 2)\n4. Task 4 (verification only - no changes)\n5. Task 5 (tests - depends on Tasks 1-3)",
+  "test_spec": "# Item History Cleanup \u2014 Test Specification\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 ANSI Escape Code Stripping in add_history()\n- **Behavior:** When a note containing ANSI escape codes (e.g., `\\x1b[31mRed text\\x1b[0m`) is passed to `add_history()`, all ANSI codes are stripped from the stored note.\n- **Success criteria:** The stored history entry's `note` field contains no ANSI escape sequences matching the pattern `\\x1b\\[[0-9;]*[a-zA-Z]`.\n- **Expected output:** `\"Red text\"` (no escape codes)\n\n### 1.2 Note Truncation at 100 Characters\n- **Behavior:** When a note longer than 100 characters is passed to `add_history()`, it is truncated to 97 characters plus `...` (total 100 chars).\n- **Success criteria:** The stored note is exactly 100 characters long and ends with `...`.\n- **Expected output:** For a 150-char input, output is first 97 chars + `...`.\n\n### 1.3 Notes at or Under 100 Characters Are Not Truncated\n- **Behavior:** A note that is exactly 100 characters long is stored as-is without any truncation.\n- **Success criteria:** The stored note equals the input note exactly.\n- **Expected output:** The original 100-character string unchanged.\n\n### 1.4 Combined ANSI Stripping and Truncation\n- **Behavior:** ANSI stripping happens BEFORE length check. A note that is over 100 chars only because of ANSI codes should NOT be truncated after stripping.\n- **Success criteria:** If the clean (ANSI-stripped) text is <= 100 chars, no truncation occurs even if the raw input was longer.\n- **Expected output:** Clean text without ANSI codes, not truncated.\n\n### 1.5 Whitespace Trimming\n- **Behavior:** After ANSI stripping, the note is stripped of leading/trailing whitespace before length check.\n- **Success criteria:** No leading or trailing whitespace in stored notes.\n\n### 1.6 Removal of Redundant [:100] Slicing in phases.py\n- **Behavior:** The two call sites in phases.py (approximately lines 596 and 835) that previously used `summary[:100]` now pass the full summary string to `add_history()`.\n- **Success criteria:** The `[:100]` slicing is removed from both call sites. The `add_history` safety net handles truncation instead.\n\n### 1.7 Module-Level Constants Exist in state.py\n- **Behavior:** `_ANSI_RE` (compiled regex) and `MAX_HISTORY_NOTE_LENGTH` (set to 100) are defined as module-level constants in state.py.\n- **Success criteria:** Constants are importable from state.py and have correct values.\n\n### 1.8 `import re` at Module Level in state.py\n- **Behavior:** The `re` module is imported at the top of state.py (not inside a function).\n- **Success criteria:** `re` appears in the module-level imports.\n\n## 2. Edge Cases\n\n### 2.1 Empty String Note\n- **Input:** `add_history(\"IDEAS\", \"\")`\n- **Expected:** History entry stored with `note` as `\"\"` (empty string). No error raised.\n\n### 2.2 Note That Is Only ANSI Codes\n- **Input:** `add_history(\"IDEAS\", \"\\x1b[31m\\x1b[0m\")`\n- **Expected:** After stripping ANSI and trimming whitespace, note is `\"\"`. Stored as empty string.\n\n### 2.3 Note Exactly 101 Characters (Boundary)\n- **Input:** A 101-character plain text note.\n- **Expected:** Truncated to 97 chars + `...` = 100 chars total.\n\n### 2.4 Note Exactly 99 Characters (Boundary)\n- **Input:** A 99-character plain text note.\n- **Expected:** Stored as-is, no truncation.\n\n### 2.5 Note with Multiple ANSI Sequences\n- **Input:** `\"\\x1b[1m\\x1b[31mBold Red\\x1b[0m normal \\x1b[4munderline\\x1b[0m\"`\n- **Expected:** `\"Bold Red normal underline\"`\n\n### 2.6 Note with ANSI Codes and Exactly 100 Clean Characters\n- **Input:** A string where the ANSI-stripped result is exactly 100 characters.\n- **Expected:** Stored as-is (100 chars), not truncated.\n\n### 2.7 Note with Only Whitespace After ANSI Stripping\n- **Input:** `\"\\x1b[31m   \\x1b[0m\"`\n- **Expected:** After strip, stored as `\"\"`.\n\n### 2.8 Note with Newlines and Tabs\n- **Input:** A note containing `\\n` or `\\t` characters.\n- **Expected:** Inner newlines/tabs are preserved (only leading/trailing whitespace is stripped). Truncation still applies based on length.\n\n### 2.9 Unicode Characters in Note\n- **Input:** A note with unicode characters (e.g., emoji, accented characters).\n- **Expected:** Truncation is based on character count (len()), not byte count. Unicode chars are preserved.\n\n### 2.10 Stage Parameter Casing\n- **Input:** `add_history(\"ideas\", \"some note\")`\n- **Expected:** Stage stored as `\"IDEAS\"` (uppercased). Note processing is unaffected by stage value.\n\n## 3. What Constitutes Failure\n\n- **ANSI codes remain in stored notes:** Any history entry containing `\\x1b[` sequences after `add_history()` is a failure.\n- **Notes exceed 100 characters:** Any stored note longer than 100 characters is a failure.\n- **Truncated notes don't end with `...`:** If a note was truncated, it must end with the ellipsis suffix.\n- **Notes at or under 100 chars are incorrectly truncated:** If a 100-char-or-less clean note is modified, that is a failure.\n- **ANSI stripping happens after truncation:** If truncation is applied before ANSI stripping, notes could end up shorter than necessary. The order must be: strip ANSI -> trim whitespace -> check length -> truncate if needed.\n- **`[:100]` still present in phases.py:** If redundant truncation remains at the call sites, the cleanup is incomplete.\n- **`import re` is inside a function rather than at module level:** The import must be at module level for the compiled regex constant to work.\n- **Crash on empty or whitespace-only input:** `add_history()` must handle edge cases without raising exceptions.\n\n## 4. Out of Scope\n\n- **UI/TUI rendering of history entries:** How history entries are displayed in the TUI is not part of this test spec.\n- **Performance benchmarks:** No need to measure execution time of ANSI stripping or truncation.\n- **File system behavior:** Testing that `_save()` correctly writes to disk is existing functionality, not part of this change.\n- **Concurrent access to feature files:** Thread safety of `add_history()` is not addressed by this feature.\n- **Content quality of history notes:** Whether the notes are meaningful summaries is a product concern, not a code correctness concern.\n- **Visual/manual testing of pipeline runs:** End-to-end pipeline behavior is out of scope for automated tests.\n- **ANSI regex in _parse_verdict:** Verified that no ANSI regex exists in `_parse_verdict`, so no changes or tests are needed there.\n- **Changes to tui.py:** The plan explicitly states no tui.py changes are needed; the safety net in `add_history` covers those call sites.",
+  "impl_notes": "Implemented item history cleanup feature: added ANSI escape code stripping and 100-char truncation to add_history() in state.py, removed redundant [:100] slicing from phases.py call sites, and created comprehensive unit tests (14 tests all passing).",
+  "history": [
+    {
+      "ts": "2026-03-08T05:41Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-08T06:02Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-08T06:05Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T06:07Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-08T06:07Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-08T06:09Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL"
+    },
+    {
+      "ts": "2026-03-08T06:09Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: MAX_HISTORY_NOTE_LENGTH inconsistency: The plan sets 200 chars but existing call sites (phases.py:596, 835) already truncate to 100 chars. Either use 100 for consistency, or verify why 200 is needed.\n\nANSI regex inconsistency: Part 1 uses r'\\x1b\\[[0-9;]m' but Part 3 uses r'\\x1b\\[[0-9;][a-zA-Z]'. Use a consistent, comprehensive pattern.\n\nAdditional long-note sources not addressed: Other add_history calls could receive long input:\n   - tui.py:2430-2460: Uses user-provided reason parameter which could be arbitrarily long\n   - tui.py:2290: Could be long with complex stage paths\n   - The safety net in add_history will handle these, which is acceptable.\n\nImport requirement: Ensure re is imported at module level in state.py (currently it's only imported locally in _slugify)."
+    },
+    {
+      "ts": "2026-03-08T06:09Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T06:12Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-08T06:12Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-08T06:13Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-08T06:13Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-08T09:30Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-08T09:30Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-08T09:31Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T09:33Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T09:33Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T09:37Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T09:37Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T09:37Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T09:38Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-08T09:38Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T09:39Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS"
+    },
+    {
+      "ts": "2026-03-08T09:39Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-09T00:56Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-08T06:09Z",
+      "verdict": "FAIL",
+      "feedback": "MAX_HISTORY_NOTE_LENGTH inconsistency: The plan sets 200 chars but existing call sites (phases.py:596, 835) already truncate to 100 chars. Either use 100 for consistency, or verify why 200 is needed.\n\nANSI regex inconsistency: Part 1 uses r'\\x1b\\[[0-9;]m' but Part 3 uses r'\\x1b\\[[0-9;][a-zA-Z]'. Use a consistent, comprehensive pattern.\n\nAdditional long-note sources not addressed: Other add_history calls could receive long input:\n   - tui.py:2430-2460: Uses user-provided reason parameter which could be arbitrarily long\n   - tui.py:2290: Could be long with complex stage paths\n   - The safety net in add_history will handle these, which is acceptable.\n\nImport requirement: Ensure re is imported at module level in state.py (currently it's only imported locally in _slugify)."
+    },
+    {
+      "ts": "2026-03-08T06:13Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-08T09:39Z",
+      "verdict": "PASS",
+      "feedback": ""
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-08T01:38:41.501962",
+    "verdict": "PASS",
+    "results": {
+      "passed": 14,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 14 tests passed. Test coverage verified against spec: ANSI escape code stripping (1.1), truncation at 100 chars (1.2), notes <=100 chars not truncated (1.3), combined ANSI stripping and truncation (1.4), whitespace trimming (1.5), removed [:100] slicing in phases.py (1.6), module-level constants _ANSI_RE and MAX_HISTORY_NOTE_LENGTH in state.py (1.7), import re at module level (1.8). Edge cases covered: empty string (2.1), ANSI-only note (2.2), 101-char truncation (2.3), 99-char boundary (2.4), multiple ANSI sequences (2.5), unicode (2.9), stage uppercasing (2.10). The implementation matches the spec requirements."
+  }
+}

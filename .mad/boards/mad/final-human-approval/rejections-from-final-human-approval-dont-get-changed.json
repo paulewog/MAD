@@ -1,0 +1,184 @@
+{
+  "id": "a04a35e4",
+  "board": "mad",
+  "title": "Rejections from final-human-approval don't get changed",
+  "type": "bug",
+  "created": "2026-03-10T16:24Z",
+  "description": "I'm not sure that the rejection message that I add from final-human-approval actually gets provided to the agents back in \"implementing.\"  I've rejected a few things, but it doesn't seem like anything actually changes when they work through the process again.",
+  "done_script": "",
+  "plan": "## Root Cause Analysis\n\nThere are two distinct bugs in the rejection-from-final-human-approval pathway, both resulting in the same symptom: rejection feedback never reaches the implementation agent.\n\n### Bug 1: TUI rejection constructs feedback but never stores it\n\nWhen a human rejects from final-human-approval via the TUI, the handler constructs a `full_feedback` string combining the human's rejection reason with previous review feedback. However, this string is assigned to a local variable and never persisted. It is not written to `impl_reviews` (via `add_impl_review`) or any other field on the feature. The only thing stored is a history entry with a brief 'Sent back to implementing' message.\n\nWhen the implementation agent later picks up the feature from the 'implementing' stage, it calls `_get_latest_feedback()` which reads from `impl_reviews`. Since the last impl review still has verdict=PASS (the review that originally sent it to final-human-approval), `_get_latest_feedback()` returns 'No previous feedback available.' The human's rejection reason is effectively lost.\n\n### Bug 2: Web UI rejection sends to wrong stage with no feedback\n\nWhen a human rejects from the web UI, `approveFeature('rejected')` sends `{target_stage: 'rejected'}`. This has two problems:\n1. It moves the feature to the 'rejected' stage (a dead-end) rather than back to 'implementing' where agents would pick it up again\n2. There is no mechanism to capture or send a rejection reason from the web UI - no text input is presented to the user\n3. Even the generic move handler on the pipeline client side just adds a history entry saying 'Moved via web UI' with no feedback content\n\n## Impact Assessment\n\n- Every rejection from final-human-approval (both TUI and web UI) results in the feature being re-processed without any awareness of why it was rejected\n- The implementation agent re-runs identically, likely producing the same output\n- Human reviewers experience a frustrating loop of rejecting the same issues repeatedly\n- The web UI path is worse because features go to 'rejected' stage (dead end) instead of being re-queued for implementation\n\n## Fix Strategy\n\n### For the TUI path:\nThe rejection handler needs to persist the human's feedback into the feature's review data structure (impl_reviews) with a FAIL verdict, so that `_get_latest_feedback()` will find it and include it in the implementation agent's prompt. The feedback should combine the human's rejection reason with any relevant prior context.\n\n### For the Web UI path:\n1. Add a rejection reason input to the web UI's reject flow (similar to the TUI's RejectModal)\n2. Include the rejection reason in the move request payload sent to the server\n3. The server needs to forward the reason to the pipeline client\n4. The pipeline client's move handler needs special logic for rejections from final-human-approval: store the feedback in impl_reviews and move to 'implementing' (not 'rejected')\n\n### Shared concern:\nThe move_feature protocol between server and client may need a 'reason' or 'feedback' field added to support rejection reasons from the web UI.\n\n## Risks\n\n- Changing the move_feature protocol requires coordinated changes in server (Go) and client (Python)\n- The web UI rejection flow needs careful UX consideration - a modal with text input before confirming rejection\n- Need to ensure backwards compatibility if old web UI clients connect without sending a reason field\n\n## Scope\n\n- The fix should touch the TUI rejection handler, the web UI rejection flow (HTML/JS), the server move_feature handler, and the pipeline client move handler\n- Should NOT change how the implementation agent reads feedback (that mechanism works correctly via _get_latest_feedback and impl_reviews)\n- Should NOT change the review pipeline flow itself",
+  "impl_spec": "## Implementation Spec: Rejections from final-human-approval don't get changed\n\n### Task 1: Fix TUI rejection handler to persist feedback\n\n**File:** `pipeline/tui.py`\n**Function:** `handle_final_reject` (nested inside `action_reject`, around line 3006)\n\nThe `full_feedback` string is constructed but never saved. Add a call to `f.add_impl_review()` with a FAIL verdict before saving and moving the feature.\n\n**Change:** After line:\n```python\nfull_feedback = f\"Human rejection: {reason}\\n\\nPrevious review feedback:\\n{feedback}\"\n```\nAdd:\n```python\nf.add_impl_review(\"FAIL\", f\"Human rejected from final-human-approval: {reason}\", full_feedback)\n```\n\nThis must be called before `f.save()` and `f.move_to_stage(\"implementing\")`. The `add_impl_review` method in `state.py` calls `self._save()` internally, so `f.save()` can be removed from this handler (it's redundant after `add_impl_review`).\n\n**Dependencies:** None. This is a self-contained fix.\n\n---\n\n### Task 2: Add rejection reason UI to web UI\n\n**File:** `server/templates/index.html`\n\nCurrently the Reject button directly calls `approveFeature('rejected')`. This needs to be changed to:\n1. Show a prompt/modal for the rejection reason\n2. Send `{target_stage: 'implementing', reason: '<user input>'}` instead of `{target_stage: 'rejected'}`\n\n**Change A \u2014 Replace the Reject button's onclick:**\nChange:\n```javascript\nonclick=\"approveFeature('rejected')\"\n```\nTo:\n```javascript\nonclick=\"showRejectModal()\"\n```\n\n**Change B \u2014 Add `showRejectModal()` function** (inline in the `<script>` block):\n```javascript\nfunction showRejectModal() {\n    var reason = prompt('Rejection reason (optional):');\n    if (reason === null) return; // user cancelled\n    approveFeature('implementing', reason || 'No reason given');\n}\n```\nNote: `prompt()` is simplest and avoids adding new DOM elements. If the project prefers a richer modal, add a hidden `<div>` modal with a textarea and Confirm/Cancel buttons (similar to the existing modal pattern in the template).\n\n**Change C \u2014 Update `approveFeature()` function signature and body:**\nChange signature from:\n```javascript\nfunction approveFeature(action) {\n```\nTo:\n```javascript\nfunction approveFeature(action, reason) {\n```\nChange the fetch body from:\n```javascript\nbody: JSON.stringify({target_stage: action})\n```\nTo:\n```javascript\nbody: JSON.stringify(reason !== undefined ? {target_stage: action, reason: reason} : {target_stage: action})\n```\n\n**Dependencies:** Task 3 (server must accept the `reason` field), Task 4 (client must handle it).\n\n---\n\n### Task 3: Extend server move_feature handler to forward `reason`\n\n**File:** `server/api.go`\n\n**Change A \u2014 Add `Reason` field to `moveFeatureData` struct:**\n```go\ntype moveFeatureData struct {\n    TargetStage string `json:\"target_stage\"`\n    Reason      string `json:\"reason,omitempty\"`\n}\n```\n\n**Change B \u2014 Include `reason` in the WebSocket message forwarded to the client:**\nIn `serveMoveFeature`, find where `msg` is built:\n```go\nmsg, _ := json.Marshal(map[string]interface{}{\n    \"type\":         \"move_feature\",\n    \"feature_id\":   featureID,\n    \"target_stage\": req.TargetStage,\n    \"request_id\":   requestID,\n})\n```\nChange to:\n```go\npayload := map[string]interface{}{\n    \"type\":         \"move_feature\",\n    \"feature_id\":   featureID,\n    \"target_stage\": req.TargetStage,\n    \"request_id\":   requestID,\n}\nif req.Reason != \"\" {\n    payload[\"reason\"] = req.Reason\n}\nmsg, _ := json.Marshal(payload)\n```\n\nNo stage validation change is needed because the web UI will now send `implementing` (a valid stage) instead of `rejected`.\n\n**Dependencies:** None (backwards-compatible: old clients without `reason` field will get empty string, which is fine).\n\n---\n\n### Task 4: Update server_client.py to extract and pass `reason`\n\n**File:** `pipeline/server_client.py`\n\n**Change A \u2014 Update `on_move_requested` callback type signature** (in `__init__` and stored attribute):\nChange from:\n```python\non_move_requested: Optional[Callable[[str, str, str], Awaitable[None]]] = None\n```\nTo:\n```python\non_move_requested: Optional[Callable[[str, str, str, str], Awaitable[None]]] = None\n```\n(Four str args: feature_id, target_stage, request_id, reason)\n\n**Change B \u2014 Extract `reason` in the message dispatch handler** (around line 327):\nChange:\n```python\nelif msg_type == \"move_feature\":\n    feature_id = data.get(\"feature_id\", \"\")\n    target_stage = data.get(\"target_stage\", \"\")\n    request_id = data.get(\"request_id\", \"\")\n    if self._on_move_requested and feature_id and target_stage:\n        try:\n            await self._on_move_requested(feature_id, target_stage, request_id)\n```\nTo:\n```python\nelif msg_type == \"move_feature\":\n    feature_id = data.get(\"feature_id\", \"\")\n    target_stage = data.get(\"target_stage\", \"\")\n    request_id = data.get(\"request_id\", \"\")\n    reason = data.get(\"reason\", \"\")\n    if self._on_move_requested and feature_id and target_stage:\n        try:\n            await self._on_move_requested(feature_id, target_stage, request_id, reason)\n```\n\n**Dependencies:** Task 5 must update the TUI callback to accept the new `reason` parameter.\n\n---\n\n### Task 5: Update TUI `_on_move_requested` to store rejection feedback\n\n**File:** `pipeline/tui.py`\n**Function:** `_on_move_requested` (around line 2160)\n\n**Change A \u2014 Update callback signature** to accept `reason`:\n```python\nasync def _on_move_requested(self, feature_id: str, target_stage: str, request_id: str, reason: str = \"\") -> None:\n```\n\n**Change B \u2014 Add special logic for rejections from `final-human-approval`:**\nBefore the existing `feature.add_history(...)` call, add:\n```python\n# If rejecting from final-human-approval back to implementing, persist feedback\nif target_stage == \"implementing\" and feature.current_stage == \"final-human-approval\" and reason:\n    from phases import _get_latest_feedback\n    prev_feedback = _get_latest_feedback(feature)\n    full_feedback = f\"Human rejection: {reason}\\n\\nPrevious review feedback:\\n{prev_feedback}\"\n    feature.add_impl_review(\"FAIL\", f\"Human rejected from final-human-approval: {reason}\", full_feedback)\n```\nThe `add_impl_review` call saves the feature, so the existing `feature.add_history(...)` and `feature.move_to_stage(...)` will still run afterwards.\n\nUpdate the history message for this case:\n```python\nif target_stage == \"implementing\" and feature.current_stage == \"final-human-approval\":\n    feature.add_history(\"IMPLEMENTING\", f\"Sent back to implementing: {reason or 'No reason given'}\")\nelse:\n    feature.add_history(target_stage.upper(), \"Moved via web UI\")\n```\n\n**Dependencies:** Task 4 (server_client.py must pass `reason` to the callback).\n\n---\n\n### Task 6: Write/update tests\n\n**File:** `pipeline/test_edit_feature.py` or a new `pipeline/test_rejection_feedback.py`\n\nTest cases to cover:\n1. TUI rejection from `final-human-approval`: verify `add_impl_review` is called with FAIL verdict and the reason is in the feedback field, and `_get_latest_feedback()` returns the rejection reason after the call.\n2. Web UI rejection path: verify `_on_move_requested` with `target_stage='implementing'`, `feature.current_stage='final-human-approval'`, and a `reason` string results in `add_impl_review` being called and the feature moving to `implementing`.\n3. Web UI rejection without reason (empty string): verify no `add_impl_review` is called but the feature still moves to `implementing` (graceful degradation).\n4. Web UI move to `implementing` from a non-`final-human-approval` stage: verify no spurious `add_impl_review` is called.\n\n---\n\n### Summary of Files Changed\n\n1. `pipeline/tui.py` \u2014 Task 1 (TUI rejection handler) and Task 5 (`_on_move_requested`)\n2. `pipeline/server_client.py` \u2014 Task 4 (extract `reason` from message, update callback signature)\n3. `server/api.go` \u2014 Task 3 (`moveFeatureData` struct, forward `reason` in WebSocket message)\n4. `server/templates/index.html` \u2014 Task 2 (reject button UI, `approveFeature` function)\n5. `pipeline/test_rejection_feedback.py` (new) \u2014 Task 6 (tests)\n",
+  "test_spec": "# Test Specification: Rejections from Final-Human-Approval Don't Get Changed\n\n## Overview\n\nThis spec covers two distinct bugs in the rejection pathway from the `final-human-approval` stage:\n\n1. **TUI Bug**: The TUI handler constructs rejection feedback but never persists it to `impl_reviews`, so the implementation agent cannot see it.\n2. **Web UI Bug**: The web UI sends `target_stage: 'rejected'` (a dead-end stage) instead of `'implementing'`, and provides no mechanism for capturing a rejection reason.\n\n---\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 TUI Rejection Path\n\n**Behavior: Rejection feedback is persisted to impl_reviews**\n- When a human rejects a feature from `final-human-approval` via the TUI and provides a reason, an `impl_review` entry must be added to the feature with `verdict: FAIL` and the human's rejection reason as the feedback content.\n- The history entry should reflect the rejection (e.g., 'Sent back to implementing with feedback').\n- After rejection, the feature must be in the `implementing` stage.\n\n**Behavior: Implementation agent sees the rejection reason**\n- After a TUI rejection, when the implementation agent picks up the feature, calling `_get_latest_feedback()` must return the human's rejection reason (not 'No previous feedback available.').\n- The `impl_reviews` list must contain at least one entry with `verdict: FAIL` and non-empty feedback text.\n\n**Behavior: Combined feedback (human + prior review context) is preserved**\n- If prior `impl_reviews` existed with context (e.g., earlier review feedback), the new FAIL review stored should include the human's rejection reason, possibly combined with prior context.\n- The final stored feedback must contain the human's explicit rejection reason.\n\n### 1.2 Web UI Rejection Path\n\n**Behavior: Web UI presents a rejection reason input before confirming rejection**\n- When the user clicks Reject in the web UI from the `final-human-approval` stage, a modal or input dialog must appear asking for a rejection reason before the request is sent.\n- The rejection action must not proceed without giving the user the opportunity to enter a reason.\n\n**Behavior: Rejection reason is included in the move request**\n- The move request sent from the web UI must include the rejection reason as a field (e.g., `reason` or `feedback`) in addition to the target stage.\n- The request payload must target `implementing` (not `rejected`) when rejecting from `final-human-approval`.\n\n**Behavior: Server forwards the rejection reason to the pipeline client**\n- The server's move_feature handler must pass the `reason`/`feedback` field from the web UI request through to the pipeline client's move message.\n- If no reason is provided (e.g., old client), the server must handle this gracefully (empty string or default message, not a crash).\n\n**Behavior: Pipeline client handles rejection-from-final-human-approval specially**\n- When the pipeline client receives a move from `final-human-approval` to `implementing` (via the web UI), it must:\n  1. Store the rejection reason as an `impl_review` with `verdict: FAIL`.\n  2. Move the feature to `implementing` (not `rejected`).\n  3. Add an appropriate history entry.\n- The feature must NOT end up in the `rejected` stage after a web UI rejection from `final-human-approval`.\n\n**Behavior: Implementation agent picks up web UI rejections correctly**\n- After a web UI rejection from `final-human-approval`, `_get_latest_feedback()` on the feature must return the human's rejection reason.\n- The feature must be visible to the implementation agent (in the `implementing` stage).\n\n### 1.3 Shared / Protocol Concerns\n\n**Behavior: move_feature protocol supports a reason/feedback field**\n- The server API and pipeline client protocol for `move_feature` must accept and transmit an optional reason/feedback string.\n- Existing callers that don't send a reason must still work (backwards compatibility).\n\n**Behavior: _get_latest_feedback returns FAIL review content**\n- After either TUI or web UI rejection, `_get_latest_feedback()` must return the human's rejection reason text.\n- The function must prefer the most recent `impl_review` with `verdict: FAIL` over older PASS entries.\n\n---\n\n## 2. Edge Cases\n\n### 2.1 Empty or Null Rejection Reason\n- If the human submits the TUI rejection modal with an empty reason string, the system should still move the feature back to `implementing` and store a review entry (possibly with a placeholder like 'No reason given').\n- If the web UI user submits the rejection modal with no text, the system should similarly proceed gracefully without crashing, using a default or empty feedback string.\n- `_get_latest_feedback()` must not crash if the stored feedback is empty; it should return the empty string or a default message.\n\n### 2.2 No Prior impl_reviews\n- If a feature has never had any `impl_reviews` before the first human rejection, the rejection handler must still successfully add the first FAIL review without errors.\n\n### 2.3 Multiple Rejection Cycles\n- A feature can be rejected multiple times. Each rejection should append a new `impl_review` entry with `verdict: FAIL`.\n- `_get_latest_feedback()` must return the most recent rejection reason, not an earlier one.\n- The feature must return to `implementing` each time, not accumulate in a dead-end stage.\n\n### 2.4 Concurrent Operations\n- If two users attempt to reject the same feature simultaneously (one via TUI, one via web UI), the system should handle this without corrupting the `impl_reviews` list or the feature's stage.\n- Only one rejection should 'win'; the other should receive an appropriate error or be handled gracefully.\n\n### 2.5 Missing/Old Web UI Client\n- If an old web UI client connects that does not send a `reason` field in the move request, the server must not crash. It should proceed with an empty or default reason.\n\n### 2.6 Feature Not in final-human-approval\n- Attempting to reject a feature that is not in `final-human-approval` via the special rejection pathway should either be rejected (error returned) or fall through to normal move logic without adding spurious `impl_reviews`.\n\n### 2.7 Very Long Rejection Reason\n- A very long rejection reason (e.g., several paragraphs) must be stored without truncation.\n- The system must not crash or produce an error when the reason is unusually long.\n\n---\n\n## 3. What Constitutes Failure\n\n### 3.1 TUI Path Failures\n- **FAIL**: After a TUI rejection from `final-human-approval`, the feature's `impl_reviews` list does NOT contain an entry with `verdict: FAIL` and the human's rejection reason.\n- **FAIL**: `_get_latest_feedback()` returns 'No previous feedback available.' after a TUI rejection.\n- **FAIL**: The feature remains in `final-human-approval` or moves to any stage other than `implementing` after TUI rejection.\n- **FAIL**: The rejection reason is silently discarded (i.e., only a history entry is created with no feedback content).\n\n### 3.2 Web UI Path Failures\n- **FAIL**: A web UI rejection sends `target_stage: 'rejected'` instead of `'implementing'`.\n- **FAIL**: The feature ends up in the `rejected` stage (dead end) after a web UI rejection from `final-human-approval`.\n- **FAIL**: No modal/input is shown to the user before the rejection is submitted (reason is never captured).\n- **FAIL**: The rejection reason is not included in the move request payload.\n- **FAIL**: The server crashes or returns an error when receiving a rejection reason field.\n- **FAIL**: `_get_latest_feedback()` returns 'No previous feedback available.' after a web UI rejection.\n- **FAIL**: The pipeline client crashes or silently ignores the rejection reason when processing the move.\n\n### 3.3 Protocol Failures\n- **FAIL**: Adding a `reason` field to the move_feature protocol breaks existing callers that don't send it.\n- **FAIL**: The server does not forward the `reason` field to the pipeline client.\n\n### 3.4 General Failures\n- **FAIL**: Any unhandled exception or crash in the rejection pathway.\n- **FAIL**: Any data corruption of `impl_reviews` (e.g., duplicate entries, malformed structure).\n- **FAIL**: The implementation agent re-runs identically after rejection (i.e., it receives no rejection feedback and produces the same output as before).\n\n---\n\n## 4. Out of Scope\n\n- **Visual/UI assertions**: Do not test pixel-level rendering, CSS styling, or modal animation.\n- **UI timing/race conditions from browser**: Do not test browser-specific timing issues (debounce, animation delays).\n- **Performance benchmarks**: Do not test how quickly the rejection propagates end-to-end.\n- **Implementation agent output quality**: Do not assert that the agent actually fixes the rejected issue correctly \u2014 only that it *receives* the rejection reason.\n- **Non-final-human-approval rejections**: Do not test rejection from other stages (e.g., `reviewing-plan`, `reviewing-impl`) \u2014 those pathways are not changed.\n- **Review pipeline flow**: Do not test how features move through `reviewing-impl` or `reviewing-plan`; only the `final-human-approval` rejection path.\n- **_get_latest_feedback internals beyond rejection**: Do not test all the scenarios `_get_latest_feedback` handles (e.g., mixed PASS/FAIL from automated reviews) \u2014 only that the human rejection reason is accessible after rejection.\n- **Authentication/authorization**: Do not test who is allowed to reject \u2014 only that rejection works correctly when it is performed.\n- **Notification/alerting**: Do not test any external notifications triggered by rejection.\n",
+  "impl_notes": "Implemented fixes for rejection feedback from final-human-approval. TUI path now persists feedback via add_impl_review(). Web UI path now prompts for rejection reason and sends to implementing stage instead of rejected. Server and client protocol extended to support reason field.",
+  "ideation_summaries": [
+    "The rejection flow from final-human-approval has two significant gaps that explain why nothing changes when items are re-processed. First, the web UI's reject button (index.html:574-579) sends a move request with only target_stage='rejected' but no rejection reason field - the user's feedback is never captured or stored. The move handler in tui.py:2168 only records a generic 'Moved via web UI' history entry. Second, items land in the 'rejected' stage which is terminal (no auto-processing), and w",
+    "The previous proposal correctly identifies the missing rejection reason in the web UI but conflates two distinct rejection paths: the TUI already moves rejected items from final-human-approval back to 'implementing' with feedback, while the web UI sends them to the terminal 'rejected' stage. The proposal to store human feedback as impl_review entries risks breaking automated review retry logic and can be overwritten by subsequent automated reviews. A complete fix requires: (1) the web UI must ro",
+    "Both previous proposals correctly identify the core problem but each has gaps. The first proposal suggests storing human feedback as impl_review entries, which the second rightly warns could be overwritten by subsequent automated reviews. The second proposes a dedicated human_feedback field but doesn't address the critical TUI bug where full_feedback is constructed on line 3008 but never persisted. The simplest correct fix involves three targeted changes: (1) Add a 'human_rejection_feedback' fie",
+    "The third proposal's approach is largely sound but has three weaknesses worth addressing. First, the 'clear after consumption' strategy for human_rejection_feedback is fragile \u2014 if the implementing agent crashes or is killed before the feedback is consumed and cleared, the feedback is lost permanently since it was already removed from state; a safer approach is to leave the feedback in place and let it be naturally superseded when the item progresses past implementing (or simply check timestamp/"
+  ],
+  "Ideation": "The rejection flow from final-human-approval has two critical gaps that cause items to be silently discarded rather than reworked. The web UI's reject button sends a move request with only target_stage='rejected', never capturing the human's feedback text, and the move handler records only a generic history entry. Items then land in the terminal 'rejected' stage where no auto-processing occurs, so the implementing agent never receives guidance on what to fix. This contrasts with the TUI, which already routes rejections from final-human-approval back to 'implementing' \u2014 though it has its own bug where the full_feedback string is constructed but never persisted to the item's state.\n\nThe fix requires three targeted changes: (1) the web UI reject button must prompt for a rejection reason and send it along with the move request, routing items back to 'implementing' rather than 'rejected'; (2) a dedicated 'human_rejection_feedback' field should be added to item state to store this feedback separately from automated impl_review entries, which could otherwise be overwritten by subsequent automated reviews; (3) the TUI bug must be fixed so that the constructed full_feedback is actually written to the item file before moving it back to implementing.\n\nA key design tradeoff is whether to clear the human_rejection_feedback field after the implementing agent has consumed it. Clearing it is fragile: if the agent crashes or is killed before acknowledging the feedback, the guidance is permanently lost. The safer approach is to leave the feedback in place and allow it to be naturally superseded when the item successfully progresses past implementing \u2014 either by checking a timestamp to determine relevance or by simply prepending it to the implementing context every time until the item advances. This avoids a whole class of race conditions.\n\nThe risks are low given the targeted nature of the changes. The web UI modification is straightforward UI work; the state field addition is non-breaking since absent fields default to empty; and the TUI fix is a one-line persistence call. The main uncertainty is ensuring the implementing agent prompt template is updated to surface the human_rejection_feedback field prominently enough that the agent prioritizes addressing the human's specific concerns over its own interpretation of what needs fixing.",
+  "history": [
+    {
+      "ts": "2026-03-10T16:24Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-10T17:26Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-10T17:26Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-10T17:26Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-10T17:29Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-10T17:32Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-10T17:34Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-10T17:35Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis"
+    },
+    {
+      "ts": "2026-03-10T17:36Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-10T17:37Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-10T17:37Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-10T17:40Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-10T17:40Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-10T17:41Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan correctly identifies two distinct bugs (TUI not persisting feedback, web..."
+    },
+    {
+      "ts": "2026-03-10T17:41Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-10T19:11Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-10T19:11Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-10T19:13Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-10T19:15Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-10T19:15Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-10T19:27Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-10T19:27Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-10T19:27Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-10T19:29Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-10T19:29Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-10T19:32Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Both TUI and Web UI rejection bugs are correctly fixed. TUI's handle_final_reject..."
+    },
+    {
+      "ts": "2026-03-10T19:32Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-10T17:41Z",
+      "verdict": "PASS",
+      "summary": "The plan correctly identifies two distinct bugs (TUI not persisting feedback, web UI sending to wrong stage), provides a clear root cause analysis, outlines a feasible fix strategy across all affected components, and appropriately identifies scope boundaries and risks.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-10T19:32Z",
+      "verdict": "PASS",
+      "summary": "Both TUI and Web UI rejection bugs are correctly fixed. TUI's handle_final_reject now calls add_impl_review('FAIL', ...) before move_to_stage('implementing'). Web UI showRejectModal uses prompt() for reason, targets 'implementing', server forwards reason field, and pipeline client stores feedback when moving from final-human-approval to implementing with a reason.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-10T12:29:50.350694",
+    "verdict": "PASS",
+    "results": {
+      "passed": 23,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 23 tests in test_rejection_feedback.py and test_move_feature.py pass. Test coverage includes: TUI rejection path (persisting impl_review with FAIL verdict), server_client protocol support for reason field, _get_latest_feedback returning rejection reasons, and condition logic for rejection detection. Web UI rejection path is not directly tested (UI testing out of scope per spec section 4), but the server protocol layer is tested to pass the reason field through to callbacks."
+  }
+}

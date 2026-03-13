@@ -1,0 +1,200 @@
+{
+  "id": "a1b2c305",
+  "board": "mad",
+  "title": "Hardcoded paths in schedule module",
+  "type": "bug",
+  "created": "2026-03-08T06:00Z",
+  "description": "schedule.py hardcodes ~/MAD/ for SCHEDULES_PATH and RUNS_PATH instead of using config's mad_dir. This breaks if someone uses a different project root or has a local .mad/ config. Should read from Config() instead.",
+  "plan": "# Bug Fix Plan: Replace hardcoded paths with config-aware paths\n\n## Root Cause Analysis\n\nThe schedule module hardcodes `~/MAD/` paths in lines 21-22:\n```python\nSCHEDULES_PATH = Path(\"~/MAD/schedules.json\").expanduser()\nRUNS_PATH = Path(\"~/MAD/runs.json\").expanduser()\n```\n\nThis breaks when users have local `.mad/` configs or non-standard project roots. The paths should use `Config().mad_dir` to respect the configuration system.\n\n## Fix Approach (addressing all review feedback)\n\n### 1. Remove module-level path computation\n- Delete lines 21-22 (SCHEDULES_PATH and RUNS_PATH constants)\n- This prevents module-load-time evaluation that can cause circular imports and Config initialization issues\n\n### 2. Implement lazy path computation in __init__ methods\n\n**ScheduleStore.__init__ change:**\n```python\ndef __init__(self, path: Optional[Path] = None):\n    if path is None:\n        try:\n            from config import Config\n            path = Config().mad_dir / \"schedules.json\"\n        except Exception:\n            # Fallback to original behavior if Config fails\n            path = Path(\"~/MAD/schedules.json\").expanduser()\n    self._path = path\n```\n\n**RunStore.__init__ change:**\n```python\ndef __init__(self, path: Optional[Path] = None):\n    if path is None:\n        try:\n            from config import Config\n            path = Config().mad_dir / \"runs.json\"\n        except Exception:\n            # Fallback to original behavior if Config fails\n            path = Path(\"~/MAD/runs.json\").expanduser()\n    self._path = path\n```\n\n### 3. Error handling strategy\n- Wrap Config() access in try/except to handle missing .mad directories, circular imports, or Config initialization failures\n- Fallback to original `~/MAD/` behavior if Config system is unavailable\n- This ensures the module remains functional even in edge cases\n\n### 4. No helper functions needed\n- Direct path computation in __init__ methods keeps it simple\n- Avoids unnecessary complexity while solving the core issue\n\n## Verification Plan\n\n### Test scenarios:\n1. **Local mode (.mad/ config)**: Verify schedules.json created in `.mad/` directory\n2. **Global mode (~/MAD/ config)**: Verify schedules.json created in `~/MAD/`\n3. **No config available**: Verify fallback to `~/MAD/` works\n4. **Config initialization failure**: Verify fallback behavior\n5. **Import order edge cases**: Verify no circular import issues\n6. **Default parameter behavior**: Verify calling `ScheduleStore()` without explicit path parameter works correctly\n7. **Explicit path override**: Verify passing explicit path parameter still works\n\n### Implementation steps:\n1. Remove hardcoded SCHEDULES_PATH and RUNS_PATH constants\n2. Modify ScheduleStore.__init__ signature and implementation\n3. Modify RunStore.__init__ signature and implementation  \n4. Test all scenarios above\n5. Verify existing functionality preserved\n\n### Files to modify:\n- `pipeline/schedule.py` (lines 21-22, 260, 321)\n\nThis approach eliminates module-load-time evaluation, adds proper error handling, respects the config system, and maintains backward compatibility through sensible fallbacks.",
+  "impl_spec": "## Implementation Spec: Replace hardcoded paths in schedule module\n\n### Task 1: Remove module-level path constants\n**File:** `pipeline/schedule.py`\n**Lines:** 21-22\n**Action:** Delete the two module-level constants:\n```python\nSCHEDULES_PATH = Path(\"~/MAD/schedules.json\").expanduser()\nRUNS_PATH = Path(\"~/MAD/runs.json\").expanduser()\n```\n**Dependencies:** None. Must be done before Tasks 2 and 3 since they replace the usage.\n\n### Task 2: Modify ScheduleStore.__init__ to use lazy config-based path\n**File:** `pipeline/schedule.py`\n**Line:** 260\n**Action:** Change the `__init__` signature from `def __init__(self, path: Path = SCHEDULES_PATH):` to accept `Optional[Path]` with `None` default, and compute the path lazily using Config:\n```python\ndef __init__(self, path: Optional[Path] = None):\n    if path is None:\n        try:\n            from config import Config\n            path = Config().mad_dir / \"schedules.json\"\n        except Exception:\n            path = Path(\"~/MAD/schedules.json\").expanduser()\n    self._path = path\n```\n**Key details:**\n- Import `Config` inside the method body (lazy import) to avoid circular imports at module load time\n- try/except wraps Config() access to handle missing .mad directories or Config init failures\n- Fallback preserves original ~/MAD/ behavior for robustness\n- `Optional[Path]` is already imported (line 16)\n**Dependencies:** Task 1 (constant must be removed first)\n\n### Task 3: Modify RunStore.__init__ to use lazy config-based path\n**File:** `pipeline/schedule.py`\n**Line:** 321\n**Action:** Same pattern as Task 2 but for runs.json:\n```python\ndef __init__(self, path: Optional[Path] = None):\n    if path is None:\n        try:\n            from config import Config\n            path = Config().mad_dir / \"runs.json\"\n        except Exception:\n            path = Path(\"~/MAD/runs.json\").expanduser()\n    self._path = path\n```\n**Dependencies:** Task 1 (constant must be removed first)\n\n### Task 4: Update module docstring\n**File:** `pipeline/schedule.py`\n**Lines:** 5-6\n**Action:** Update the docstring references from hardcoded `~/MAD/` paths to reflect config-aware behavior:\n- Change `(~/MAD/schedules.json)` to `(config-aware path)`\n- Change `(~/MAD/runs.json)` to `(config-aware path)`\n**Dependencies:** None\n\n### Task 5: Verify no other references to removed constants\n**File:** `pipeline/schedule.py` and any importers\n**Action:** Search codebase for any imports or references to `SCHEDULES_PATH` or `RUNS_PATH` from schedule.py. These constants were only used as default arguments on lines 260 and 321, so no other updates should be needed, but verify.\n**Dependencies:** None\n\n### Verification checklist:\n1. `ScheduleStore()` with no args uses Config().mad_dir / \"schedules.json\"\n2. `RunStore()` with no args uses Config().mad_dir / \"runs.json\"\n3. `ScheduleStore(path=some_path)` still works with explicit path\n4. `RunStore(path=some_path)` still works with explicit path\n5. If Config() raises, both fall back to ~/MAD/ paths\n6. No circular imports at module load time\n7. No references to deleted SCHEDULES_PATH/RUNS_PATH constants remain",
+  "test_spec": "# Test Specification: Replace Hardcoded Paths in Schedule Module\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 ScheduleStore defaults to Config-based path\n- When `ScheduleStore()` is instantiated with no arguments and a valid Config is available, its internal path should resolve to `Config().mad_dir / \"schedules.json\"` rather than `~/MAD/schedules.json`.\n- Success criteria: The store's `_path` attribute equals the config-derived path.\n\n### 1.2 RunStore defaults to Config-based path\n- When `RunStore()` is instantiated with no arguments and a valid Config is available, its internal path should resolve to `Config().mad_dir / \"runs.json\"` rather than `~/MAD/runs.json`.\n- Success criteria: The store's `_path` attribute equals the config-derived path.\n\n### 1.3 Explicit path override still works for ScheduleStore\n- When `ScheduleStore(path=some_explicit_path)` is called, the store should use that explicit path regardless of Config.\n- Success criteria: `_path` equals the explicitly provided path. Config is never consulted.\n\n### 1.4 Explicit path override still works for RunStore\n- When `RunStore(path=some_explicit_path)` is called, the store should use that explicit path regardless of Config.\n- Success criteria: `_path` equals the explicitly provided path. Config is never consulted.\n\n### 1.5 Fallback when Config fails (ScheduleStore)\n- When `ScheduleStore()` is instantiated with no arguments and `Config()` raises an exception (e.g., no .mad directory found, import error, initialization failure), the store should fall back to `~/MAD/schedules.json`.\n- Success criteria: `_path` equals `Path(\"~/MAD/schedules.json\").expanduser()`.\n\n### 1.6 Fallback when Config fails (RunStore)\n- When `RunStore()` is instantiated with no arguments and `Config()` raises an exception, the store should fall back to `~/MAD/runs.json`.\n- Success criteria: `_path` equals `Path(\"~/MAD/runs.json\").expanduser()`.\n\n### 1.7 No module-level path constants\n- The module should NOT define `SCHEDULES_PATH` or `RUNS_PATH` as module-level constants.\n- Success criteria: `hasattr(schedule_module, 'SCHEDULES_PATH')` is False and `hasattr(schedule_module, 'RUNS_PATH')` is False.\n\n### 1.8 Local config mode produces correct paths\n- When Config is in local mode (`.mad/` directory in project root), the schedule and run stores should write to paths under that local `.mad/` directory.\n- Success criteria: Paths are under the local `.mad/` directory, not under `~/MAD/`.\n\n### 1.9 Global config mode produces correct paths\n- When Config is in global mode (`~/MAD/` directory), the schedule and run stores should write to paths under `~/MAD/`.\n- Success criteria: Paths are under `~/MAD/`.\n\n### 1.10 No circular imports at module load time\n- Importing the schedule module should not trigger a circular import error. The Config import must happen lazily inside `__init__`, not at module level.\n- Success criteria: `import schedule` completes without ImportError or circular import traceback.\n\n## 2. Edge Cases\n\n### 2.1 Config import raises ImportError\n- If the `config` module itself cannot be imported (e.g., missing dependency), the fallback path should be used.\n- Expected: Falls back to `~/MAD/schedules.json` or `~/MAD/runs.json` without raising.\n\n### 2.2 Config() constructor raises an arbitrary exception\n- If `Config()` raises any exception (ValueError, FileNotFoundError, RuntimeError, etc.), the fallback should activate.\n- Expected: Falls back gracefully.\n\n### 2.3 Config().mad_dir raises an exception\n- If Config instantiates successfully but accessing `mad_dir` property raises, the fallback should activate.\n- Expected: Falls back gracefully.\n\n### 2.4 Path is None explicitly passed\n- If `ScheduleStore(path=None)` or `RunStore(path=None)` is called, it should behave the same as calling with no arguments (use Config or fallback).\n- Expected: Config-based path or fallback is used.\n\n### 2.5 Multiple instantiations\n- Creating multiple ScheduleStore or RunStore instances should each independently resolve their path.\n- Expected: Each instance has the correct `_path` set.\n\n### 2.6 Store operations still function after path change\n- After the fix, `ScheduleStore().all()`, `.save()`, `.get()`, `.delete()` should all work correctly with the new path resolution.\n- Expected: All CRUD operations succeed using the config-derived path.\n\n## 3. What Constitutes Failure\n\n### 3.1 Hard failures\n- Any `ImportError` or `CircularImportError` when importing the schedule module.\n- `ScheduleStore()` or `RunStore()` raising an unhandled exception when Config is unavailable.\n- Store path resolving to `~/MAD/` when a local `.mad/` config exists and Config works correctly.\n- Module still defining `SCHEDULES_PATH` or `RUNS_PATH` constants.\n\n### 3.2 Behavioral failures\n- Fallback not activating when Config() raises \u2014 any exception propagating from the constructor when no explicit path is given.\n- Explicit path parameter being ignored in favor of Config-derived path.\n- Store reading/writing to wrong location after the change.\n\n### 3.3 Regression failures\n- Existing tests for ScheduleStore or RunStore breaking due to signature changes.\n- SchedulerDaemon failing to initialize because it passes stores that no longer work.\n- Any caller of `ScheduleStore()` or `RunStore()` breaking because the default argument changed from `Path` to `None`.\n\n## 4. Out of Scope\n\n- **Performance**: No need to benchmark Config() instantiation time or path resolution speed.\n- **Concurrency/threading**: Thread safety of the stores is already handled by existing locks and is not affected by this change.\n- **SchedulerDaemon behavior**: The daemon's polling, triggering, and catch-up logic are unrelated to path resolution and should not be retested.\n- **Cron expression validation**: Not affected by this change.\n- **UI/TUI rendering**: No UI components are affected.\n- **File system permissions**: Assuming the process has appropriate read/write access to the resolved paths.\n- **Config class internals**: The Config class itself is not being modified; only its usage is being added to the schedule module.\n- **Other modules' hardcoded paths**: This spec covers only `pipeline/schedule.py`.",
+  "impl_notes": "Fixed hardcoded paths in pipeline/schedule.py by removing module-level SCHEDULES_PATH and RUNS_PATH constants and replacing them with lazy path computation in ScheduleStore.__init__ and RunStore.__init__ methods. Both __init__ methods now try to use Config().mad_dir for the path, with fallback to ~/MAD/ on any exception. This prevents circular import issues at module load time while respecting the configuration system.",
+  "history": [
+    {
+      "ts": "2026-03-08T06:00Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-08T20:13Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-08T20:25Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T20:27Z",
+      "stage": "PLANNING",
+      "note": "Questions raised via claude"
+    },
+    {
+      "ts": "2026-03-08T20:28Z",
+      "stage": "PLAN-INBOX",
+      "note": "Questions answered via web UI"
+    },
+    {
+      "ts": "2026-03-08T21:15Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T21:15Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-08T21:15Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-08T21:17Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - The plan has a critical flaw: computing Config().mad_dir at module import time vi..."
+    },
+    {
+      "ts": "2026-03-08T21:17Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Issue 1 (Critical): Module-level evaluation problem\nThe proposed fix calls _get_schedul..."
+    },
+    {
+      "ts": "2026-03-08T21:17Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-08T21:19Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-08T21:19Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-08T21:20Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - Plan addresses the hardcoded path issue comprehensively with lazy evaluation, pro..."
+    },
+    {
+      "ts": "2026-03-08T21:20Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-08T21:30Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-08T21:30Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-08T21:31Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T21:32Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-08T21:32Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-08T21:35Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-08T21:35Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-08T21:35Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-08T21:37Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-08T21:37Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-08T21:38Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation correctly removes module-level SCHEDULES_PATH/RUNS_PATH constants ..."
+    },
+    {
+      "ts": "2026-03-08T21:38Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-08T21:17Z",
+      "verdict": "FAIL",
+      "summary": "The plan has a critical flaw: computing Config().mad_dir at module import time via function calls will fail if config isn't initialized yet. The better approach is to compute the default in __init__ methods, not at module level.",
+      "feedback": "Issue 1 (Critical): Module-level evaluation problem\nThe proposed fix calls _get_schedules_path() and _get_runs_path() at module load time (lines 35-36), which evaluates Config().mad_dir when the module is imported. This can fail if:\nConfig hasn't been initialized\nCircular import issues exist\nConfig lookup fails\n\nBetter approach: Change the default parameter in __init__ methods to compute lazily:\n\nThis avoids module-load-time evaluation entirely.\n\nIssue 2: Missing edge case handling\nThe plan doesn't address what happens if Config() throws an exception or returns unexpected values. Should add error handling.\n\nIssue 3: Verification plan incomplete\nDoesn't test what happens when config lookup fails (missing .mad/ dir)\nShould explicitly verify the default behavior without passing explicit path parameter\nDoesn't check for circular import issues\n\nIssue 4: Unnecessary complexity\nThe proposed helper functions aren't needed since ScheduleStore and RunStore already accept a path parameter with default. The fix should simply change how the default is computed (in __init__, not at module level)."
+    },
+    {
+      "ts": "2026-03-08T21:20Z",
+      "verdict": "PASS",
+      "summary": "Plan addresses the hardcoded path issue comprehensively with lazy evaluation, proper fallback handling, and backward compatibility. Technical approach is sound - Config.mad_dir exists in codebase and circular import is mitigated by importing inside __init__. Minor improvement would be using more specific exception types.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-08T21:38Z",
+      "verdict": "PASS",
+      "summary": "Implementation correctly removes module-level SCHEDULES_PATH/RUNS_PATH constants and adds lazy Config-based path resolution with fallback in both ScheduleStore.__init__ and RunStore.__init__. Code is clean, matches the plan exactly, and maintains backward compatibility.",
+      "feedback": null
+    }
+  ],
+  "questions": [
+    {
+      "question": "What specific error message or behavior do you observe when running schedule-related functionality with a local .mad/ config?",
+      "answer": "N/A"
+    },
+    {
+      "question": "Can you describe the steps to reproduce this issue (e.g., creating a local .mad/ config in a non-~/MAD directory)?",
+      "answer": "I haven't tried"
+    },
+    {
+      "question": "Are you using local mode (.mad/ in project directory) or global mode (~/MAD/)? If local, what directory is your project in?",
+      "answer": "Local, but this should be a change so it always looks locally. It shouldn't be dependent on the MAD project code"
+    },
+    {
+      "question": "When scheduling features, do you get file not found errors or do schedules get created in the wrong location?",
+      "answer": "I'm not actually sure what a scheduled feature is"
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-08T14:37:41.502132",
+    "verdict": "FAIL",
+    "results": {
+      "passed": 138,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 138 existing tests pass, but test coverage is inadequate for the new feature. The test file does not include tests for the behaviors specified in the test spec (1.1-1.10): (1.1) ScheduleStore defaults to Config-based path not tested; (1.2) RunStore defaults to Config-based path not tested; (1.3-1.4) explicit path override tested indirectly via fixtures but not explicitly verified; (1.5-1.6) fallback when Config fails not tested; (1.7) no module-level path constants - VERIFIED (no SCHEDULES_PATH/RUNS_PATH found); (1.8-1.9) local/global config mode paths not tested; (1.10) no circular imports not tested. The existing tests only verify CRUD operations work with explicit paths, but do not verify the new default path resolution behavior, fallback behavior, or Config integration."
+  }
+}

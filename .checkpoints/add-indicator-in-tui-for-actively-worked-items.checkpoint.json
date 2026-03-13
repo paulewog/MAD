@@ -1,0 +1,16 @@
+{
+  "feature_slug": "add-indicator-in-tui-for-actively-worked-items",
+  "feature_id": "d7bf9f1d",
+  "phase": "spec-test",
+  "last_checkpoint": "2026-03-09T00:00:00Z",
+  "completed_steps": [
+    "read all relevant source files",
+    "analyzed FeatureItem class, _refresh_kanban_widgets, push_state, FeatureSummary, /api/board handler, index.html template",
+    "wrote test specification to output file"
+  ],
+  "next_step": "done",
+  "notes": "Test spec covers TUI spinner behavior, server slug propagation, web UI active indicator, and edge cases.",
+  "files_modified": [
+    ".tmp/add-indicator-in-tui-for-actively-worked-items.output.json"
+  ]
+}
