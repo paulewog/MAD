@@ -1,0 +1,279 @@
+{
+  "id": "f9a46c22",
+  "board": "mad",
+  "title": "Seed ideation with new suggestion",
+  "type": "feature",
+  "created": "2026-03-17T15:11Z",
+  "description": "I would like to be able to send a ticket through ideation again, but to seed it with my own input or direction.  Basically, I just need a field I can update (either via \"edit\" or when moving to ideation as a modal) - \"Ideation Prompt\" or something like that - and have it get put into the ideation prompt as a top level directive.",
+  "done_script": "",
+  "requires_human_approval": false,
+  "plan": "## What\n\nAdd a user-controllable \"ideation prompt\" (or \"User Direction\") field to feature items that gets injected into the ideation debate prompt template. This allows users to steer ideation rounds with their own input or direction when sending (or re-sending) an item through ideation.\n\n## Why\n\nCurrently, ideation runs purely from the feature description and prior ideation history. Users have no way to guide the debate toward specific concerns, constraints, or directions they care about. This field gives users agency over ideation without having to modify the description itself, keeping the original description clean while adding directional input.\n\n## Scope\n\n**In scope:**\n- A new persistent field on the feature data model (empty string default) that stores user direction for ideation\n- Conditional injection of this field into the ideation prompt template, placed after the previous ideation section but before the task/role separator, using a \"User Direction\" heading with a clarifying instruction sentence\n- The field should render nothing (no heading, no blank lines) when empty\n- Editable via the TUI unified edit modal (shown for all stages, since users may want to set it before or after moving to ideation)\n- Editable via the WebUI item edit interface\n- Visible in both TUI and WebUI item detail views so users can see when a direction is active\n- Persists across re-ideation rounds (not auto-cleared)\n- Available through the CLI edit-feature command\n\n**Out of scope:**\n- A separate modal specifically for this field when moving to ideation (the existing edit modal is sufficient; a dedicated modal can be added later if needed)\n- Any changes to the synthesis/compact prompt (the user direction only needs to influence the debate rounds)\n- Auto-suggesting or templating directions\n\n## Impact\n\n- **Data model**: One new field added to the feature schema. Backward compatible since it defaults to empty string and existing features without it will work unchanged.\n- **Ideation prompt**: The template gains a new conditional section. When the field is empty, behavior is identical to today. When populated, it adds a clearly-delineated user direction block that instructs debaters to prioritize it while still fulfilling their assigned role.\n- **TUI**: The edit modal gains one new text area field.\n- **WebUI**: The edit UI gains one new field, and the detail view gains a display section for it.\n- **Server API**: One new edit endpoint following the existing pattern.\n- **CLI**: The edit-feature command needs the field registered so set-field/get-field work with it.\n\n## Risks\n\n- **Prompt hierarchy confusion**: If the user direction is placed poorly or worded ambiguously, LLMs may prioritize it over their assigned debater role (or vice versa). The mitigation is the consensus placement (after previous ideation, before task separator) with explicit framing that says \"prioritize this over default assumptions, but still fulfill your assigned role below.\"\n- **Interaction with previous_ideation**: Both placeholders occupy the space between description and the task separator. The user direction should come after previous_ideation to maintain the reading flow: description -> context from prior rounds -> user steering -> task instructions.\n- **Field clutter**: Adding another field to the edit modal increases complexity. Mitigation: only show it prominently for early-stage items, or use a collapsible section.",
+  "plan_exploration_summary": "Explored the full pipeline for ideation: (1) state.py FeatureFile class - has property/setter pattern for all fields (description, plan, impl_spec, etc.), create() method initializes default fields, no ideation_prompt field exists yet. (2) phases.py run_ideating() - builds prompt via _build_prompt() with substitution dict including {previous_ideation}, {description}, {role_instruction}, etc. The previous_ideation is conditionally rendered only when feature.Ideation is non-empty. (3) prompts/ideating.md template - structure is: title -> description -> feature_file_path -> {previous_ideation} -> --- separator -> Task -> Role -> Discussion -> Transcripts -> Output. The {previous_ideation} placeholder sits between description and the --- separator. (4) TUI UnifiedEditModal - renders fields (title, type, description, done_script, requires_human_approval) with is_early_stage gating for type field. The action_debate() method moves items to ideating without any prompt. (5) WebUI client.html - has moveFeature() for moving to ideating, edit endpoints for description/title/type/done_script, item detail view shows Ideation and Ideation Summaries sections. (6) server/api.go - has separate endpoints for each edit field (edit-description, edit-title, edit-type, edit-done-script). (7) pipeline CLI edit-feature command supports set-field/get-field for standard fields.",
+  "impl_spec": "# Implementation Spec: Seed Ideation with New Suggestion\n\n## Task 1: Add `ideation_prompt` field to FeatureFile (state.py)\n\n**File:** `pipeline/state.py`\n\n1. Add property and setter after the `Ideation` property/setter block (after line 217):\n   ```python\n   @property\n   def ideation_prompt(self) -> str:\n       return self._data.get(\"ideation_prompt\", \"\")\n\n   def set_ideation_prompt(self, value: str) -> None:\n       self._data[\"ideation_prompt\"] = value\n       self._save()\n   ```\n\n2. Add `\"ideation_prompt\": \"\"` to the `data` dict in the `create()` method (line ~461, after `\"ideation\": \"\"`).\n\n3. Add `\"ideation_prompt\"` to the `set_section` mapping dict (line ~404) so backward-compat `set_section(\"ideation_prompt\", ...)` works:\n   ```python\n   \"Ideation Prompt\": \"ideation_prompt\",\n   ```\n   And similarly in `get_section` mapping (line ~387).\n\n**Dependencies:** None. This is the foundation.\n\n---\n\n## Task 2: Register field in CLI edit-feature command (pipeline.py)\n\n**File:** `pipeline/pipeline.py`\n\n1. Add to `FIELD_SETTERS` dict (line ~57):\n   ```python\n   \"ideation_prompt\": \"set_ideation_prompt\",\n   ```\n\n2. Add to `FIELD_GETTERS` dict (line ~71):\n   ```python\n   \"ideation_prompt\": \"ideation_prompt\",\n   ```\n\nThis enables `pipeline edit-feature <slug> set-field ideation_prompt \"my direction\"` and `pipeline edit-feature <slug> get-field ideation_prompt`.\n\n**Dependencies:** Task 1.\n\n---\n\n## Task 3: Inject ideation_prompt into the ideation debate prompt (phases.py + ideating.md)\n\n**File:** `pipeline/prompts/ideating.md`\n\n1. Add a `{ideation_prompt_section}` placeholder after `{previous_ideation}` and before the `---` separator. The template section around line 7 becomes:\n   ```\n   {previous_ideation}\n\n   {ideation_prompt_section}\n\n   ---\n   ```\n\n**File:** `pipeline/phases.py`\n\n2. In `run_ideating()`, after building `previous_ideation` (line 787), build the ideation_prompt_section:\n   ```python\n   ideation_prompt_section = \"\"\n   if feature.ideation_prompt:\n       ideation_prompt_section = (\n           \"\\n\\n## User Direction\\n\"\n           f\"{feature.ideation_prompt}\\n\\n\"\n           \"The above user direction should guide your ideation \u2014 \"\n           \"prioritize it over default assumptions, but still fulfill your assigned role below.\"\n       )\n   ```\n\n3. Add the new substitution to the `_build_prompt` call (line 789-797):\n   ```python\n   \"{ideation_prompt_section}\": ideation_prompt_section,\n   ```\n\n**Dependencies:** Task 1.\n\n---\n\n## Task 4: Add ideation_prompt to TUI edit modal (tui.py)\n\n**File:** `pipeline/tui.py`\n\n### 4a: Add field to UnifiedEditModal.compose()\n\nAfter the \"Require Human Approval\" select (line 1272), add:\n```python\nyield Label(\"Ideation Prompt (User Direction):\")\nyield TextArea(\n    self.feature_data.get(\"ideation_prompt\", \"\"),\n    placeholder=\"Optional: provide direction for ideation debates\",\n    id=\"ideation-prompt-area\"\n)\n```\n\n### 4b: Collect value in UnifiedEditModal._save()\n\nAfter the approval_select handling (line 1302), add:\n```python\nideation_prompt_area = self.query_one(\"#ideation-prompt-area\", TextArea)\nresult[\"ideation_prompt\"] = ideation_prompt_area.text\n```\n\n### 4c: Pass data into the modal\n\nIn `action_unified_edit()` (line 2711), add to `feature_data` dict:\n```python\n\"ideation_prompt\": f.ideation_prompt,\n```\n\n### 4d: Handle the result in action_unified_edit callback\n\nIn `handle_unified_edit()` (after line 2747), add:\n```python\nif \"ideation_prompt\" in result:\n    f.set_ideation_prompt(result[\"ideation_prompt\"])\n```\n\n### 4e: Show ideation_prompt in TUI detail view\n\nIn the `_build_detail_widgets()` function (around line 330, after the Ideation collapsible section at line 338), add:\n```python\n# Ideation Prompt / User Direction (always visible if set)\nif feature.ideation_prompt:\n    import re\n    escaped_prompt = feature.ideation_prompt.replace(\"[\", r\"\\[\").replace(\"]\", r\"\\]\").replace(\"{\", r\"\\{\").replace(\"}\", r\"\\}\")\n    escaped_prompt = re.sub(r'([%])', r'\\\\\\1', escaped_prompt)\n    widgets.append(Static(f\"User Direction: {escaped_prompt}\"))\n```\n\n**Dependencies:** Task 1.\n\n---\n\n## Task 5: Add ideation_prompt to Go server FeatureSummary and API (server/hub.go + server/api.go)\n\n### 5a: Add field to FeatureSummary struct\n\n**File:** `server/hub.go`\n\nAdd to `FeatureSummary` struct (after line 57, after `RequiresHumanApproval`):\n```go\nIdeationPrompt         string        `json:\"ideation_prompt,omitempty\"`\n```\n\n### 5b: Add edit-ideation-prompt API endpoint\n\n**File:** `server/api.go`\n\n1. Add route in the routing block (after line 342, after edit-type):\n   ```go\n   if len(featureParts) == 2 && featureParts[1] == \"edit-ideation-prompt\" && featureID != \"\" {\n       serveEditIdeationPrompt(w, r, hub, cfg, clientID, featureID)\n       return\n   }\n   ```\n\n2. Add handler function (after the `serveEditItemType` function, following the same pattern as `serveEditDoneScript` which has no stage restriction):\n   ```go\n   type editIdeationPromptRequest struct {\n       IdeationPrompt string `json:\"ideation_prompt\"`\n   }\n\n   func serveEditIdeationPrompt(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string, featureID string) {\n       // Same boilerplate as serveEditDoneScript: method check, auth check, read body, unmarshal\n       // No stage restriction (can be set at any stage)\n       // Send message type: \"edit_ideation_prompt\"\n       msg, _ := json.Marshal(map[string]interface{}{\n           \"type\":             \"edit_ideation_prompt\",\n           \"feature_id\":       featureID,\n           \"ideation_prompt\":  req.IdeationPrompt,\n       })\n       // SendToClient + writeJSON ok response\n   }\n   ```\n\n**Dependencies:** None (Go server is independent).\n\n---\n\n## Task 6: Handle edit_ideation_prompt WebSocket message in Python client (server_client.py + tui.py)\n\n**File:** `pipeline/server_client.py`\n\n1. Add `on_edit_ideation_prompt` callback parameter to `__init__` (after `on_edit_title` at line 55):\n   ```python\n   on_edit_ideation_prompt: Optional[Callable[[str, str], Awaitable[None]]] = None,\n   ```\n\n2. Store it: `self._on_edit_ideation_prompt = on_edit_ideation_prompt`\n\n3. Add handler in the message dispatch (after the `edit_title` block, around line 367):\n   ```python\n   elif msg_type == \"edit_ideation_prompt\":\n       feature_id = data.get(\"feature_id\", \"\")\n       ideation_prompt = data.get(\"ideation_prompt\", \"\")\n       if self._on_edit_ideation_prompt and feature_id:\n           try:\n               await self._on_edit_ideation_prompt(feature_id, ideation_prompt)\n           except Exception as e:\n               logger.warning(f\"Error handling edit_ideation_prompt: {e}\")\n   ```\n\n**File:** `pipeline/tui.py`\n\n4. Add handler method in the TUI app class (after `_handle_edit_title`, following the same pattern as `_handle_edit_done_script`):\n   ```python\n   async def _handle_edit_ideation_prompt(self, feature_id: str, ideation_prompt: str) -> None:\n       try:\n           feature = FeatureFile.find(feature_id)\n           if not feature:\n               logger.warning(f\"edit_ideation_prompt: feature {feature_id} not found\")\n               return\n           logger.info(f\"Editing ideation_prompt for feature {feature_id} via web UI\")\n           feature.set_ideation_prompt(ideation_prompt)\n           feature.add_history(feature.current_stage.upper(), \"Ideation prompt edited via web UI\")\n           self._refresh_board(self.active_board)\n           if self._server_client and self._server_client.connected:\n               features = self._load_features(self.active_board)\n               asyncio.create_task(self._server_client.push_state(\n                   features, self._plan_agent_status, self._implement_agent_status,\n                   auto_plan_enabled=self.auto_plan_enabled,\n                   auto_impl_enabled=self.auto_implement_enabled,\n                   scripts=self._scripts,\n                   script_status=self._script_status,\n               ))\n       except Exception as e:\n           logger.warning(f\"edit_ideation_prompt: failed: {e}\")\n   ```\n\n5. Wire the callback when creating the ServerClient instance (find where `on_edit_description=self._handle_edit_description` is passed, around line 2060):\n   ```python\n   on_edit_ideation_prompt=self._handle_edit_ideation_prompt,\n   ```\n\n**Dependencies:** Task 1, Task 5b.\n\n---\n\n## Task 7: Add ideation_prompt to WebUI edit modal and detail view (client_full2.html)\n\n**File:** `server/templates/client_full2.html`\n\n### 7a: Add data attribute to feature card template\n\nIn the feature card div (line ~818, after `data-type`), add:\n```html\ndata-ideation-prompt=\"{{.IdeationPrompt}}\"\n```\n\n### 7b: Add field to edit modal HTML\n\nAfter the Done Script input (line ~293), add:\n```html\n<div style=\"margin-bottom:1rem\">\n    <label style=\"display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem\">Ideation Prompt (User Direction)</label>\n    <textarea id=\"edit-ideation-prompt\" rows=\"3\" placeholder=\"Optional: provide direction for ideation debates\" style=\"width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit;resize:vertical\"></textarea>\n</div>\n```\n\n### 7c: Populate edit modal in showEditModal()\n\nIn `showEditModal()` (around line 691), add:\n```javascript\nvar ideationPrompt = card.getAttribute('data-ideation-prompt') || '';\ndocument.getElementById('edit-ideation-prompt').value = ideationPrompt;\n```\n\nAdd to `_editOriginals` object (line 699):\n```javascript\n_editOriginals = {title: title, type: type, description: description, doneScript: doneScript, ideationPrompt: ideationPrompt};\n```\n\n### 7d: Save edits in saveEdits()\n\nIn `saveEdits()` (after the doneScript promise block, around line 754), add:\n```javascript\nvar ideationPrompt = document.getElementById('edit-ideation-prompt').value;\nif (ideationPrompt !== _editOriginals.ideationPrompt) {\n    promises.push(fetch(baseURL + '/edit-ideation-prompt' + keyParam, {\n        method: 'POST', headers: {'Content-Type': 'application/json'},\n        body: JSON.stringify({ideation_prompt: ideationPrompt})\n    }));\n}\n```\n\n### 7e: Show ideation_prompt in detail view\n\nIn `toggleFeatureDetail()` (around line 472, after the doneScript detail row), add:\n```javascript\nvar ideationPrompt = card.getAttribute('data-ideation-prompt') || '';\nif (ideationPrompt) {\n    html += '<div class=\"detail-row\"><span class=\"detail-label\">User Direction</span><span class=\"detail-value\" style=\"color:#58a6ff\">' + escapeHtml(ideationPrompt) + '</span></div>';\n}\n```\n\n### 7f: Update card fingerprinting for smart polling\n\nIn the card fingerprint function (around line 351-359), add `ideation-prompt` to the fingerprint string so changes are detected:\n```javascript\ncard.getAttribute('data-ideation-prompt') || '',\n```\n\n**Dependencies:** Task 5a (FeatureSummary field), Task 5b (API endpoint).\n\n---\n\n## Summary of Files Modified\n\n| File | Changes |\n|------|------|\n| `pipeline/state.py` | Add `ideation_prompt` property, setter, default in `create()`, mapping entries |\n| `pipeline/pipeline.py` | Add to `FIELD_SETTERS` and `FIELD_GETTERS` |\n| `pipeline/prompts/ideating.md` | Add `{ideation_prompt_section}` placeholder |\n| `pipeline/phases.py` | Build and inject `ideation_prompt_section` in `run_ideating()` |\n| `pipeline/tui.py` | Edit modal field, detail view display, WebSocket handler, callback wiring |\n| `pipeline/server_client.py` | Add `on_edit_ideation_prompt` callback + message handler |\n| `server/hub.go` | Add `IdeationPrompt` to `FeatureSummary` struct |\n| `server/api.go` | Add route + `serveEditIdeationPrompt` handler |\n| `server/templates/client_full2.html` | Data attribute, edit modal field, detail view, save logic, fingerprint |",
+  "test_spec": "# Test Specification: Seed Ideation with New Suggestion\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Data Model \u2014 ideation_prompt field on FeatureFile (state.py)\n\n**Behavior:** A new `ideation_prompt` property exists on FeatureFile that reads from `_data[\"ideation_prompt\"]` and defaults to empty string when absent.\n- **Success criteria:** `feature.ideation_prompt` returns `\"\"` for a newly created feature or one loaded from a JSON file that lacks the key.\n- **Expected output:** Empty string.\n\n**Behavior:** `set_ideation_prompt(value)` persists the value to the JSON file on disk.\n- **Success criteria:** After calling `feature.set_ideation_prompt(\"Focus on security concerns\")`, re-loading the same feature file from disk yields `ideation_prompt == \"Focus on security concerns\"`.\n- **Expected output:** The JSON file on disk contains `\"ideation_prompt\": \"Focus on security concerns\"`.\n\n**Behavior:** The `create()` class method initializes `ideation_prompt` to `\"\"` in new feature JSON files.\n- **Success criteria:** A feature created via `FeatureFile.create(...)` has `\"ideation_prompt\": \"\"` in its data dict.\n- **Expected output:** Key present with empty string value.\n\n**Behavior:** `set_section` and `get_section` mappings include `ideation_prompt` (or `\"Ideation Prompt\"`).\n- **Success criteria:** `feature.set_section(\"Ideation Prompt\", \"some value\")` sets the field, and `feature.get_section(\"Ideation Prompt\")` retrieves it.\n- **Expected output:** Round-trip read/write works.\n\n### 1.2 CLI Registration (pipeline.py)\n\n**Behavior:** The `edit-feature` CLI command supports `set-field ideation_prompt <value>` and `get-field ideation_prompt`.\n- **Success criteria:** Running `pipeline edit-feature <slug> set-field ideation_prompt \"my direction\"` updates the field; running `pipeline edit-feature <slug> get-field ideation_prompt` returns `\"my direction\"`.\n- **Expected output:** Field value is set and retrieved correctly via CLI.\n\n### 1.3 Ideation Prompt Injection (phases.py + ideating.md)\n\n**Behavior:** When `ideation_prompt` is non-empty, the ideation debate prompt includes a `## User Direction` section containing the field value and the framing sentence.\n- **Success criteria:** The rendered prompt contains `## User Direction`, the user's text, and the sentence \"The above user direction should guide your ideation \u2014 prioritize it over default assumptions, but still fulfill your assigned role below.\"\n- **Expected output:** The section appears after `{previous_ideation}` content and before the `---` separator.\n\n**Behavior:** When `ideation_prompt` is empty, the prompt contains NO User Direction section \u2014 no heading, no blank lines, no placeholder text.\n- **Success criteria:** The rendered prompt is byte-identical to the current behavior (no `## User Direction` string anywhere).\n- **Expected output:** Prompt matches pre-feature behavior exactly.\n\n**Behavior:** The `{ideation_prompt_section}` placeholder is correctly placed in `ideating.md` between `{previous_ideation}` and the `---` separator.\n- **Success criteria:** Reading the raw template confirms the placeholder exists in the correct position.\n- **Expected output:** Template contains `{previous_ideation}` followed by `{ideation_prompt_section}` followed by `---`.\n\n**Behavior:** When both `previous_ideation` (existing Ideation field) and `ideation_prompt` are populated, both appear in the correct order.\n- **Success criteria:** The rendered prompt shows: description \u2192 Existing Ideation section \u2192 User Direction section \u2192 `---` \u2192 Task/Role.\n- **Expected output:** Both sections present, in correct order, with no overlap or duplication.\n\n### 1.4 TUI Edit Modal (tui.py)\n\n**Behavior:** The UnifiedEditModal includes an \"Ideation Prompt\" text area field.\n- **Success criteria:** When the modal is composed, a TextArea widget with id `ideation-prompt-area` is present.\n- **Expected output:** Widget exists and is populated with the feature's current `ideation_prompt` value.\n\n**Behavior:** Saving the edit modal persists the ideation_prompt value back to the feature.\n- **Success criteria:** After editing the text area and dismissing the modal with save, the feature's `ideation_prompt` property reflects the new value.\n- **Expected output:** Feature file on disk is updated.\n\n**Behavior:** The ideation_prompt field is available for editing at ALL stages, not just early stages.\n- **Success criteria:** Opening the edit modal for a feature in any stage (ideas, ideating, plan-inbox, implementing, etc.) shows the Ideation Prompt field.\n- **Expected output:** Field is always present in the edit modal regardless of stage.\n\n**Behavior:** The TUI detail view shows the ideation_prompt when it is non-empty.\n- **Success criteria:** For a feature with `ideation_prompt = \"Focus on performance\"`, the detail view displays `User Direction: Focus on performance`.\n- **Expected output:** Static widget with the user direction text is visible.\n\n**Behavior:** The TUI detail view does NOT show the ideation_prompt label when the field is empty.\n- **Success criteria:** For a feature with `ideation_prompt = \"\"`, no \"User Direction\" widget appears.\n- **Expected output:** No extra widgets rendered.\n\n### 1.5 Go Server \u2014 FeatureSummary and API (hub.go + api.go)\n\n**Behavior:** The `FeatureSummary` struct includes an `IdeationPrompt` field serialized as `ideation_prompt`.\n- **Success criteria:** JSON marshalling of a FeatureSummary with a populated IdeationPrompt includes the `ideation_prompt` key. When empty, `omitempty` suppresses it.\n- **Expected output:** Correct JSON serialization.\n\n**Behavior:** A POST to `/features/<id>/edit-ideation-prompt` with `{\"ideation_prompt\": \"new value\"}` sends an `edit_ideation_prompt` WebSocket message to the Python client.\n- **Success criteria:** The endpoint accepts the request, validates method (POST only) and auth, and broadcasts the message.\n- **Expected output:** WebSocket message with type `edit_ideation_prompt`, feature_id, and the new value.\n\n**Behavior:** The endpoint works regardless of the feature's current stage (no stage restriction).\n- **Success criteria:** Editing ideation_prompt succeeds for features in any stage.\n- **Expected output:** 200 OK response for any stage.\n\n### 1.6 WebSocket Handler (server_client.py)\n\n**Behavior:** The Python WebSocket client dispatches `edit_ideation_prompt` messages to the registered callback.\n- **Success criteria:** When a message with `type: edit_ideation_prompt` arrives, the `on_edit_ideation_prompt` callback is invoked with the correct `feature_id` and `ideation_prompt` values.\n- **Expected output:** Callback called with correct arguments.\n\n**Behavior:** If no `on_edit_ideation_prompt` callback is registered, the message is silently ignored (no crash).\n- **Success criteria:** Processing the message without a callback does not raise an exception.\n- **Expected output:** No error, message skipped.\n\n### 1.7 TUI WebSocket Handler (tui.py)\n\n**Behavior:** The `_handle_edit_ideation_prompt` method updates the feature's ideation_prompt, adds a history entry, refreshes the board, and pushes state to the server.\n- **Success criteria:** After the handler runs: (a) feature.ideation_prompt has the new value, (b) feature history contains an entry mentioning web UI edit, (c) the board is refreshed, (d) state is pushed.\n- **Expected output:** All four side effects occur.\n\n### 1.8 WebUI Edit Modal and Detail View (client_full2.html)\n\n**Behavior:** The feature card includes a `data-ideation-prompt` attribute reflecting the current value.\n- **Success criteria:** Inspecting the rendered HTML for a feature with `ideation_prompt = \"test direction\"` shows `data-ideation-prompt=\"test direction\"`.\n- **Expected output:** Attribute present with correct value.\n\n**Behavior:** The edit modal contains an \"Ideation Prompt\" textarea that is populated with the current value when opened.\n- **Success criteria:** Opening the edit modal for a feature with a set ideation_prompt pre-fills the textarea.\n- **Expected output:** Textarea shows current value.\n\n**Behavior:** Saving edits only sends the edit-ideation-prompt API call when the value has changed.\n- **Success criteria:** If the ideation_prompt is unchanged, no request to `/edit-ideation-prompt` is made. If changed, the request is sent with the new value.\n- **Expected output:** Conditional API call based on diff against original value.\n\n**Behavior:** The detail view shows a \"User Direction\" row when ideation_prompt is non-empty, and omits it when empty.\n- **Success criteria:** Feature with direction shows the row; feature without direction does not.\n- **Expected output:** Conditional rendering.\n\n**Behavior:** The card fingerprinting includes `ideation-prompt` so that server-pushed updates with changed ideation_prompt trigger a re-render.\n- **Success criteria:** Changing ideation_prompt on the server side causes the WebUI to detect the change and update the card.\n- **Expected output:** Card re-rendered with new data.\n\n### 1.9 Persistence Across Re-ideation\n\n**Behavior:** The `ideation_prompt` field persists when a feature is moved back to ideating for another round.\n- **Success criteria:** Set ideation_prompt, run ideation, move back to ideating, verify the field still contains the original value.\n- **Expected output:** Field value unchanged after re-ideation.\n\n**Behavior:** The ideation_prompt is NOT auto-cleared by any pipeline phase.\n- **Success criteria:** After completing ideation (synthesis), the ideation_prompt still contains whatever the user set.\n- **Expected output:** Value preserved through full ideation lifecycle.\n\n### 1.10 Backward Compatibility\n\n**Behavior:** Existing feature JSON files that lack the `ideation_prompt` key load without errors.\n- **Success criteria:** Loading a pre-existing feature file (no `ideation_prompt` key) does not raise KeyError or any other exception.\n- **Expected output:** `feature.ideation_prompt` returns `\"\"`.\n\n**Behavior:** Ideation runs identically for features where ideation_prompt is absent or empty.\n- **Success criteria:** The rendered prompt for a feature without the field matches the prompt for a feature with an explicitly empty field.\n- **Expected output:** Both prompts are identical.\n\n---\n\n## 2. Edge Cases\n\n### 2.1 Empty / Null Inputs\n- **Empty string:** Setting ideation_prompt to `\"\"` should suppress the User Direction section entirely from the prompt \u2014 no heading, no whitespace artifacts.\n- **Whitespace-only string:** Setting ideation_prompt to `\"   \"` or `\"\\n\\n\"` \u2014 behavior should match non-empty (the field contains content), OR if trimmed, match empty. Verify which behavior is implemented and that it is consistent across TUI, WebUI, and prompt injection.\n- **Missing key in JSON:** Loading a feature file that has no `ideation_prompt` key at all should default to `\"\"` without error.\n- **Null value in JSON:** If the JSON contains `\"ideation_prompt\": null`, the property getter should handle this gracefully (return `\"\"` or handle the None).\n\n### 2.2 Boundary Conditions\n- **Very long ideation_prompt:** A multi-paragraph direction (e.g., 2000+ characters) should be stored, displayed, and injected into the prompt without truncation.\n- **Special characters:** Ideation prompt containing markdown characters (`#`, `*`, `---`, backticks), curly braces (`{`, `}`), and template placeholder-like strings (`{title}`, `{description}`) should not cause template substitution errors or corrupt the prompt.\n- **Unicode / emoji:** Non-ASCII characters should round-trip correctly through JSON, Go server, WebSocket, and Python.\n- **HTML entities in WebUI:** An ideation_prompt containing `<script>alert('xss')</script>` must be properly escaped in the WebUI detail view and edit modal (no XSS).\n\n### 2.3 Invalid States\n- **API call with missing feature_id:** POST to `/features//edit-ideation-prompt` should return an appropriate error, not crash.\n- **API call with non-existent feature_id:** Should return a 404 or appropriate error.\n- **API call with wrong HTTP method (GET instead of POST):** Should return 405 Method Not Allowed.\n- **API call with malformed JSON body:** Should return 400 Bad Request.\n- **API call without auth (if auth is required):** Should return 401/403.\n\n### 2.4 Concurrent Operations\n- **Simultaneous edit from TUI and WebUI:** If a user edits ideation_prompt from TUI while another edit comes in via WebUI, the last write wins. Neither operation should crash or corrupt the feature file.\n- **Edit during active ideation:** Setting ideation_prompt while an ideation round is actively running should not corrupt the in-flight prompt (the prompt was already built). The next round should pick up the new value.\n\n### 2.5 Error Conditions\n- **Disk full / write failure on set_ideation_prompt:** The setter calls `_save()` \u2014 if the save fails, the error should propagate appropriately (same as other field setters).\n- **WebSocket disconnection during edit:** If the WebSocket drops while an edit-ideation-prompt message is in flight, the Python client should handle the disconnect gracefully without crashing.\n- **Feature file deleted between read and write:** If the feature file is removed between when the user opens the edit modal and when they save, the save operation should fail gracefully.\n\n---\n\n## 3. What Constitutes Failure\n\n### 3.1 Data Loss / Corruption\n- **FAILURE:** The ideation_prompt value is silently lost or overwritten to empty after any pipeline operation (ideation, planning, implementation, etc.).\n- **FAILURE:** Setting ideation_prompt corrupts other fields in the feature JSON file.\n- **FAILURE:** The feature JSON file becomes invalid JSON after setting ideation_prompt.\n\n### 3.2 Prompt Injection / Template Errors\n- **FAILURE:** The rendered ideation prompt contains literal `{ideation_prompt_section}` placeholder text instead of the resolved content.\n- **FAILURE:** An empty ideation_prompt results in a `## User Direction` heading appearing in the prompt.\n- **FAILURE:** An empty ideation_prompt results in extra blank lines in the prompt compared to pre-feature behavior.\n- **FAILURE:** Special characters in the ideation_prompt cause `_build_prompt` to raise an exception or produce garbled output.\n- **FAILURE:** The User Direction section appears in the wrong position (e.g., after the Task section, or before the description).\n\n### 3.3 UI Failures\n- **FAILURE:** The edit modal crashes or fails to open because of the new field.\n- **FAILURE:** The ideation_prompt value is not pre-populated when opening the edit modal (shows empty when it should show existing value).\n- **FAILURE:** Saving the edit modal without changing ideation_prompt triggers an unnecessary API call or write.\n- **FAILURE:** The detail view shows \"User Direction: \" (with empty value) when ideation_prompt is not set.\n- **FAILURE:** XSS is possible through the ideation_prompt field in the WebUI.\n\n### 3.4 API Failures\n- **FAILURE:** The edit-ideation-prompt endpoint returns 500 for valid requests.\n- **FAILURE:** The endpoint allows GET requests (should be POST only).\n- **FAILURE:** The WebSocket message is malformed or uses a wrong type string.\n\n### 3.5 Backward Compatibility Failures\n- **FAILURE:** Loading a feature JSON file without the `ideation_prompt` key raises an exception.\n- **FAILURE:** The CLI `get-field ideation_prompt` crashes for features that predate this change.\n- **FAILURE:** Existing ideation behavior changes in any way for features that don't use the new field.\n\n### 3.6 Expected Error Messages\n- POST to edit-ideation-prompt with bad JSON: expect 400 with a descriptive error.\n- POST to edit-ideation-prompt for a non-existent feature: expect 404.\n- GET to edit-ideation-prompt: expect 405.\n\n---\n\n## 4. Out of Scope\n\n- **Visual / layout testing:** Exact pixel positioning, font sizes, colors, or spacing of the ideation_prompt field in TUI or WebUI.\n- **Performance benchmarks:** How fast the prompt renders with a very long ideation_prompt.\n- **UI timing / animation:** How quickly the modal opens or the detail view updates.\n- **Synthesis/compact prompt changes:** The user direction only applies to debate rounds, not synthesis \u2014 testing synthesis prompt content is out of scope.\n- **Auto-suggestion or templating of directions:** Not implemented, not tested.\n- **Dedicated modal for ideation prompt when moving to ideating:** Explicitly out of scope per plan.\n- **Multi-user concurrent editing:** Beyond basic last-write-wins, complex multi-user conflict resolution is not tested.\n- **Browser-specific rendering differences:** WebUI testing assumes a standards-compliant browser.\n- **Load testing / stress testing:** Not testing with hundreds of concurrent WebSocket connections or thousands of features.\n- **End-to-end LLM output quality:** Whether the LLM actually follows the user direction is not a software test \u2014 only that the direction is present in the prompt.",
+  "impl_notes": "Implementation of seed ideation with new suggestion feature complete. Added 'ideation_prompt' field (User Direction) to FeatureFile that gets injected into the ideation debate prompt template when set. The field is editable via TUI, WebUI, and CLI. All tests from previous review feedback pass.",
+  "ideation_summaries": [
+    "The feature requires adding an 'ideation_prompt' field to the FeatureFile schema that gets injected into the ideating.md template as a top-level directive above the role instructions. Implementation touches four layers: (1) state.py - add ideation_prompt property to FeatureFile with empty string default, (2) prompts/ideating.md - add a conditional section like '{ideation_prompt_section}' that renders as a prominent directive block when non-empty, (3) phases.py run_ideating() - pass the new field",
+    "The previous proposal is solid on the mechanical implementation but has several gaps worth addressing. First, the proposal says to inject the ideation_prompt 'above the role instructions' as a top-level directive, but this creates a tension: the ideating.md template already has a structured flow (description -> task -> role -> discussion), and inserting a user directive above the role instruction could confuse the LLM about whether it should follow the role (e.g., 'critique the previous proposal",
+    "Building on the second round's valid critique about prompt hierarchy and field lifecycle, the implementation should place the ideation_prompt injection after the description but before the task section in ideating.md using a simple conditional block like '{ideation_prompt_section}' that renders as '## User Direction\\n{ideation_prompt}\\nThe above user direction should guide your ideation \u2014 prioritize it over default assumptions, but still fulfill your assigned role below.' This placement avoids t",
+    "The third round's proposal is nearly implementation-ready but overlooks two practical issues. First, it says to place the ideation_prompt injection 'after the description but before the task section' in ideating.md, but the current template already has a {previous_ideation} placeholder between the description and the --- separator that precedes the task section \u2014 the proposal doesn't clarify how the new {ideation_prompt_section} relates to {previous_ideation}, and inserting both could create a c"
+  ],
+  "ideation": "",
+  "history": [
+    {
+      "ts": "2026-03-17T15:11Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-17T15:11Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-17T15:11Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-17T15:11Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-17T15:13Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-17T15:14Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-17T15:15Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-17T15:16Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis"
+    },
+    {
+      "ts": "2026-03-17T15:16Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-17T15:36Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-17T15:36Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-17T15:38Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-17T15:38Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-17T15:39Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-17T15:39Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-17T15:39Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-17T15:39Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-17T15:43Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-17T15:45Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-17T15:45Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-17T15:53Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-17T15:53Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-17T15:53Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-17T15:56Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-17T15:56Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-17T15:59Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation is complete and correct across all layers (state.py, phases.py, pi..."
+    },
+    {
+      "ts": "2026-03-17T15:59Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-17T16:04Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-17T16:04Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-17T16:04Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-17T16:06Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-17T16:06Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-17T16:08Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation is complete and correct across all layers. All mock-related feedba..."
+    },
+    {
+      "ts": "2026-03-17T16:08Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-17T16:10Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-17T16:13Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-17T16:13Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-17T16:13Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-17T16:15Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-17T16:15Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-17T16:16Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation is complete and correct. All previous review feedback has been add..."
+    },
+    {
+      "ts": "2026-03-17T16:16Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-17T17:01Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-17T15:39Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-17T15:59Z",
+      "verdict": "FAIL",
+      "summary": "Implementation is complete and correct across all layers (state.py, phases.py, pipeline.py, tui.py, server_client.py, hub.go, api.go, client_full2.html). However, 85+ tests fail because mock feature objects in test_server_client.py and test_slimmer_item_details_tui.py are missing the new ideation_prompt attribute, causing AttributeError when push_state() accesses f.ideation_prompt.",
+      "feedback": "The implementation itself is correct and complete. The only issue is that test mock objects were not updated to include the new ideation_prompt attribute:\n\ntest_server_client.py line 64: The _make_feature() helper creates a SimpleNamespace mock but does not include f.ideation_prompt = \"\". This causes 30 test failures because push_state() at server_client.py:180 accesses f.ideation_prompt and gets an AttributeError. Fix: add f.ideation_prompt = \"\" after line 64 (after f.requires_human_approval = False).\n\ntest_slimmer_item_details_tui.py: The mock feature objects used in _build_detail_widgets() tests do not include ideation_prompt, causing 19 failures when the detail builder at tui.py:341 accesses feature.ideation_prompt. Fix: add ideation_prompt = \"\" to the mock feature objects in this test file.\n\nOther test files with SimpleNamespace mocks (test_process_cleanup.py, test_consolidate_phase_execution.py, test_start_agent_e2e.py, test_rate_limit_handling.py, test_kill_hung_agent.py, test_checkpoint_system.py, test_auto_mode_full.py): Any that use _make_feature() or similar mocks that go through push_state() will also need the attribute added.\n\nMissing dedicated tests: There are no tests specifically verifying the ideation_prompt feature behaviors described in the test spec (data model tests in test_state.py, prompt injection tests in test_phases_unit.py, CLI round-trip in test_edit_feature.py). While the implementation is clearly correct from code review, the test spec calls for these to exist."
+    },
+    {
+      "ts": "2026-03-17T16:08Z",
+      "verdict": "FAIL",
+      "summary": "Implementation is complete and correct across all layers. All mock-related feedback from the previous review is addressed. However, the previous review also required dedicated tests in test_state.py, test_phases_unit.py, and test_edit_feature.py \u2014 these are still missing.",
+      "feedback": "The previous review feedback explicitly called out missing dedicated tests:\n\ntest_state.py: No tests verifying ideation_prompt property default, set_ideation_prompt persistence, create() initialization, or set_section/get_section round-trip for 'Ideation Prompt'. Fix: Add tests to pipeline/test_state.py that create a FeatureFile, verify ideation_prompt defaults to '', set it via set_ideation_prompt(), reload from disk, and confirm persistence. Also test get_section('Ideation Prompt') and set_section('Ideation Prompt', ...) round-trip.\n\ntest_phases_unit.py: No tests verifying that the ideation prompt injection produces the correct output. Fix: Add tests that mock a feature with ideation_prompt='Focus on security' and verify the rendered prompt contains '## User Direction', the user's text, and the framing sentence. Add a test with empty ideation_prompt verifying no '## User Direction' appears.\n\ntest_edit_feature.py: No tests verifying CLI round-trip via set-field/get-field for ideation_prompt. Fix: Add a test that uses the edit-feature CLI to set ideation_prompt and then get it back.\n\nAll other previous feedback (mock updates in test_server_client.py, test_slimmer_item_details_tui.py, test_start_agent_e2e.py, test_consolidate_phase_execution.py, test_checkpoint_system.py, test_auto_mode_full.py) has been addressed."
+    },
+    {
+      "ts": "2026-03-17T16:16Z",
+      "verdict": "PASS",
+      "summary": "Implementation is complete and correct. All previous review feedback has been addressed: test_state.py has ideation_prompt default, persistence, create(), and get_section/set_section round-trip tests; test_phases_unit.py verifies prompt injection with and without ideation_prompt; test_edit_feature.py covers CLI set-field/get-field round-trip. All 153 relevant tests pass.",
+      "feedback": null
+    }
+  ],
+  "Ideation": "The core problem is enabling users to steer ideation rounds by injecting a personal directive into the ideation prompt \u2014 a field called 'ideation_prompt' (or 'User Direction') that can be set via the edit modal or a prompt shown when moving an item back to ideation. The four-layer implementation is well-agreed upon: (1) add an 'ideation_prompt' field with empty-string default to the FeatureFile schema in state.py, (2) expose it for editing in both the TUI and WebUI, (3) extend phases.py run_ideating() to build an 'ideation_prompt_section' string that is empty when the field is blank and contains a formatted block when non-empty, and (4) inject that block into prompts/ideating.md at the right position.\n\nThe main design debate was where in the ideating.md template to place the injection and how to frame it. Placing it above the role instructions risks confusing the LLM about role priority. Placing it after the full role block de-emphasises the user's intent. The consensus is to insert it after the feature description block but before the task/role section, using a '## User Direction' heading with a clarifying sentence ('The above user direction should guide your ideation \u2014 prioritize it over default assumptions, but still fulfill your assigned role below.'). This keeps the user's intent visible and early without overriding the assigned debater role.\n\nA key practical concern raised in round 4 is the interaction with the existing '{previous_ideation}' placeholder, which already sits between the description and the task separator. The recommended resolution is to place '{ideation_prompt_section}' immediately after '{previous_ideation}' (or after the description if previous_ideation is absent), so the order reads: description \u2192 previous ideation summary \u2192 user direction \u2192 task/role. The conditional rendering logic should suppress the section entirely (no heading, no blank lines) when ideation_prompt is empty, avoiding clutter for items that don't use the feature.\n\nThe field lifecycle also needs consideration: it should persist across re-ideation rounds (i.e., it is not cleared automatically) so that a user direction remains active unless the user explicitly removes it. This means it should be a first-class editable field in both the item-edit UI and the 'move to ideation' modal, and its presence should be visible in TUI and WebUI item detail views so users know it is influencing the debate.",
+  "test_results": {
+    "ts": "2026-03-17T09:15:24.016810",
+    "verdict": "PASS",
+    "results": {
+      "passed": 247,
+      "failed": 3,
+      "errors": 0
+    },
+    "feedback": "All tests related to the seed-ideation-with-new-suggestion feature pass. Tests verified: (1) Data model - ideation_prompt property, setter, get_section mapping (9 tests in TestIdeation); (2) CLI registration - set-field/get-field ideation_prompt (4 tests in test_edit_feature.py); (3) Ideation prompt injection - template placeholder and conditional section (3 tests in TestIdeationPromptInjection); (4) WebSocket handler - edit_ideation_prompt message dispatch (94 tests in test_server_client.py); (5) Backward compatibility - missing key defaults to empty string (4 tests in TestBackwardCompat). The 3 failing tests are for the unrelated 'ls' CLI command. Go server tests pass (cached). TUI and WebUI behavior is implemented in code but not explicitly unit tested - integration testing would verify those aspects."
+  }
+}

@@ -9,7 +9,7 @@
   "plan": "# Implementation Plan: Scripts Tab and Unified Item Editing\n\n## 1. Create Scripts Tab\n\n### 1.1 ScriptsPane Widget (pipeline/tui.py)\nCreate new `ScriptsPane` class similar to `SettingsPane`:\n- Display list of scripts from `.mad/scripts.json` in a scrollable list\n- Show script label, description, and command for each\n- Include \"Run\" buttons for each script\n- Handle script execution with same confirmation flow as current `RunScriptModal`\n- Include text area for additional context input\n- Use consistent styling with existing UI patterns\n\n### 1.2 Add Scripts Tab to Main Tabs\nIn `PipelineApp.compose()`:\n- Add `TabPane(\"Scripts\", id=\"scripts-tab\")` after Settings tab\n- Load scripts via `load_scripts()` and pass to ScriptsPane\n\n### 1.3 Add Scripts Tab Navigation\n- Add new hotkey binding for scripts tab access (suggest `,` key, similar to `;` for settings)\n- Implement `action_go_to_scripts()` method similar to `action_go_to_settings()`\n- Update GLOBAL_BINDINGS to include scripts tab hotkey\n\n### 1.4 Remove Global Script Hotkey\n- Remove `(\"ctrl+x\", \"run_script\", \"Script\")` from GLOBAL_BINDINGS\n- Remove `Binding(\"ctrl+x\", \"run_script\", \"Script\")` from main BINDINGS\n- Keep `action_run_script()` method for potential reuse in ScriptsPane\n\n## 2. Create Unified Edit Modal\n\n### 2.1 UnifiedEditModal Widget\nCreate new modal class:\n- For IDEAS stage: Include fields for title, type, description, done_script\n- For other stages: Include only done_script field\n- Use vertical layout with labeled input fields\n- Populate fields with current feature values\n- Include Save/Cancel buttons\n- Handle validation and saving via existing `_handle_edit_*` methods\n\n### 2.2 Stage-Specific Edit Logic\nImplement conditional field display:\n- Check current stage in modal initialization\n- Show all fields for IDEAS stage\n- Show only script field for non-IDEAS stages\n- Use same field types as existing edit modals (Input for title, Select for type, TextArea for description/script)\n\n## 3. Update Hotkey Mappings\n\n### 3.1 Modify STAGE_ACTIONS\n- IDEAS stage: Remove `(\"t\", \"edit_title\", \"Edit Title\")` and `(\"y\", \"edit_item_type\", \"Edit Type\")`\n- IDEAS stage: Change `(\"e\", \"edit_done_script\", \"Edit Script\")` to `(\"e\", \"unified_edit\", \"Edit\")`\n- All other stages: Change `(\"e\", \"edit_done_script\", \"Edit Script\")` to `(\"e\", \"unified_edit\", \"Edit\")`\n\n### 3.2 Implement Unified Edit Action\n- Add `action_unified_edit()` method to PipelineApp\n- Determine current stage and selected feature\n- Launch UnifiedEditModal with appropriate fields enabled\n- Handle modal result and update feature accordingly\n\n## 4. Script Execution Integration\n\n### 4.1 Script Status Integration\nIn ScriptsPane:\n- Monitor `_script_status` to show running state\n- Disable script buttons when script is running\n- Show progress/status for running scripts\n- Use existing `_run_script_async()` method\n\n### 4.2 Confirmation Flow\n- Implement confirmation modals for scripts with `confirm: true`\n- Use existing confirmation pattern from current implementation\n- Include context input in script execution\n\n## 5. Testing and Cleanup\n\n### 5.1 Remove Unused Code\n- Remove individual edit modal classes if no longer needed:\n  - `EditTitleModal`\n  - `EditItemTypeModal`\n  - May keep `EditDoneScriptModal` class for reference or future use\n- Remove unused action methods:\n  - `action_edit_title()`\n  - `action_edit_item_type()`\n  - Keep `action_edit_done_script()` for potential reuse\n\n### 5.2 Update Help Text\n- Modify contextual bindings display to show correct hotkey labels\n- Update footer help text for new unified edit functionality\n- Ensure scripts tab hotkey appears in global bindings\n\n## 6. Implementation Order\n\n1. **Phase 1**: Create UnifiedEditModal and action_unified_edit()\n2. **Phase 2**: Update STAGE_ACTIONS to use unified edit\n3. **Phase 3**: Create ScriptsPane widget\n4. **Phase 4**: Add scripts tab to main tabs\n5. **Phase 5**: Remove global script hotkey and update bindings\n6. **Phase 6**: Clean up unused code and update help text\n\n## Key Files to Modify\n- `pipeline/tui.py`: Main implementation file\n- `.mad/scripts.json`: Reference for script configurations (no changes needed)\n\nThis plan maintains existing functionality while consolidating the UI as requested. The unified edit modal provides a cleaner interface, and the scripts tab removes the need for a global hotkey while keeping scripts easily accessible.",
   "impl_spec": "# Implementation Spec: Scripts Tab and Unified Item Editing\n\n## Task 1: Create UnifiedEditModal Widget\n- **File**: `pipeline/tui.py`\n- **Create**: New class `UnifiedEditModal(ModalScreen)` after existing modal classes\n- **Fields to include**:\n  - `title_input = Input(placeholder=\"Feature title\", id=\"title-input\")`\n  - `type_select = Select([(\"bug\", \"Bug\"), (\"feature\", \"Feature\"), (\"enhancement\", \"Enhancement\")], id=\"type-select\")`\n  - `description_area = TextArea(placeholder=\"Feature description\", id=\"description-area\")`\n  - `script_area = TextArea(placeholder=\"Script command\", id=\"script-area\")`\n- **Constructor**: Accept `feature_data` and `current_stage` parameters\n- **Layout**: Use `Vertical()` container with labeled sections\n- **Conditional display**: Show all fields for IDEAS stage, only script field for others\n- **Buttons**: Save and Cancel buttons in horizontal container\n- **Dependencies**: None\n\n## Task 2: Implement UnifiedEditModal Logic\n- **File**: `pipeline/tui.py`\n- **Method**: `compose()` in UnifiedEditModal\n- **Logic**: \n  - If `current_stage == \"ideas\"`: yield all input widgets with labels\n  - Else: yield only script_area widget with label\n  - Always yield button container with Save/Cancel\n- **Method**: `on_mount()` - populate fields with current feature values from feature_data\n- **Method**: `on_button_pressed()` - handle Save (validate and return data) and Cancel actions\n- **Method**: `action_save()` - collect form data and dismiss with results\n- **Dependencies**: Task 1\n\n## Task 3: Add action_unified_edit Method\n- **File**: `pipeline/tui.py`\n- **Method**: `action_unified_edit()` in PipelineApp class\n- **Logic**:\n  - Get current selected feature from `self._features[self._current_index]`\n  - Get current stage from feature data or app state\n  - Create and push UnifiedEditModal with feature data and stage\n  - Handle modal result using existing `_handle_edit_title`, `_handle_edit_type`, `_handle_edit_done_script` methods\n- **Error handling**: Check if feature exists and is valid, show error if not\n- **Dependencies**: Tasks 1-2\n\n## Task 4: Update STAGE_ACTIONS Dictionary\n- **File**: `pipeline/tui.py`\n- **Modify**: `STAGE_ACTIONS` dictionary\n- **Changes**:\n  - IDEAS stage: Remove `(\"t\", \"edit_title\", \"Edit Title\")` entry\n  - IDEAS stage: Remove `(\"y\", \"edit_item_type\", \"Edit Type\")` entry\n  - IDEAS stage: Change `(\"e\", \"edit_done_script\", \"Edit Script\")` to `(\"e\", \"unified_edit\", \"Edit\")`\n  - All other stages: Change `(\"e\", \"edit_done_script\", \"Edit Script\")` to `(\"e\", \"unified_edit\", \"Edit\")`\n- **Result**: Single 'e' key opens unified edit modal for all stages\n- **Dependencies**: Task 3\n\n## Task 5: Create ScriptsPane Widget\n- **File**: `pipeline/tui.py`\n- **Create**: New class `ScriptsPane(Widget)` after SettingsPane class\n- **Widgets**:\n  - `scripts_list = ListView(id=\"scripts-list\")` for script selection\n  - `context_area = TextArea(placeholder=\"Additional context (optional)\", id=\"context-area\")`\n  - `run_button = Button(\"Run Script\", id=\"run-button\")`\n- **Method**: `compose()` - yield scripts list, context area, and run button in vertical layout\n- **Method**: `on_mount()` - call `populate_scripts()` to load scripts\n- **Method**: `populate_scripts()` - load from `.mad/scripts.json` using existing `load_scripts()` and populate ListView\n- **Dependencies**: None\n\n## Task 6: Implement Script Execution in ScriptsPane\n- **File**: `pipeline/tui.py`\n- **Method**: `on_button_pressed()` in ScriptsPane - handle run button clicks\n- **Method**: `run_selected_script()` in ScriptsPane\n- **Logic**:\n  - Get selected script from ListView selection\n  - Get context text from context_area\n  - Access parent app via `self.app` to call existing script execution methods\n  - Use existing `_run_script_async()` method pattern\n- **Status integration**: Monitor script execution status and update button text/state\n- **Error handling**: Show message if no script selected\n- **Dependencies**: Task 5\n\n## Task 7: Add Scripts Tab to Main Interface\n- **File**: `pipeline/tui.py`\n- **Modify**: `PipelineApp.compose()` method in TabbedContent section\n- **Add**: `TabPane(\"Scripts\", id=\"scripts-tab\")` after the Settings TabPane\n- **Content**: Mount ScriptsPane widget inside scripts tab\n- **Initialization**: Ensure scripts are loaded when tab is created\n- **Dependencies**: Tasks 5-6\n\n## Task 8: Add Scripts Tab Navigation\n- **File**: `pipeline/tui.py`\n- **Add**: `action_go_to_scripts()` method in PipelineApp\n- **Implementation**: \n  - Get TabbedContent widget: `self.query_one(TabbedContent)`\n  - Set active tab: `tabbed_content.active = \"scripts-tab\"`\n- **Hotkey binding**: Add `(\",\", \"go_to_scripts\", \"Scripts\")` to GLOBAL_BINDINGS list\n- **Key binding**: Add `Binding(\",\", \"go_to_scripts\", \"Scripts\")` to main BINDINGS list\n- **Dependencies**: Task 7\n\n## Task 9: Remove Global Script Hotkey\n- **File**: `pipeline/tui.py`\n- **Remove**: `(\"ctrl+x\", \"run_script\", \"Script\")` entry from GLOBAL_BINDINGS list\n- **Remove**: `Binding(\"ctrl+x\", \"run_script\", \"Script\")` from main BINDINGS list\n- **Preserve**: Keep `action_run_script()` method for potential reuse in ScriptsPane\n- **Test**: Verify ctrl+x no longer triggers global script modal\n- **Dependencies**: Task 8\n\n## Task 10: Remove Unused Edit Modal Classes\n- **File**: `pipeline/tui.py`\n- **Remove**: Complete `EditTitleModal` class definition and all its methods\n- **Remove**: Complete `EditItemTypeModal` class definition and all its methods\n- **Keep**: `EditDoneScriptModal` class for potential future reference\n- **Remove**: `action_edit_title()` method from PipelineApp\n- **Remove**: `action_edit_item_type()` method from PipelineApp\n- **Preserve**: `action_edit_done_script()` method for potential reuse\n- **Dependencies**: Task 4 (ensure no references remain)\n\n## Task 11: Update Help Text and Bindings Display\n- **File**: `pipeline/tui.py`\n- **Update**: `_get_contextual_bindings()` method to reflect unified edit key\n- **Modify**: Footer help text to show correct action labels\n- **Add**: Scripts tab hotkey to global bindings display\n- **Test**: Verify all displayed hotkeys match actual functionality\n- **Update**: Any hardcoded help strings that reference old edit hotkeys\n- **Dependencies**: Tasks 8-10\n\n## Task 12: Create Initial Checkpoint\n- **File**: `.mad/checkpoints/scripts-tab-and-better-item-editing.checkpoint.json`\n- **Create directory**: `mkdir -p .mad/checkpoints` if needed\n- **Initial content**:\n```json\n{\n  \"feature_slug\": \"scripts-tab-and-better-item-editing\",\n  \"feature_id\": \"441a5dfa\",\n  \"phase\": \"spec-implementation\",\n  \"last_checkpoint\": \"2026-03-09T[current_time]\",\n  \"completed_steps\": [\"Created implementation specification\"],\n  \"next_step\": \"Begin implementing UnifiedEditModal widget\",\n  \"notes\": \"Implementation spec completed with 12 tasks defined\",\n  \"files_modified\": []\n}\n```\n- **Dependencies**: None\n\n## Implementation Order:\n1. **Phase 1** (Tasks 1-4): Unified Edit Modal\n   - Create UnifiedEditModal widget with conditional fields\n   - Implement modal logic and form handling\n   - Add action_unified_edit method\n   - Update STAGE_ACTIONS to use unified edit\n\n2. **Phase 2** (Tasks 5-6): Scripts Pane\n   - Create ScriptsPane widget with script list\n   - Implement script execution integration\n\n3. **Phase 3** (Tasks 7-9): Tab Integration\n   - Add scripts tab to main interface\n   - Implement scripts tab navigation\n   - Remove global script hotkey\n\n4. **Phase 4** (Tasks 10-11): Cleanup\n   - Remove unused edit modal classes\n   - Update help text and bindings display\n\n5. **Phase 5** (Task 12): Checkpointing\n   - Maintain checkpoints throughout implementation\n\n## Key Integration Points:\n- UnifiedEditModal reuses existing `_handle_edit_*` methods for data persistence\n- ScriptsPane integrates with existing `load_scripts()` and `_run_script_async()` systems\n- Tab navigation follows established patterns from SettingsPane\n- Hotkey system maintains consistency with existing GLOBAL_BINDINGS structure\n- Script execution preserves current confirmation and status monitoring behavior\n\n## Validation Requirements:\n- Test unified edit modal on IDEAS stage (all fields) vs other stages (script only)\n- Verify script execution from scripts tab matches current global hotkey behavior\n- Confirm tab navigation works with comma key\n- Validate removal of title/type edit hotkeys doesn't break other functionality\n- Ensure help text accurately reflects new hotkey mappings",
   "test_spec": "# Test Specification: Scripts Tab and Better Item Editing\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Scripts Tab Creation and Display\n**Behavior**: ScriptsPane widget displays scripts from .mad/scripts.json\n**Success Criteria**: \n- All scripts from .mad/scripts.json appear in scrollable list\n- Each script shows label, description, and command fields correctly\n- Scripts are visually formatted consistently with existing UI patterns\n**Expected Output**: Scrollable list populated with script data, properly styled\n\n**Behavior**: Scripts tab accessible via hotkey and tab navigation\n**Success Criteria**:\n- Pressing `,` key switches to scripts tab from any other tab\n- Scripts tab appears in main tab bar after Settings tab\n- Tab can be selected via mouse click\n**Expected Output**: Scripts tab becomes active, ScriptsPane content displays\n\n**Behavior**: Script execution buttons and context input\n**Success Criteria**:\n- Each script has a \"Run\" button\n- Context input text area is present and functional\n- Run buttons trigger script execution with context\n**Expected Output**: Clickable run buttons, functional text input area\n\n### 1.2 Script Execution Integration\n**Behavior**: Script status monitoring during execution\n**Success Criteria**:\n- Run buttons become disabled when script is running\n- Running script shows progress/status indicators\n- Script status updates in real-time\n**Expected Output**: Disabled buttons, visual status feedback\n\n**Behavior**: Confirmation flow for scripts requiring confirmation\n**Success Criteria**:\n- Scripts with `confirm: true` show confirmation modal before execution\n- Confirmation modal includes script details and context\n- User can approve or cancel execution\n**Expected Output**: Modal dialog with script info, approve/cancel options\n\n**Behavior**: Script execution with context input\n**Success Criteria**:\n- Context text from input area is passed to script execution\n- Scripts receive context as expected parameter\n- Empty context is handled gracefully\n**Expected Output**: Scripts execute with provided context data\n\n### 1.3 Unified Edit Modal Creation\n**Behavior**: Modal displays appropriate fields based on current stage\n**Success Criteria**:\n- IDEAS stage: shows title, type, description, done_script fields\n- Non-IDEAS stages: shows only done_script field\n- All fields are properly labeled and formatted\n**Expected Output**: Modal with correct field set based on stage\n\n**Behavior**: Modal populates with current feature values\n**Success Criteria**:\n- All displayed fields show current feature data\n- Field values match exactly what's stored in feature JSON\n- Empty/null values display as empty fields\n**Expected Output**: Pre-populated form fields with existing data\n\n**Behavior**: Modal save and validation functionality\n**Success Criteria**:\n- Save button updates feature with new values\n- Cancel button discards changes\n- Invalid data shows appropriate error messages\n**Expected Output**: Feature updated on save, unchanged on cancel\n\n### 1.4 Hotkey Mapping Updates\n**Behavior**: IDEAS stage hotkey changes\n**Success Criteria**:\n- 't' key no longer triggers edit title action\n- 'y' key no longer triggers edit type action\n- 'e' key triggers unified edit modal\n**Expected Output**: Correct modal opens for 'e', no response for 't'/'y'\n\n**Behavior**: Non-IDEAS stage hotkey changes\n**Success Criteria**:\n- 'e' key triggers unified edit modal (script field only)\n- Previous edit script hotkey behavior is replaced\n**Expected Output**: Unified modal opens with script field\n\n**Behavior**: Global script hotkey removal\n**Success Criteria**:\n- Ctrl+X no longer triggers script execution\n- Global bindings no longer include script hotkey\n- Help text reflects hotkey removal\n**Expected Output**: No response to Ctrl+X, updated help display\n\n### 1.5 Code Cleanup and Help Updates\n**Behavior**: Unused code removal\n**Success Criteria**:\n- EditTitleModal, EditItemTypeModal classes removed (if no longer needed)\n- action_edit_title(), action_edit_item_type() methods removed\n- No broken references or imports remain\n**Expected Output**: Clean codebase without unused components\n\n**Behavior**: Help text updates\n**Success Criteria**:\n- Contextual bindings show correct hotkey labels\n- Footer help reflects unified edit functionality\n- Scripts tab hotkey appears in global bindings help\n**Expected Output**: Accurate help text matching new functionality\n\n## 2. Edge Cases\n\n### 2.1 Missing or Invalid Script Configuration\n**Case**: .mad/scripts.json file missing or malformed\n**Expected Behavior**: Scripts tab shows empty state or error message, doesn't crash\n\n**Case**: Script entry missing required fields (label, command)\n**Expected Behavior**: Script shows with placeholder text or is filtered out\n\n**Case**: Script command contains invalid or dangerous characters\n**Expected Behavior**: Command is sanitized or execution is blocked with warning\n\n### 2.2 Script Execution Edge Cases\n**Case**: Script execution fails or times out\n**Expected Behavior**: Error message displayed, run buttons re-enabled\n\n**Case**: Multiple scripts attempted to run simultaneously\n**Expected Behavior**: Queue scripts or block subsequent runs until current completes\n\n**Case**: Very long context input (exceeds reasonable limits)\n**Expected Behavior**: Input is truncated or warning shown about length limits\n\n**Case**: Script with confirm:true but user cancels repeatedly\n**Expected Behavior**: Each cancellation properly resets UI state\n\n### 2.3 Edit Modal Edge Cases\n**Case**: Feature data missing required fields\n**Expected Behavior**: Modal shows empty fields, allows user to add missing data\n\n**Case**: Extremely long field values (title, description)\n**Expected Behavior**: Fields are properly scrollable or truncated with ellipsis\n\n**Case**: Stage changes while modal is open\n**Expected Behavior**: Modal closes or updates field visibility appropriately\n\n**Case**: Save operation fails due to file permissions or locks\n**Expected Behavior**: Error message shown, user can retry or cancel\n\n### 2.4 Hotkey and Navigation Edge Cases\n**Case**: Rapid hotkey presses during tab transitions\n**Expected Behavior**: UI state remains consistent, no duplicate modals\n\n**Case**: Hotkey pressed while modal is already open\n**Expected Behavior**: Existing modal maintains focus or new hotkey is ignored\n\n**Case**: Scripts tab hotkey conflicts with existing bindings\n**Expected Behavior**: New binding takes precedence or conflict is resolved gracefully\n\n### 2.5 Concurrent Operations\n**Case**: Edit modal open while script is running\n**Expected Behavior**: Both operations can proceed independently without interference\n\n**Case**: Multiple edit operations attempted on same feature\n**Expected Behavior**: Subsequent edits are queued or blocked until first completes\n\n**Case**: Tab switching during script execution\n**Expected Behavior**: Script continues running, status visible when returning to scripts tab\n\n## 3. What Constitutes Failure\n\n### 3.1 Critical Failures\n- Application crash when accessing scripts tab\n- Data corruption when saving via unified edit modal\n- Script execution that doesn't respect confirmation settings\n- Hotkeys that trigger wrong actions or multiple actions\n- Complete loss of editing functionality\n\n### 3.2 UI Failures\n- Scripts tab not appearing in tab bar\n- Missing or incorrectly displayed script information\n- Edit modal showing wrong fields for current stage\n- Hotkeys not responding or showing wrong help text\n- Buttons remaining disabled after operations complete\n\n### 3.3 Data Integrity Failures\n- Feature data not saved when modal is confirmed\n- Script context not passed correctly to execution\n- Field validation not preventing invalid data entry\n- Rollback not working when operations are cancelled\n\n### 3.4 Performance Failures\n- Scripts tab taking more than 5 seconds to load\n- Edit modal not appearing within 2 seconds of hotkey press\n- UI becoming unresponsive during script execution\n- Memory leaks from repeated modal operations\n\n### 3.5 Expected Error Messages\n- \"Script configuration not found\" for missing .mad/scripts.json\n- \"Script execution failed\" with details for failed scripts\n- \"Invalid field value\" for validation errors in edit modal\n- \"Operation cancelled\" for user-initiated cancellations\n\n### 3.6 Rollback Behavior Requirements\n- Cancel button in edit modal must restore original values\n- Failed script execution must reset UI to pre-execution state\n- Tab navigation failures must return to previous active tab\n- Hotkey conflicts must maintain existing functionality until resolved\n\n## 4. Out of Scope\n\n### 4.1 Visual and Timing Assertions\n- Exact pixel positioning of UI elements\n- Specific animation timing or transition effects\n- Color scheme or font rendering verification\n- Cross-browser visual consistency (if applicable)\n\n### 4.2 Performance Benchmarking\n- Exact load time measurements beyond basic responsiveness\n- Memory usage optimization validation\n- CPU utilization during operations\n- Stress testing with thousands of scripts\n\n### 4.3 External System Integration\n- Testing actual script functionality or output\n- Validation of script effects on external systems\n- Network connectivity issues during script execution\n- File system permissions beyond basic read/write\n\n### 4.4 Advanced Configuration Scenarios\n- Custom script configuration formats beyond .mad/scripts.json\n- Integration with external script management tools\n- Dynamic script discovery or auto-registration\n- Script dependency management or ordering\n\n### 4.5 Accessibility and Internationalization\n- Screen reader compatibility verification\n- Keyboard navigation beyond specified hotkeys\n- Multi-language text display\n- Right-to-left text layout support\n\n### 4.6 Security Considerations\n- Script command injection prevention (assumed handled at execution layer)\n- Input sanitization beyond basic validation\n- User permission verification for script access\n- Audit logging of script execution\n\nThis test specification covers the core functionality changes while maintaining focus on verifiable behaviors and avoiding implementation-specific details or areas outside the scope of this feature change.",
-  "impl_notes": "Implementation of Scripts Tab and Better Item Editing feature is complete. The feature includes: (1) ScriptsPane widget displaying scripts from .mad/scripts.json with run functionality and context input, (2) Scripts tab added to main Tabs after Settings, (3) Comma key binding for scripts tab navigation, (4) UnifiedEditModal for editing feature fields - shows title/type/description/script for IDEAS stage, only script for other stages, (5) Updated STAGE_ACTIONS to use unified_edit, (6) Removed global script hotkey (ctrl+x), (7) Removed unused EditTitleModal and EditItemTypeModal classes.",
+  "impl_notes": "Added test coverage for CreateScriptModal and ScriptsPane as required by previous review feedback. Created validate_script_input static method in CreateScriptModal to allow pure function testing. Added 12 tests for validation logic (empty ID, invalid characters, duplicate ID, missing label, missing command, valid inputs) and 4 tests for ScriptsPane._handle_create_script. Also fixed comma key binding issue in tui.py for Textual 8.x compatibility.",
   "history": [
     {
       "ts": "2026-03-09T00:49Z",
@@ -375,6 +375,151 @@
       "ts": "2026-03-10T00:12Z",
       "stage": "PROMOTED",
       "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-13T20:36Z",
+      "stage": "REJECTED",
+      "note": "Sent back to implementing: Sent back to implementing: I also wanted the ability to define *new* s..."
+    },
+    {
+      "ts": "2026-03-13T20:37Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T20:44Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T20:44Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T20:44Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T20:48Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-13T20:48Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T20:48Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 2pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-13T20:53Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T20:53Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 2pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-13T20:58Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T20:58Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 2pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-13T21:03Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T21:05Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Human feedback (add new scripts) is addressed via CreateScriptModal and save_scri..."
+    },
+    {
+      "ts": "2026-03-13T21:05Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T21:08Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T21:08Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T21:08Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T21:11Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-13T21:11Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T21:12Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Comma key binding for scripts tab is correctly added. save_scripts tests are good..."
+    },
+    {
+      "ts": "2026-03-13T21:12Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T21:24Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T21:24Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T21:24Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T21:31Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-13T21:31Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T21:32Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - All previous review feedback addressed. CreateScriptModal.validate_script_input e..."
+    },
+    {
+      "ts": "2026-03-13T21:32Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
     }
   ],
   "pipeline_log": [],
@@ -440,6 +585,30 @@
       "verdict": "PASS",
       "summary": "Implementation covers all plan items: ScriptsPane widget, Scripts tab with comma hotkey, UnifiedEditModal with stage-aware fields, updated STAGE_ACTIONS, ctrl+x removal, and cleanup of EditTitleModal/EditItemTypeModal. All 52 tests pass. Code quality is solid with proper error handling, confirmation flows, and edge case coverage.",
       "feedback": null
+    },
+    {
+      "ts": "2026-03-13T20:36Z",
+      "verdict": "FAIL",
+      "summary": "Human rejected from final-human-approval: Sent back to implementing: I also wanted the ability to define *new* scripts in the scripts tab",
+      "feedback": "Human rejection: Sent back to implementing: I also wanted the ability to define *new* scripts in the scripts tab\n\nPrevious review feedback:\nNo previous feedback available."
+    },
+    {
+      "ts": "2026-03-13T21:05Z",
+      "verdict": "FAIL",
+      "summary": "Human feedback (add new scripts) is addressed via CreateScriptModal and save_scripts, but: (1) comma key binding for scripts tab is missing from BINDINGS - action_go_to_scripts exists but has no key bound to it, (2) zero test coverage for all new script creation code (CreateScriptModal, save_scripts, _create_new_script, _handle_create_script).",
+      "feedback": "Issues to fix:\n\nMISSING SCRIPTS TAB HOTKEY: The plan requires comma key binding for scripts tab navigation (Section 1.3). action_go_to_scripts() exists at line 2876 but no Binding('comma', 'go_to_scripts', 'Scripts') is in BINDINGS (lines 1894-1920), and no (',', 'go_to_scripts', 'Scripts') is in GLOBAL_BINDINGS (lines 1940-1946). This was previously fixed in an earlier iteration but appears to have regressed during the re-implementation for the 'new script' feature. Add the binding back.\n\nZERO TEST COVERAGE FOR NEW SCRIPT CREATION: The entire new functionality added to address the human rejection has no tests:\n   - save_scripts() in scripts.py (line 129) - not tested in test_scripts.py\n   - CreateScriptModal class (line 1301) - not tested anywhere\n   - ScriptsPane._create_new_script() (line 1665) - not tested\n   - ScriptsPane._handle_create_script() (line 1677) - not tested\n   - ScriptsPane._refresh_script_list() (line 1707) - not tested\n   \n   At minimum, add tests for:\n   - save_scripts: round-trip (save then load), handles empty list, creates file if missing\n   - CreateScriptModal: validation (empty ID, invalid characters, duplicate ID, missing label, missing command)\n   - CreateScriptModal: successful creation returns correct dict\n   - ScriptsPane._handle_create_script: integration with save_scripts"
+    },
+    {
+      "ts": "2026-03-13T21:12Z",
+      "verdict": "FAIL",
+      "summary": "Comma key binding for scripts tab is correctly added. save_scripts tests are good. However, the previous feedback explicitly required tests for CreateScriptModal validation and ScriptsPane._handle_create_script integration, which are still completely missing.",
+      "feedback": "MISSING TEST COVERAGE FOR CreateScriptModal AND ScriptsPane (from previous review feedback):\n\nThe previous review feedback listed these as required at minimum:\nCreateScriptModal: validation (empty ID, invalid characters, duplicate ID, missing label, missing command)\nCreateScriptModal: successful creation returns correct dict\nScriptsPane._handle_create_script: integration with save_scripts\n\nOnly save_scripts tests were added, but CreateScriptModal and ScriptsPane tests are still absent.\n\nFor CreateScriptModal, you can test the validation logic by extracting it into a pure function, or by using Textual's async test framework (async with app.run_test()). At minimum, extract the validation from _create() into a standalone validate_script_input(id, label, command, existing_ids) -> str|None function that returns an error message or None, and test that function thoroughly. This avoids needing to spin up a full Textual app for validation tests.\n\nFor ScriptsPane._handle_create_script, test the integration path: given a result dict, verify it creates a ScriptConfig, calls save_scripts, and updates the script list. This can be done with mocks for the Textual UI parts."
+    },
+    {
+      "ts": "2026-03-13T21:32Z",
+      "verdict": "PASS",
+      "summary": "All previous review feedback addressed. CreateScriptModal.validate_script_input extracted as static method with 12 thorough validation tests. ScriptsPane._handle_create_script integration tested with 4 tests. All 36 tests pass. Implementation covers scripts tab, unified edit modal, hotkey changes, and code cleanup per plan.",
+      "feedback": null
     }
   ],
   "questions": [
@@ -469,13 +638,13 @@
     }
   ],
   "test_results": {
-    "ts": "2026-03-09T17:11:29.211804",
+    "ts": "2026-03-13T14:31:13.179398",
     "verdict": "PASS",
     "results": {
-      "passed": 116,
+      "passed": 91,
       "failed": 0,
       "errors": 0
     },
-    "feedback": "All tests for the 'Scripts tab and better item editing' feature pass. Tests verified: test_scripts.py (41 tests), test_unified_edit_modal.py (11 tests), test23 tests), test_edit_feature.py (_edit_items.py (15 tests), test_create_idea_tui.py (10 tests), test_arrow_keys_navigation.py (16 tests). Total: 116 tests passed. The core functionality of script loading, execution, FeatureFile done_script property, UnifiedEditModal stage-based field display, and ScriptsPane initialization are all tested and working."
+    "feedback": "All 91 tests pass (71 from test_scripts.py + 20 from test_unified_edit_modal.py). Test coverage includes: UnifiedEditModal stage-specific field display (ideas vs non-ideas), value population, save functionality; ScriptsPane initialization, script selection, running status; CreateScriptModal validation (12 tests for empty ID, invalid characters, duplicate ID, missing label, missing command, valid inputs); save_scripts round-trip and empty list handling; script execution with context and confirmation flow."
   }
 }

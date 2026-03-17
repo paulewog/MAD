@@ -1,0 +1,206 @@
+{
+  "id": "67b85648",
+  "board": "mad",
+  "title": "Move item to any phase from webui",
+  "type": "feature",
+  "created": "2026-03-13T01:34Z",
+  "description": "I want a \"Move\" button for items in the webui that I can use to move any item to any phase",
+  "done_script": "deploy-web-app",
+  "plan": "## What\n\nAdd a universal \"Move\" button to the web UI's feature detail modal that allows moving any item to any valid stage. When clicked, it presents a dropdown of all 13 stages (excluding the item's current stage), and upon confirmation, triggers the existing move API.\n\n## Why\n\nCurrently, the web UI only supports moving items from the final-human-approval stage (approve/reject). All other stage transitions require the TUI or CLI. This creates friction for users who prefer the web dashboard. This feature brings the web UI to parity with the TUI's MoveFeatureModal.\n\n## Design Approach\n\nThe entire backend infrastructure already exists and is proven \u2014 server endpoint, WebSocket protocol, Python client handler, and filesystem move logic. This is purely a frontend change to the web UI template.\n\nThe Move button should appear in the feature detail modal for ALL items regardless of current stage. It should present a stage selector (dropdown) populated with all valid stages minus the current one. When the user selects a stage and confirms, the existing approveFeature-style API call fires. Success/failure feedback should be shown inline, and the modal should close on success so the board poll picks up the change.\n\nThe UI should follow the existing modal and button patterns already established in the template (same styling as Approve/Reject buttons, same fetch-based API calls, same error handling).\n\n## Impact\n\n- Only the web UI template changes. No server or Python changes needed.\n- The existing Approve/Reject buttons for final-human-approval items can be kept as convenient shortcuts, or replaced by the general Move button \u2014 either approach works since move-to-done and move-to-rejected are subsets of move-to-any-stage.\n- The smart board polling already handles reflecting moved items, so no polling changes needed.\n\n## Risks\n\n- Minimal technical risk since all backend plumbing is proven and tested.\n- UX risk: users could accidentally move items to wrong stages. Mitigation: require a confirmation step before executing the move (a confirm dialog or two-step select-then-confirm flow).\n- No workflow enforcement exists at the move level (any stage to any stage is allowed), which is by design \u2014 the TUI works the same way.\n\n## Scope\n\n**Included:**\n- Move button in feature detail modal for all items\n- Stage selector dropdown\n- Confirmation step before move\n- Success/error feedback\n\n**Excluded:**\n- Workflow enforcement (restricting which stages an item can move to based on current stage)\n- Batch/bulk move of multiple items\n- Drag-and-drop between kanban columns\n- Changes to server API or Python pipeline code",
+  "plan_exploration_summary": "Explored the full MAD codebase including server (Go), pipeline (Python), and web UI (HTML/JS template). Key findings: (1) The move infrastructure is fully built \u2014 the server exposes POST /api/clients/{clientID}/features/{featureID}/move accepting {target_stage, reason}, which sends a WebSocket message to the Python client, which calls FeatureFile.move_to_stage() to physically relocate the JSON file. (2) The web UI in server/templates/index.html has a feature detail modal (showFeature function) that currently only shows Approve/Reject buttons for the final-human-approval stage. (3) The TUI already has a MoveFeatureModal with a dropdown of all 13 stages. (4) Valid stages are: ideas, ideating, plan-inbox, reviewing-plan, requested-input, approved, spec-writing, implementing, testing, review, final-human-approval, done, rejected. (5) The server validates target_stage against this list in serveMoveFeature(). (6) The approveFeature() JS function already makes the correct API call for moves \u2014 it just needs to be triggered from a more general UI element with a user-selected target stage. (7) The board poll (smartPollBoard) will automatically reflect the move within 5 seconds.",
+  "impl_spec": "## Implementation Spec: Move Item to Any Phase from Web UI\n\n### Overview\nSingle file change: `server/templates/index.html`. All backend infrastructure exists. The `approveFeature()` JS function already calls `POST /api/clients/{clientID}/features/{featureID}/move` with `{target_stage, reason}`. We just need a universal Move UI in the feature detail modal.\n\n### Task 1: Add stage list constant in JS\n**File:** `server/templates/index.html` (inside the `<script>` block, near the top after `var _clientsCache = [];`)\n**What:** Add a JS array of all valid stages:\n```js\nvar ALL_STAGES = ['ideas','ideating','plan-inbox','reviewing-plan','requested-input','approved','spec-writing','implementing','testing','review','final-human-approval','done','rejected'];\n```\nThis mirrors `stageOrder` in `server/api.go` (lines 17-31). It will be used to populate the Move dropdown.\n\n### Task 2: Add Move UI section in `showFeature()` function\n**File:** `server/templates/index.html`, inside the `showFeature()` function (around line 568-580)\n**What:** After the existing detail rows (ID, Created, etc.) and BEFORE the current `final-human-approval` Approve/Reject buttons block, insert a Move section that appears for ALL items regardless of stage.\n\n**Approach:** Build HTML for a Move section containing:\n1. A `<select>` dropdown (`id=\"move-stage-select\"`) populated with all stages EXCEPT the item's current stage, with human-readable labels\n2. A \"Move\" button (`id=\"btn-move\"`) that triggers the move\n3. A feedback `<span>` (`id=\"move-feedback\"`) for status messages\n\nThe HTML to insert (constructed in the `showFeature` var `html` string):\n```js\n// Move section - appears for ALL items\nhtml += '<div style=\"margin-top:0.75rem;padding:0.5rem 0;border-top:1px solid #21262d;border-bottom:1px solid #21262d\">' +\n    '<div style=\"color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase;margin-bottom:0.4rem\">Move to Stage</div>' +\n    '<div style=\"display:flex;gap:0.5rem;align-items:center\">' +\n    '<select id=\"move-stage-select\" style=\"flex:1;padding:0.4rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.8rem;font-family:inherit\">';\nfor (var si = 0; si < ALL_STAGES.length; si++) {\n    if (ALL_STAGES[si] !== stage) {\n        html += '<option value=\"' + ALL_STAGES[si] + '\">' + escapeHtml(ALL_STAGES[si]) + '</option>';\n    }\n}\nhtml += '</select>' +\n    '<button id=\"btn-move\" onclick=\"moveFeature()\" style=\"padding:0.4rem 0.8rem;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-weight:600;color:#fff;background:#1f6feb\">Move</button>' +\n    '</div>' +\n    '<span id=\"move-feedback\" style=\"font-size:0.8rem;margin-top:0.3rem;display:block\"></span>' +\n    '</div>';\n```\n\nThis should be inserted right after the existing detail rows and BEFORE the `(stage === 'final-human-approval' ? ...)` ternary block. The existing Approve/Reject buttons are KEPT as convenient shortcuts for final-human-approval items.\n\n**Placement in code:** In the `showFeature()` function, after the line building the `doneScript` detail row (around line 574) and before the ternary that checks `stage === 'final-human-approval'` (line 575).\n\n### Task 3: Add `moveFeature()` JS function\n**File:** `server/templates/index.html`, in the `<script>` block, after the `approveFeature()` function (around line 715)\n**What:** Add a new function that:\n1. Reads the selected stage from `#move-stage-select`\n2. Shows a `confirm()` dialog: \"Move this item to [stage]?\"\n3. If confirmed, calls the existing move API (same as `approveFeature` does)\n4. Shows feedback and closes modal on success\n\n```js\nfunction moveFeature() {\n    var select = document.getElementById('move-stage-select');\n    var targetStage = select.value;\n    if (!targetStage) return;\n    if (!confirm('Move this item to \"' + targetStage + '\"?')) return;\n    var feedbackEl = document.getElementById('move-feedback');\n    var btn = document.getElementById('btn-move');\n    feedbackEl.textContent = 'Moving...';\n    feedbackEl.style.color = '#8b949e';\n    btn.disabled = true;\n    fetch('/api/clients/' + encodeURIComponent(_modalClientId) + '/features/' + encodeURIComponent(_modalFeatureId) + '/move?key=' + encodeURIComponent(key), {\n        method: 'POST',\n        headers: {'Content-Type': 'application/json'},\n        body: JSON.stringify({target_stage: targetStage})\n    }).then(function(r) {\n        return r.json().then(function(data) {\n            if (r.ok) {\n                feedbackEl.style.color = '#3fb950';\n                feedbackEl.textContent = 'Moved to ' + targetStage + '!';\n                setTimeout(function() {\n                    closeModal();\n                    smartPollBoard();\n                }, 1000);\n            } else {\n                feedbackEl.style.color = '#f85149';\n                feedbackEl.textContent = data.error || 'Move failed';\n                btn.disabled = false;\n            }\n        });\n    }).catch(function() {\n        feedbackEl.style.color = '#f85149';\n        feedbackEl.textContent = 'Network error';\n        btn.disabled = false;\n    });\n}\n```\n\n### Task 4: Also add Move UI to `client.html` detail modal\n**File:** `server/templates/client.html`\n**What:** The client detail page also has a feature detail modal with the same `showFeature()` and `approveFeature()` pattern. Apply the same changes:\n1. Add `ALL_STAGES` array\n2. Add Move dropdown+button in `showFeature()`\n3. Add `moveFeature()` function\n\nThis ensures feature parity between the dashboard and client detail views.\n\n### Dependencies\n- Task 2 depends on Task 1 (needs ALL_STAGES array)\n- Task 3 depends on Task 2 (Move button references moveFeature)\n- Task 4 is independent but uses same pattern as Tasks 1-3\n- No server-side changes needed\n- No test changes needed (existing move API tests cover the backend)\n\n### Verification\n- Open dashboard, click any feature card -> modal should show Move dropdown with all stages except current\n- Select a stage, click Move -> confirm dialog appears\n- Confirm -> API call fires, success feedback shows, modal closes, board refreshes\n- Cancel confirm -> nothing happens\n- Test with final-human-approval items: both Approve/Reject AND Move should appear\n- Test error case: disconnect client, try move -> should show error feedback",
+  "test_spec": "## Test Specification: Move Item to Any Phase from Web UI\n\n### 1. Behaviors That MUST Be Verified\n\n#### 1.1 Move Button Visibility\n- **Behavior:** The Move section (dropdown + button) appears in the feature detail modal for ALL items regardless of current stage.\n- **Success criteria:** Open any feature card from any stage (ideas, ideating, plan-inbox, reviewing-plan, requested-input, approved, spec-writing, implementing, testing, review, final-human-approval, done, rejected). The Move dropdown and Move button must be visible in every case.\n- **Expected output:** A dropdown labeled \"Move to Stage\" and a \"Move\" button rendered inside the modal body.\n\n#### 1.2 Stage Dropdown Population\n- **Behavior:** The dropdown lists all 13 valid stages EXCEPT the item's current stage.\n- **Success criteria:** For an item in stage \"ideas\", the dropdown should contain exactly 12 options (all stages minus \"ideas\"). For an item in \"done\", the dropdown should contain 12 options (all stages minus \"done\").\n- **Expected output:** 12 `<option>` elements in the `<select>`, each with the stage slug as both value and display text.\n\n#### 1.3 Confirmation Dialog\n- **Behavior:** Clicking the Move button shows a browser confirm() dialog before executing the move.\n- **Success criteria:** A confirm dialog appears with text like 'Move this item to \"[selected-stage]\"?'. If the user cancels, no API call is made. If the user confirms, the API call proceeds.\n- **Expected output:** confirm() is called; cancellation prevents any fetch call.\n\n#### 1.4 Successful Move API Call\n- **Behavior:** After confirmation, a POST request is sent to `/api/clients/{clientID}/features/{featureID}/move` with `{target_stage: selectedStage}` in the JSON body.\n- **Success criteria:** The request uses the correct clientID and featureID from the modal context, includes the authentication key as a query parameter, and sends the correct target_stage.\n- **Expected output:** HTTP 200 response with JSON body indicating success.\n\n#### 1.5 Success Feedback and Modal Close\n- **Behavior:** On successful move, a green success message (e.g., \"Moved to [stage]!\") appears briefly, then the modal closes and the board refreshes.\n- **Success criteria:** The feedback element shows green text with the target stage name. After approximately 1 second, the modal closes. `smartPollBoard()` is called to refresh the board view.\n- **Expected output:** Feedback text turns green, modal overlay is removed, board data is re-fetched.\n\n#### 1.6 Error Feedback\n- **Behavior:** If the move API returns an error, red error text is displayed and the Move button is re-enabled.\n- **Success criteria:** The feedback element shows the error message from the API response (or a generic \"Move failed\" if no error message). The Move button becomes clickable again.\n- **Expected output:** Red feedback text, Move button re-enabled (disabled = false).\n\n#### 1.7 Network Error Handling\n- **Behavior:** If the fetch call fails (network error, timeout), a \"Network error\" message is displayed and the button is re-enabled.\n- **Success criteria:** The catch handler fires, shows \"Network error\" in red, and re-enables the button.\n- **Expected output:** Red \"Network error\" text, Move button re-enabled.\n\n#### 1.8 Button Disabled During Request\n- **Behavior:** The Move button is disabled immediately after confirmation to prevent double-clicks.\n- **Success criteria:** Between clicking Move (after confirm) and receiving a response, the button's disabled property is true.\n- **Expected output:** `btn.disabled === true` during the fetch.\n\n#### 1.9 Coexistence with Approve/Reject Buttons\n- **Behavior:** For items in the \"final-human-approval\" stage, both the existing Approve/Reject buttons AND the new Move section appear.\n- **Success criteria:** The modal for a final-human-approval item shows the Approve button, Reject button, AND the Move dropdown+button. Both sets of controls function independently.\n- **Expected output:** All three action elements (Approve, Reject, Move) are present and functional.\n\n#### 1.10 Move Works from client.html Too\n- **Behavior:** The same Move UI and functionality exists in the client detail page (`server/templates/client.html`).\n- **Success criteria:** Opening a feature detail modal from the client detail page shows the same Move dropdown and button with identical behavior.\n- **Expected output:** Identical Move UI in client.html's feature modal.\n\n### 2. Edge Cases\n\n#### 2.1 Moving to Same Stage as Current\n- **Behavior:** The current stage should not appear in the dropdown, making it impossible to select.\n- **Success criteria:** If an item is in \"ideas\", the \"ideas\" option does not exist in the dropdown.\n- **Expected output:** The dropdown has no option with the item's current stage value.\n\n#### 2.2 No Selection Made (Default)\n- **Behavior:** The dropdown defaults to the first available stage option. Clicking Move with the default selection should work normally.\n- **Success criteria:** The first `<option>` in the dropdown is pre-selected. The move executes for that stage.\n- **Expected output:** The first non-current stage is used as the target.\n\n#### 2.3 Disconnected Client\n- **Behavior:** If the client is disconnected, the move API should return an error (the server relays via WebSocket to the client which must be connected).\n- **Success criteria:** The error feedback shows the server's error message (e.g., client not connected or similar).\n- **Expected output:** Red error feedback; no state change.\n\n#### 2.4 Invalid Feature ID\n- **Behavior:** If the feature ID is somehow invalid or the feature was already moved/deleted, the API returns an error.\n- **Success criteria:** Error feedback is displayed; button is re-enabled.\n- **Expected output:** Red error text from the API response.\n\n#### 2.5 Rapid Double-Click on Move\n- **Behavior:** The button is disabled after the first click, preventing duplicate API calls.\n- **Success criteria:** Only one fetch request is made even if the user tries to click rapidly.\n- **Expected output:** Single API call; button stays disabled until response.\n\n#### 2.6 Modal Closed During In-Flight Request\n- **Behavior:** If the user closes the modal (Escape key or overlay click) while the move request is in-flight, the move should still complete server-side but the UI feedback may not be visible.\n- **Success criteria:** No JavaScript errors occur. The board poll will eventually reflect the moved item.\n- **Expected output:** No crash or uncaught exception; item moves successfully on the backend.\n\n#### 2.7 ALL_STAGES Consistency\n- **Behavior:** The JS ALL_STAGES array must match the server's stageOrder exactly (same stages, same spelling).\n- **Success criteria:** The 13 stages in the JS array match the 13 stages defined in server/api.go's stageOrder.\n- **Expected output:** No \"invalid stage\" errors from the server for any dropdown option.\n\n### 3. What Constitutes Failure\n\n- The Move section does not appear for items in any stage other than final-human-approval.\n- The dropdown includes the item's current stage as an option.\n- The dropdown is missing any of the 13 valid stages (other than the current one).\n- No confirmation dialog appears before executing the move.\n- The API call uses an incorrect endpoint, method, or payload format.\n- The authentication key is not included in the API call.\n- Success does not close the modal or trigger a board refresh.\n- Errors from the API are silently swallowed with no user feedback.\n- The Move button remains disabled after an error (stuck state).\n- The existing Approve/Reject buttons for final-human-approval items stop working.\n- JavaScript errors are thrown in the console during any move operation.\n- The move functionality is missing from client.html.\n- The ALL_STAGES array is out of sync with the server's stage list.\n\n### 4. Out of Scope\n\n- **Visual/CSS assertions:** Exact pixel positions, colors, font sizes, or layout measurements. The test spec only verifies functional behavior.\n- **Performance benchmarks:** Response time of the API call or rendering speed.\n- **Animation timing:** Exact duration of the 1-second delay before modal close.\n- **Server-side logic:** The move API endpoint, WebSocket relay, and filesystem operations are already tested elsewhere. This spec only covers the frontend UI behavior.\n- **Drag-and-drop:** Not part of this feature.\n- **Bulk/batch moves:** Not part of this feature.\n- **Workflow enforcement:** Any-stage-to-any-stage is by design; no validation of \"valid transitions\".\n- **Browser compatibility:** Testing across different browsers or devices.\n- **Authentication flow:** The key-based auth is pre-existing and tested elsewhere.\n- **Board polling correctness:** smartPollBoard is pre-existing functionality; we only verify it is called after a successful move.",
+  "impl_notes": "Fixed critical bug in client.html where the Move feature was sending the feature Title instead of the feature ID to the API. Added _detailFeatureId variable that stores the feature ID when toggleFeatureDetail() opens a modal, then uses this variable in moveFeatureDropdown() instead of incorrectly querying the DOM (which returned Title, not ID).",
+  "ideation_summaries": [],
+  "Ideation": "",
+  "history": [
+    {
+      "ts": "2026-03-13T01:34Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T01:34Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-13T01:34Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T01:34Z",
+      "stage": "PLANNING",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 10pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-13T01:34Z",
+      "stage": "MOVED",
+      "note": "Manual move: plan-inbox -> ideas"
+    },
+    {
+      "ts": "2026-03-13T01:36Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-13T05:22Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T05:25Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-13T05:25Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-13T05:26Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-13T05:26Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-13T05:36Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-13T05:36Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-13T05:38Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T05:39Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T05:39Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T05:44Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T05:44Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T05:44Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T05:47Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-13T05:47Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T05:49Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Critical bug in client.html: moveFeatureDropdown() extracts the feature Title ins..."
+    },
+    {
+      "ts": "2026-03-13T05:50Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T05:52Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T05:52Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T05:52Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T05:57Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-13T05:57Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T05:59Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation is complete and correct. Both index.html and client.html have the ..."
+    },
+    {
+      "ts": "2026-03-13T05:59Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-13T16:07Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-13T05:26Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-13T05:49Z",
+      "verdict": "FAIL",
+      "summary": "Critical bug in client.html: moveFeatureDropdown() extracts the feature Title instead of ID, causing all move API calls from the client detail page to fail.",
+      "feedback": "CRITICAL BUG in server/templates/client.html line 1164:\n\nThis selector gets the FIRST .detail-value in the detail section, which is the Title (line 840), not the ID (line 844). The detail rows are ordered: Title, Stage, Board, Created, ID. So querySelector returns the Title text, and the move API call sends the feature's title as the feature ID, which will always fail with an invalid feature error.\n\nFix: Either query specifically for the ID row, or store the feature ID in a variable when building the detail HTML (similar to how index.html uses _modalFeatureId). The simplest fix would be to store the card's data-id in a module-level variable when toggleFeatureDetail() is called, then reference that in moveFeatureDropdown(). For example:\n\nAdd a variable like var _detailFeatureId = null; near the top of the script block.\nIn toggleFeatureDetail(), set _detailFeatureId = card.getAttribute('data-id');\nIn moveFeatureDropdown(), use _detailFeatureId instead of the DOM query.\n\nAlternatively, use a more specific selector: detail.querySelector('.detail-row:nth-child(5) .detail-value').textContent \u2014 but the variable approach is more robust.\n\nAll other aspects of the implementation look correct:\nindex.html Move UI: correct for all stages, dropdown excludes current stage, confirm dialog, button disable, correct API call, success/error/network handling, modal close + board refresh. PASS.\nALL_STAGES arrays in both files match server's stageOrder exactly (13 stages). PASS.\nCoexistence with Approve/Reject buttons in index.html for final-human-approval items. PASS.\nclient.html Move UI rendering (dropdown, button, feedback span) is correct. PASS.\nclient.html moveFeatureDropdown() logic is correct EXCEPT for the feature ID extraction bug described above."
+    },
+    {
+      "ts": "2026-03-13T05:59Z",
+      "verdict": "PASS",
+      "summary": "Implementation is complete and correct. Both index.html and client.html have the Move dropdown+button for all stages, ALL_STAGES arrays match server's stageOrder (13 stages), dropdown excludes current stage, confirm dialog present, button disabled during request, success/error/network feedback all handled, and the prior review's critical bug (client.html sending Title instead of ID) is properly fixed via _detailFeatureId. All 21 tests pass.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-12T22:57:29.907397",
+    "verdict": "PASS",
+    "results": {
+      "passed": 21,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "Tests pass: 13 tests in test_move_feature.py (server-side WebSocket message handling) + 8 tests in test_move_to_ideating_button.py (static HTML validation). Coverage gap: No runtime JavaScript/browser tests exist for confirm dialog, button disabled state, API calls, or feedback display behaviors. Implementation verified correct via code review: Move UI appears for all stages (index.html:576-589, client.html:849-862), dropdown excludes current stage, confirm() called, API endpoint correct (/api/clients/{clientID}/features/{featureID}/move), button disabled during request, error/network error handling present, ALL_STAGES matches server stageOrder (13 stages)."
+  }
+}

@@ -1,0 +1,576 @@
+{
+  "id": "6d1e70f0",
+  "board": "mad",
+  "title": "Allow ideas to require human approval",
+  "type": "feature",
+  "created": "2026-03-08T05:31Z",
+  "description": "Have some ideas require human approval and not be allowed to go from approved to implementation automatically. Maybe a special phase, \"human-in-the-loop,\" that it can optionally go to and a human has to move it from there to \"approved\"",
+  "plan": "## What\n\nAdd an opt-in human approval gate that intercepts items after their plan is reviewed and approved by AI, but before they enter the automated implementation pipeline. Items with this gate enabled will pause in a new holding phase where a human must explicitly approve or reject them. Approval advances the item into the normal pipeline flow; rejection sends it back for re-evaluation.\n\n## Why\n\nCurrently, once a plan passes AI review, it automatically moves to 'approved' and the pipeline immediately picks it up for spec-writing and implementation. For higher-risk or more important features, teams want a human checkpoint to review the AI-generated plan before committing compute and time to implementation. This prevents wasted effort on plans that look good to AI reviewers but don't match human intent or priorities.\n\n## Design\n\nA new phase called `awaiting-human-approval` will be introduced between plan review and `approved`. A per-item boolean flag `requires_human_approval` in the feature JSON controls whether items route through this phase.\n\n**Gating behavior:**\n- When plan review passes and the flag is true: item moves to `awaiting-human-approval` instead of `approved`\n- When plan review passes and the flag is false (or absent): item moves directly to `approved` as it does today (zero behavior change for existing items)\n- The `pipeline auto` runner naturally ignores `awaiting-human-approval` since it only polls implementing, review, ideating, and approved stages\n\n**Human actions in `awaiting-human-approval`:**\n- **Approve**: moves item to `approved`, where the pipeline will pick it up normally\n- **Reject**: moves item back to `ideas` for re-evaluation, adding a plan_review FAIL entry with the human's rejection reason\n\n**Flag management:**\n- The `requires_human_approval` flag should be settable when creating an item (TUI new-feature flow and CLI `pipeline new`)\n- The flag should be editable via the unified edit modal in the TUI and the `pipeline edit-feature` CLI\n- Default is false (opt-in, not opt-out) to preserve existing workflow\n\n**Phase naming rationale:**\n- `awaiting-human-approval` clearly communicates that a human must act\n- It is unambiguous versus `final-human-approval` which is the post-implementation gate\n- The name follows the existing kebab-case convention used by all other phases\n\n## Impact\n\n**Components that need changes:**\n- Phase registration: the new phase must be added to the STAGES list, all stage-directory creation routines, and the web UI's ALL_STAGES array\n- Plan review routing: the single line where plan-review PASS moves to 'approved' needs a conditional branch checking the flag\n- TUI: new per-stage key bindings for `awaiting-human-approval` with approve/reject actions, and the approve/reject handlers need cases for this phase\n- Web UI: the approve/reject buttons need to appear for `awaiting-human-approval` with the correct routing (approve->approved, reject->ideas)\n- Feature creation: the flag needs to be included in the JSON schema and exposed in creation flows\n- HUMAN_STAGES set: should include `awaiting-human-approval` so the TUI and CLI highlight it as needing attention\n\n**What stays the same:**\n- All existing items without the flag continue to flow through the pipeline unchanged\n- The `final-human-approval` phase and its handlers are completely untouched\n- The `pipeline auto` command needs no changes (it already ignores unknown phases)\n- No changes to spec-writing, implementing, testing, or review phases\n\n## Risks\n\n- **Naming confusion**: Two human-gate phases could confuse users. Mitigation: clear, distinct naming (`awaiting-human-approval` = pre-implementation plan gate, `final-human-approval` = post-implementation completion gate) and clear labeling in the UI.\n- **Flag discoverability**: Users may not know the flag exists. Mitigation: expose it in the TUI creation flow and edit modal. Consider a board-level default setting in the future.\n- **Stuck items**: Items could languish in `awaiting-human-approval` if the human forgets. Mitigation: the TUI and web UI already highlight human-attention phases, and adding this phase to HUMAN_STAGES ensures visibility.\n\n## Scope\n\n**In scope:**\n- New `awaiting-human-approval` phase with approve (->approved) and reject (->ideas) routing\n- Per-item `requires_human_approval` boolean flag\n- TUI key bindings and handlers for the new phase\n- Web UI approve/reject buttons for the new phase\n- Flag settable at creation time and via edit\n- Plan review routing conditional on the flag\n\n**Out of scope:**\n- Board-level default for the flag (future enhancement)\n- Approval workflows (e.g., requiring multiple approvers)\n- Notifications or reminders for items awaiting approval\n- Changing the existing `final-human-approval` phase in any way\n- Any changes to the implementation/review pipeline after `approved`",
+  "impl_spec": "## Implementation Spec: Allow Ideas to Require Human Approval\n\n### Task 1: Add `awaiting-human-approval` phase to all stage registries\n\n**Files:** `pipeline/state.py`, `pipeline/config.py`, `server/api.go`, `server/templates/index.html`\n\n1. **`pipeline/state.py` line 20-23** \u2014 Add `\"awaiting-human-approval\"` to the `STAGES` list, inserting it between `\"requested-input\"` and `\"approved\"` (since it logically sits between plan review and approved):\n   ```python\n   STAGES = [\n       \"ideas\", \"ideating\", \"plan-inbox\", \"reviewing-plan\", \"requested-input\",\n       \"awaiting-human-approval\", \"approved\", \"spec-writing\",\n       \"implementing\", \"testing\", \"review\", \"final-human-approval\", \"done\", \"rejected\",\n   ]\n   ```\n\n2. **`pipeline/config.py` line 119-123** (`ensure_local_config`) \u2014 Add `\"awaiting-human-approval\"` to the `stages` list in the same position.\n\n3. **`pipeline/config.py` lines 540-546** (`setup_boards`) \u2014 Add `\"awaiting-human-approval\"` to the `stages` list.\n\n4. **`pipeline/config.py` lines 557-559** (`add_board`) \u2014 Add `\"awaiting-human-approval\"` to the stage list in the `for stage in [...]` loop.\n\n5. **`server/api.go` lines 18-32** \u2014 Add `\"awaiting-human-approval\"` to the `stageOrder` slice between `\"requested-input\"` and `\"approved\"`.\n\n6. **`server/templates/index.html` line 448** \u2014 Add `'awaiting-human-approval'` to the `ALL_STAGES` JavaScript array in the same position.\n\n**Dependencies:** None. This is the foundation task.\n\n---\n\n### Task 2: Add `requires_human_approval` field to FeatureFile\n\n**File:** `pipeline/state.py`\n\n1. **Line ~440 in `FeatureFile.create()`** \u2014 Add `\"requires_human_approval\": False` to the `data` dict, alongside the other fields. Also add a `requires_human_approval` parameter to `create()` with default `False`:\n   ```python\n   @staticmethod\n   def create(board, title, description=\"\", item_type=\"feature\", done_script=\"\", requires_human_approval=False):\n   ```\n   And in the data dict:\n   ```python\n   \"requires_human_approval\": requires_human_approval,\n   ```\n\n2. **Add property and setter** after the existing `done_script` property/setter (around line 125):\n   ```python\n   @property\n   def requires_human_approval(self) -> bool:\n       return self._data.get(\"requires_human_approval\", False)\n\n   def set_requires_human_approval(self, value: bool) -> None:\n       self._data[\"requires_human_approval\"] = bool(value)\n       self._save()\n   ```\n\n**Dependencies:** None.\n\n---\n\n### Task 3: Add `requires_human_approval` to CLI edit-feature command\n\n**File:** `pipeline/pipeline.py`\n\n1. **Line 49-60** (`FIELD_SETTERS`) \u2014 Add entry:\n   ```python\n   \"requires_human_approval\": \"set_requires_human_approval\",\n   ```\n\n2. **Line 62-73** (`FIELD_GETTERS`) \u2014 Add entry:\n   ```python\n   \"requires_human_approval\": \"requires_human_approval\",\n   ```\n\n3. **In the `set-field` command handler (around line 930-946)** \u2014 Add a special case for the boolean field before calling the setter, converting string input to bool:\n   ```python\n   if field_name == \"requires_human_approval\":\n       if content.lower() in (\"true\", \"1\", \"yes\"):\n           getattr(feature, FIELD_SETTERS[field_name])(True)\n       elif content.lower() in (\"false\", \"0\", \"no\"):\n           getattr(feature, FIELD_SETTERS[field_name])(False)\n       else:\n           console.print(f\"[red]Error:[/red] requires_human_approval must be true/false\")\n           sys.exit(1)\n   ```\n\n**Dependencies:** Task 2.\n\n---\n\n### Task 4: Route plan review PASS through human approval gate\n\n**File:** `pipeline/phases.py`\n\n1. **Lines 1521-1525** \u2014 Replace the unconditional move to `approved` with a conditional check:\n   ```python\n   if verdict == \"PASS\":\n       if feature.requires_human_approval:\n           feature.move_to_stage(\"awaiting-human-approval\")\n           feature.add_history(\"AWAITING_HUMAN_APPROVAL\", \"Plan approved by AI, awaiting human approval\")\n       else:\n           feature.move_to_stage(\"approved\")\n           feature.add_history(\"PROMOTED\", \"Plan approved, moving to spec-writing\")\n       feature.save()\n       _git_commit(feature, \"plan approved\")\n       break\n   ```\n\n**Dependencies:** Tasks 1, 2.\n\n---\n\n### Task 5: Add TUI support for `awaiting-human-approval` phase\n\n**File:** `pipeline/tui.py`\n\n1. **Line 167** \u2014 Add `\"awaiting-human-approval\"` to `HUMAN_STAGES`:\n   ```python\n   HUMAN_STAGES = {\"final-human-approval\", \"awaiting-human-approval\"}\n   ```\n\n2. **Lines 1734-1747** (`STAGE_ACTIONS` dict) \u2014 Add key bindings for the new phase, between `requested-input` and `approved`:\n   ```python\n   \"awaiting-human-approval\": [(\"m\", \"move\", \"Move\"), (\"a\", \"approve\", \"Approve\"), (\"x\", \"reject\", \"Reject\"), (\"e\", \"unified_edit\", \"Edit\")],\n   ```\n\n3. **Lines 2889-2913** (`action_approve`) \u2014 Add an `elif` branch for `awaiting-human-approval` between the `ideas` and `final-human-approval` cases:\n   ```python\n   elif f.current_stage == \"awaiting-human-approval\":\n       # Approve on awaiting-human-approval = move to approved for pipeline pickup\n       f.add_history(\"PROMOTED\", \"Human approved plan, moving to approved\")\n       f.save()\n       f.move_to_stage(\"approved\")\n       self.notify(f\"Approved for implementation: {f.title}\", severity=\"information\")\n   ```\n\n4. **Lines 3008-3030** (`action_reject`) \u2014 Add a branch for `awaiting-human-approval` that mirrors the `final-human-approval` reject but routes to `ideas` with a `plan_review` FAIL entry:\n   ```python\n   elif f.current_stage == \"awaiting-human-approval\":\n       def handle_plan_reject(reason: str | None) -> None:\n           if reason is None:\n               return\n           f.add_plan_review(\"FAIL\", f\"Human rejected plan: {reason}\", reason)\n           f.add_history(\"REJECTED\", f\"Plan rejected by human, sent back to ideas: {reason}\")\n           f.move_to_stage(\"ideas\")\n           self.notify(f\"Rejected plan, sent to ideas: {f.title}\", severity=\"information\")\n           refreshed = FeatureFile.find(f.slug)\n           self.selected_feature = refreshed\n           self._refresh_board(self.active_board)\n           self._update_detail_view()\n       self.push_screen(RejectModal(), callback=handle_plan_reject)\n       return\n   ```\n   Note: Check that `FeatureFile` has an `add_plan_review` method. If not, use `f._data[\"plan_reviews\"].append({...})` and `f.save()` directly.\n\n**Dependencies:** Tasks 1, 2.\n\n---\n\n### Task 6: Add `requires_human_approval` to TUI new feature creation flow\n\n**File:** `pipeline/tui.py`\n\n1. **Lines 885-926** (`NewFeatureModal.compose()`) \u2014 Add a checkbox/toggle for `requires_human_approval` after the Done Script field:\n   ```python\n   from textual.widgets import Checkbox\n   # In compose():\n   yield Label(\"Require human approval before implementation:\")\n   yield Checkbox(\"Requires Human Approval\", value=False, id=\"new-requires-approval\")\n   ```\n   Note: Check if Textual's `Checkbox` widget is available. If not, use a `Select` with Yes/No options:\n   ```python\n   yield Label(\"Require Human Approval:\")\n   yield Select([(\"No\", \"no\"), (\"Yes\", \"yes\")], value=\"no\", id=\"new-requires-approval\")\n   ```\n\n2. **In `_submit()` (around line 935)** \u2014 Read the value and include it in the dismiss tuple:\n   ```python\n   requires_approval_select = self.query_one(\"#new-requires-approval\", Select)\n   requires_approval = requires_approval_select.value == \"yes\"\n   self.dismiss((str(board), title, desc, done_script, str(item_type), requires_approval))\n   ```\n\n3. **Lines 3999-4013** (`action_new_feature` and `handle_new`) \u2014 Update the callback to accept and pass the new field:\n   ```python\n   def handle_new(result: tuple[str, str, str, str, str, bool] | None) -> None:\n       if result is None:\n           return\n       board, title, desc, done_script, item_type, requires_approval = result\n       self._create_feature(board, title, desc, done_script, item_type, requires_approval)\n   ```\n\n4. **Find `_create_feature` method** \u2014 Add `requires_human_approval` parameter and pass it to `FeatureFile.create()`:\n   ```python\n   def _create_feature(self, board, title, desc, done_script, item_type, requires_approval=False):\n       feature = FeatureFile.create(board, title, desc, item_type=item_type, done_script=done_script, requires_human_approval=requires_approval)\n   ```\n\n**Dependencies:** Task 2.\n\n---\n\n### Task 7: Add `requires_human_approval` to TUI unified edit modal\n\n**File:** `pipeline/tui.py`\n\n1. **Lines 1233-1268** (`UnifiedEditModal.compose()`) \u2014 Add a toggle/select for the flag after the Done Script field:\n   ```python\n   yield Label(\"Require Human Approval:\")\n   current_approval = \"yes\" if self.feature_data.get(\"requires_human_approval\", False) else \"no\"\n   yield Select([(\"No\", \"no\"), (\"Yes\", \"yes\")], value=current_approval, id=\"approval-select\")\n   ```\n\n2. **Lines 1276-1293** (`_save()`) \u2014 Read the value and include it in the result dict:\n   ```python\n   approval_select = self.query_one(\"#approval-select\", Select)\n   result[\"requires_human_approval\"] = approval_select.value == \"yes\"\n   ```\n\n3. **Lines 2684-2730** (`action_unified_edit` and `handle_unified_edit`) \u2014 Ensure the handler applies the `requires_human_approval` field when saving. Check what `handle_unified_edit` does with the result dict and add:\n   ```python\n   if \"requires_human_approval\" in result:\n       f.set_requires_human_approval(result[\"requires_human_approval\"])\n   ```\n\n**Dependencies:** Task 2.\n\n---\n\n### Task 8: Add `awaiting-human-approval` to pipeline.py human_stages\n\n**File:** `pipeline/pipeline.py`\n\n1. **Line 178** \u2014 Add `\"awaiting-human-approval\"` to `human_stages`:\n   ```python\n   human_stages = {\"final-human-approval\", \"awaiting-human-approval\"}\n   ```\n\n**Dependencies:** Task 1.\n\n---\n\n### Task 9: Add Web UI support for `awaiting-human-approval` phase\n\n**File:** `server/templates/index.html`\n\n1. **Line 591** \u2014 Extend the approve/reject button condition to also show for `awaiting-human-approval`. Change:\n   ```javascript\n   (stage === 'final-human-approval' ?\n   ```\n   to:\n   ```javascript\n   (stage === 'final-human-approval' || stage === 'awaiting-human-approval' ?\n   ```\n\n2. **Adjust the approve button's target** \u2014 The `approveFeature('done')` call hardcodes `'done'` as the target. For `awaiting-human-approval`, the target should be `'approved'`. Change the approve button onclick to be dynamic:\n   ```javascript\n   '<button id=\"btn-approve\" onclick=\"approveFeature(\\'' + (stage === 'awaiting-human-approval' ? 'approved' : 'done') + '\\')\" ...>Approve</button>' +\n   ```\n\n3. **Adjust the reject routing** \u2014 For `awaiting-human-approval`, rejection should move to `ideas` instead of `rejected`. Update `showRejectModal()` or the `approveFeature` call for reject to use `ideas` when the current stage is `awaiting-human-approval`:\n   ```javascript\n   function showRejectModal() {\n       var reason = prompt('Rejection reason (optional):');\n       if (reason === null) return;\n       var targetStage = _modalStage === 'awaiting-human-approval' ? 'ideas' : 'rejected';\n       approveFeature(targetStage, reason || 'No reason given');\n   }\n   ```\n   This requires storing `_modalStage` when opening the modal. Check if a stage variable is already available in the modal context \u2014 the `stage` variable from `showFeature()` should be stored globally (e.g., `_modalStage = stage`).\n\n4. **Add `needs-action` class** \u2014 On line 900, extend the condition for the `needs-action` CSS class:\n   ```go\n   {{if or (eq .Stage \"final-human-approval\") (eq .Stage \"awaiting-human-approval\")}} needs-action{{end}}\n   ```\n\n5. **Add collapsed-by-default behavior** \u2014 On line 901, add `awaiting-human-approval` to the collapsed condition if desired (probably not \u2014 items needing action should be visible).\n\n**Dependencies:** Task 1.\n\n---\n\n### Task 10: Add `requires_human_approval` to Web UI new idea creation\n\n**File:** `server/templates/index.html`, `server/api.go`\n\n1. **`server/templates/index.html`** \u2014 Add a checkbox in the new idea modal (around line 344, after the Done Script select):\n   ```html\n   <div style=\"margin-bottom:1rem\">\n       <label style=\"display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem\">\n           <input type=\"checkbox\" id=\"new-idea-requires-approval\"> Require human approval before implementation\n       </label>\n   </div>\n   ```\n\n2. **In `submitNewIdea()` function** \u2014 Read the checkbox value and include it in the POST body:\n   ```javascript\n   var requiresApproval = document.getElementById('new-idea-requires-approval').checked;\n   // Add to the fetch body:\n   requires_human_approval: requiresApproval\n   ```\n\n3. **`server/api.go` line 986-992** (`createIdeaData` struct) \u2014 Add the field:\n   ```go\n   RequiresHumanApproval bool `json:\"requires_human_approval\"`\n   ```\n\n4. **`server/api.go` line 1039-1045** \u2014 Pass it through in the WebSocket message:\n   ```go\n   \"requires_human_approval\": idea.RequiresHumanApproval,\n   ```\n\n5. **`pipeline/tui.py` line 2142** (`_handle_create_idea`) \u2014 Add the parameter and pass it to `FeatureFile.create()`:\n   ```python\n   async def _handle_create_idea(self, title, board, description, item_type=\"feature\", done_script=\"\", requires_human_approval=False):\n       feature = FeatureFile.create(board, title, description, item_type=item_type, done_script=done_script, requires_human_approval=requires_human_approval)\n   ```\n\n6. **`pipeline/server_client.py`** \u2014 Find where `on_idea_created` callback is invoked and pass the `requires_human_approval` field from the message.\n\n**Dependencies:** Tasks 2, 9.\n\n---\n\n### Task 11: Create `awaiting-human-approval` directories for existing boards\n\nThis happens automatically via `setup_boards()` after Task 1, but for any already-initialized boards that won't re-run setup, you may need to create the directories manually during testing. The `setup_boards()` method is called on config load, so existing boards will get the directory created on next TUI/pipeline startup.\n\n**Dependencies:** Task 1.\n\n---\n\n### Verification Checklist\n\n- [ ] Create an item with `requires_human_approval=true` via TUI\n- [ ] Run it through planning and plan review \u2014 verify it lands in `awaiting-human-approval` instead of `approved`\n- [ ] Approve from `awaiting-human-approval` via TUI \u2014 verify it moves to `approved`\n- [ ] Reject from `awaiting-human-approval` via TUI \u2014 verify it moves to `ideas` with plan_review FAIL entry\n- [ ] Create an item without the flag \u2014 verify it flows to `approved` as before (no behavior change)\n- [ ] Edit the flag via `pipeline edit-feature <slug> set-field requires_human_approval true`\n- [ ] Verify the web UI shows approve/reject buttons for `awaiting-human-approval`\n- [ ] Verify web UI approve routes to `approved`, reject routes to `ideas`\n- [ ] Verify `pipeline auto` ignores items in `awaiting-human-approval`",
+  "test_spec": "# Test Specification: Allow Ideas to Require Human Approval\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 New Phase Registration\n- **Behavior**: The `awaiting-human-approval` phase exists in the STAGES list in `state.py`.\n- **Success criteria**: `awaiting-human-approval` appears in STAGES between `reviewing-plan`/`requested-input` and `approved`.\n- **Expected output**: `FeatureFile.move_to_stage('awaiting-human-approval')` succeeds without raising ValueError.\n\n### 1.2 Stage Directory Creation\n- **Behavior**: When a board is initialized, an `awaiting-human-approval` directory is created alongside all other stage directories.\n- **Success criteria**: The directory exists under each board path after initialization.\n- **Expected output**: `<boards_dir>/<board>/awaiting-human-approval/` directory exists.\n\n### 1.3 Config STAGES Consistency\n- **Behavior**: The STAGES list in `config.py` (PIPELINE_PHASES and any other stage lists) includes `awaiting-human-approval`.\n- **Success criteria**: All stage lists across `state.py`, `config.py`, and the web UI's `ALL_STAGES` JavaScript array contain `awaiting-human-approval`.\n\n### 1.4 Plan Review Routing \u2014 Flag True\n- **Behavior**: When plan review returns PASS and the feature has `requires_human_approval` set to `true`, the feature moves to `awaiting-human-approval` instead of `approved`.\n- **Success criteria**: After a PASS plan review, `feature.current_stage` equals `awaiting-human-approval`.\n- **Expected output**: History entry records the move. Feature JSON file physically resides in the `awaiting-human-approval` directory.\n\n### 1.5 Plan Review Routing \u2014 Flag False\n- **Behavior**: When plan review returns PASS and the feature has `requires_human_approval` set to `false`, the feature moves directly to `approved` (existing behavior unchanged).\n- **Success criteria**: After a PASS plan review, `feature.current_stage` equals `approved`.\n- **Expected output**: No interaction with `awaiting-human-approval` phase.\n\n### 1.6 Plan Review Routing \u2014 Flag Absent\n- **Behavior**: When plan review returns PASS and the feature JSON has no `requires_human_approval` field at all, the feature moves directly to `approved`.\n- **Success criteria**: Identical behavior to flag=false. Zero behavior change for existing items that predate this feature.\n- **Expected output**: `feature.current_stage` equals `approved`.\n\n### 1.7 Plan Review Routing \u2014 Flag FAIL Unaffected\n- **Behavior**: When plan review returns FAIL, the flag has no effect \u2014 the feature follows the normal FAIL path regardless of the flag value.\n- **Success criteria**: FAIL routing is identical whether flag is true, false, or absent.\n\n### 1.8 Approve from awaiting-human-approval\n- **Behavior**: A human approving an item in `awaiting-human-approval` moves it to `approved`.\n- **Success criteria**: `feature.current_stage` equals `approved` after approval. History entry records the approval.\n- **Expected output**: Feature JSON file physically moves from `awaiting-human-approval/` to `approved/`.\n\n### 1.9 Reject from awaiting-human-approval\n- **Behavior**: A human rejecting an item in `awaiting-human-approval` moves it back to `ideas`.\n- **Success criteria**: `feature.current_stage` equals `ideas` after rejection.\n- **Expected output**: A plan_review FAIL entry is added with the human's rejection reason. History entry records the rejection.\n\n### 1.10 Reject Requires Reason\n- **Behavior**: When rejecting from `awaiting-human-approval`, the rejection reason is stored in a plan_review FAIL entry.\n- **Success criteria**: `feature.plan_reviews[-1]` has verdict=FAIL and contains the rejection reason in the summary or feedback field.\n\n### 1.11 Pipeline Auto Ignores awaiting-human-approval\n- **Behavior**: The `pipeline auto` runner does not pick up or process items in `awaiting-human-approval`.\n- **Success criteria**: Items in `awaiting-human-approval` remain there indefinitely when `pipeline auto` runs. The auto runner's polling loop does not include `awaiting-human-approval` in its stage queries.\n\n### 1.12 HUMAN_STAGES Includes awaiting-human-approval\n- **Behavior**: The HUMAN_STAGES set in `tui.py` and `pipeline.py` includes `awaiting-human-approval`.\n- **Success criteria**: `'awaiting-human-approval' in HUMAN_STAGES` is True.\n- **Expected output**: The TUI highlights items in this phase as needing human attention. The dashboard human-attention count includes items in this phase.\n\n### 1.13 TUI Key Bindings for awaiting-human-approval\n- **Behavior**: The TUI provides key bindings for approve and reject actions when an item in `awaiting-human-approval` is selected.\n- **Success criteria**: The STAGE_ACTIONS or per-stage key binding dict has an entry for `awaiting-human-approval` with approve and reject actions (similar to `final-human-approval`).\n- **Expected output**: Pressing the approve key moves to `approved`. Pressing the reject key prompts for reason then moves to `ideas`.\n\n### 1.14 Web UI Approve/Reject Buttons for awaiting-human-approval\n- **Behavior**: The web UI shows approve and reject buttons when viewing an item in `awaiting-human-approval`.\n- **Success criteria**: The approve button moves the item to `approved`. The reject button (with reason) moves the item to `ideas`.\n- **Expected output**: The ALL_STAGES JavaScript array includes `awaiting-human-approval`. The button rendering logic treats this stage like `final-human-approval` but with different target stages.\n\n### 1.15 Web UI Move-to Dropdown Includes awaiting-human-approval\n- **Behavior**: The move-to-stage dropdown in the web UI includes `awaiting-human-approval` as an option.\n- **Success criteria**: The dropdown lists `awaiting-human-approval` among the available target stages.\n\n### 1.16 Flag Settable at Creation \u2014 TUI\n- **Behavior**: When creating a new item via the TUI new-feature flow, there is an option to set `requires_human_approval` to true.\n- **Success criteria**: The created feature JSON file contains `\"requires_human_approval\": true` when the user enables it, or `false`/absent when they don't.\n\n### 1.17 Flag Settable at Creation \u2014 CLI\n- **Behavior**: When creating a new item via `pipeline new`, there is an option/flag to set `requires_human_approval`.\n- **Success criteria**: The created feature JSON contains the correct flag value.\n\n### 1.18 Flag Editable via Unified Edit Modal (TUI)\n- **Behavior**: The TUI's unified edit modal includes a toggle/checkbox for `requires_human_approval`.\n- **Success criteria**: Changing the toggle and saving updates the feature JSON's `requires_human_approval` field. The change persists after reload.\n\n### 1.19 Flag Editable via CLI\n- **Behavior**: The `pipeline edit-feature` CLI command can modify the `requires_human_approval` flag.\n- **Success criteria**: Running the edit command with the appropriate flag updates the feature JSON.\n\n### 1.20 Flag Default is False\n- **Behavior**: When no `requires_human_approval` is specified at creation time, the default is `false` (opt-in behavior).\n- **Success criteria**: Newly created features without explicit flag setting have `requires_human_approval` absent or set to false. These features route directly to `approved` after plan review PASS.\n\n### 1.21 FeatureFile Property for requires_human_approval\n- **Behavior**: The FeatureFile class has a property and setter for `requires_human_approval`.\n- **Success criteria**: `feature.requires_human_approval` returns a boolean. `feature.set_requires_human_approval(True)` persists the change to JSON.\n\n### 1.22 Flag Visible in Web UI Item Details\n- **Behavior**: The web UI item detail view shows whether `requires_human_approval` is enabled for an item.\n- **Success criteria**: The flag value is displayed somewhere in the item detail panel.\n\n## 2. Edge Cases\n\n### 2.1 Flag Set to Non-Boolean Values\n- **Input**: `requires_human_approval` set to string \"true\", integer 1, null, or empty string in the JSON.\n- **Expected behavior**: The system treats only explicit boolean `true` as enabling the gate. All other values (including truthy strings) are treated as false.\n- **Why**: Prevents accidental gating from malformed JSON.\n\n### 2.2 Flag Changed While Item Is In-Flight\n- **Scenario**: Item is in `reviewing-plan` with flag=false. Human edits the flag to true before plan review completes.\n- **Expected behavior**: The flag value at the moment of plan review PASS determines routing. If true at that moment, routes to `awaiting-human-approval`.\n\n### 2.3 Item Manually Moved Out of awaiting-human-approval\n- **Scenario**: Human uses the move-to-stage dropdown to move an item from `awaiting-human-approval` to any arbitrary stage.\n- **Expected behavior**: The move succeeds. No special side effects. History records the manual move.\n\n### 2.4 Item Moved Into awaiting-human-approval Manually\n- **Scenario**: Human manually moves an item from any stage into `awaiting-human-approval` using the move-to dropdown.\n- **Expected behavior**: The move succeeds. Approve/reject actions work correctly on the manually-placed item.\n\n### 2.5 Multiple Items in awaiting-human-approval\n- **Scenario**: Several items accumulate in `awaiting-human-approval`.\n- **Expected behavior**: Each can be individually approved or rejected. No interference between items. The TUI and web UI correctly display and count all items.\n\n### 2.6 Rapid Approve After Arriving in awaiting-human-approval\n- **Scenario**: Item arrives in `awaiting-human-approval` and human immediately approves it.\n- **Expected behavior**: Item moves to `approved` without issue. No race condition with any background process.\n\n### 2.7 Reject with Empty Reason\n- **Scenario**: Human attempts to reject from `awaiting-human-approval` with an empty or whitespace-only reason.\n- **Expected behavior**: Either the rejection is blocked until a reason is provided, or a default reason like \"No reason given\" is recorded. The plan_review FAIL entry must have a non-empty summary.\n\n### 2.8 Feature File with Corrupted requires_human_approval Field\n- **Scenario**: The JSON file has `\"requires_human_approval\": \"banana\"` or other unexpected type.\n- **Expected behavior**: Treated as false. Item routes to `approved` on plan review PASS. No crash or exception.\n\n### 2.9 Existing Items Without the Field\n- **Scenario**: Feature files created before this feature have no `requires_human_approval` key.\n- **Expected behavior**: `feature.requires_human_approval` returns `false`. These items are completely unaffected by the new feature. Zero behavior change.\n\n### 2.10 Board With No awaiting-human-approval Directory\n- **Scenario**: An older board directory structure that was created before this feature doesn't have an `awaiting-human-approval` subdirectory.\n- **Expected behavior**: The directory is created on-demand when the first item is moved there (via `move_to_stage` which calls `mkdir(parents=True, exist_ok=True)`).\n\n### 2.11 Concurrent Approve and Reject\n- **Scenario**: Two users (one in TUI, one in web UI) simultaneously attempt to approve and reject the same item.\n- **Expected behavior**: One operation succeeds, the other fails gracefully (file not found at expected path). No crash, no data corruption.\n\n## 3. What Constitutes Failure\n\n### 3.1 Critical Failures (Must Not Happen)\n- An existing item without `requires_human_approval` flag changes behavior after this feature is deployed (regression).\n- Plan review PASS routes to `awaiting-human-approval` when the flag is false or absent.\n- Plan review PASS routes directly to `approved` when the flag is explicitly true.\n- Approve from `awaiting-human-approval` moves to any stage other than `approved`.\n- Reject from `awaiting-human-approval` moves to any stage other than `ideas`.\n- The `pipeline auto` runner picks up and processes items in `awaiting-human-approval`.\n- `awaiting-human-approval` is missing from STAGES, causing `move_to_stage` to raise ValueError.\n- `awaiting-human-approval` is missing from ALL_STAGES in the web UI, causing items to disappear.\n- The TUI crashes or shows no actions when an item in `awaiting-human-approval` is selected.\n- Reject from `awaiting-human-approval` does not record a plan_review FAIL entry.\n\n### 3.2 Moderate Failures\n- `awaiting-human-approval` is not in HUMAN_STAGES, so items don't get visual attention indicators.\n- The flag cannot be set during item creation (only editable after creation).\n- The flag is not visible in the TUI edit modal.\n- The web UI does not show approve/reject buttons for `awaiting-human-approval` items.\n- History entries for approve/reject from this phase are missing or incorrectly labeled.\n\n### 3.3 Expected Error Messages\n- `ValueError: Unknown stage: awaiting-human-approval` \u2014 indicates STAGES list was not updated.\n- Any crash in `phases.py` at the plan review routing point \u2014 indicates the conditional branch was not implemented correctly.\n- `KeyError: 'requires_human_approval'` \u2014 indicates the property accessor doesn't use `.get()` with a default.\n\n### 3.4 Rollback Behavior\n- If approve from `awaiting-human-approval` fails mid-operation, the item should remain in `awaiting-human-approval` (not lost).\n- If reject fails, the item should remain in `awaiting-human-approval` with no plan_review entry added.\n\n## 4. Out of Scope\n\n### 4.1 Do NOT Test\n- Visual appearance, styling, or CSS of the TUI or web UI elements.\n- Timing of TUI refresh or web UI polling intervals.\n- Performance benchmarks (how fast items move between stages).\n- Board-level default for `requires_human_approval` (future enhancement, not part of this feature).\n- Multi-approver workflows (out of scope per plan).\n- Notification or reminder systems for items awaiting approval.\n- Any changes to the existing `final-human-approval` phase behavior.\n- Any changes to spec-writing, implementing, testing, or review phases.\n- The specific UI layout of the approve/reject buttons or key binding assignments (only test that they exist and function).\n- End-to-end tests that require a running AI agent.\n- Network-level concerns (websocket reconnection, API timeouts).\n- Git commit behavior triggered by phase transitions (implementation detail, not feature behavior).",
+  "impl_notes": "Implemented the 'Allow ideas to require human approval' feature. Most of the implementation was already present in the codebase. The only changes needed were: (1) Fixed the web UI reject from awaiting-human-approval to add a plan_review FAIL entry (moderate feedback fix), and (2) Created a comprehensive test suite with 19 tests covering phase registration, property identity check (val is True), setter, create method, move_to_stage, plan review routing, HUMAN_STAGES, web UI stage registration, and server API. All tests pass. Go server compiles successfully.",
+  "history": [
+    {
+      "ts": "2026-03-08T05:31Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T00:37Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-13T00:42Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-13T00:42Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T05:46Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-13T05:46Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T05:47Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-13T05:49Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T05:53Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-13T05:56Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis"
+    },
+    {
+      "ts": "2026-03-13T05:56Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-13T16:33Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-13T16:33Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T16:36Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-13T16:36Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-13T16:37Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible. It correctly identifies the new..."
+    },
+    {
+      "ts": "2026-03-13T16:37Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-13T22:29Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-13T22:29Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-13T22:33Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T22:36Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T22:36Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T22:52Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T22:52Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T22:52Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T22:57Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-13T22:57Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T22:59Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation covers most plan items but has two critical bugs: (1) TUI reject f..."
+    },
+    {
+      "ts": "2026-03-13T22:59Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T23:12Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T23:12Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T23:12Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T23:22Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-13T23:22Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T23:24Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Two of five previous feedback items remain unaddressed: no dedicated tests exist ..."
+    },
+    {
+      "ts": "2026-03-13T23:24Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T23:30Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T23:30Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T23:30Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T23:31Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-13T23:31Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T23:33Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): _review FAIL entr..."
+    },
+    {
+      "ts": "2026-03-13T23:33Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T23:33Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-13T23:38Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T23:38Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-13T23:43Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T23:43Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-13T23:48Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T23:48Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-13T23:54Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T23:54Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-13T23:59Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T23:59Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T00:04Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T00:04Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T00:09Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T00:09Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T00:14Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T00:14Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T00:19Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T00:19Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T00:25Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T00:25Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T00:30Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T00:30Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T00:35Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T00:35Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T00:40Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T00:40Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T00:45Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T00:45Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T00:50Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T00:50Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T00:56Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T00:56Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T01:01Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T01:01Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T01:06Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T01:06Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T01:11Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T01:11Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T01:16Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T01:16Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T01:21Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T01:21Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T01:27Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T01:27Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T01:32Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T01:32Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T01:37Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T01:37Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T01:42Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T01:42Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T01:47Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T01:47Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T01:52Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T01:52Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T01:58Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T01:58Z",
+      "stage": "REVIEW",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 7pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-14T02:03Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T02:04Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation is complete and addresses both previous review feedback items. Tes..."
+    },
+    {
+      "ts": "2026-03-14T02:04Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-13T16:37Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible. It correctly identifies the new phase, flag routing, UI changes, and backward compatibility. The naming rationale addresses potential confusion with final-human-approval.",
+      "feedback": "Minor edge cases not explicitly addressed (not blockers): 1) What happens if requires_human_approval flag is toggled while item is already in awaiting-human-approval phase? 2) What if flag is set to true for an item that's already past plan review? Consider adding a note that these scenarios are out of scope for v1."
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-13T22:59Z",
+      "verdict": "FAIL",
+      "summary": "Implementation covers most plan items but has two critical bugs: (1) TUI reject from awaiting-human-approval does NOT add a plan_review FAIL entry (test spec 1.10, critical failure 3.1), and (2) requires_human_approval property uses bool() which treats non-boolean truthy values like strings as True (edge case 2.1). Also, zero dedicated tests were written.",
+      "feedback": "CRITICAL ISSUES:\n\nMissing plan_review FAIL entry on reject (TUI) \u2014 tui.py line 3038-3050: The handle_plan_reject callback calls f.add_history() and f.move_to_stage('ideas') but does NOT call f.add_plan_review('FAIL', ...). The test spec (1.10) explicitly requires: 'feature.plan_reviews[-1] has verdict=FAIL and contains the rejection reason'. The plan's impl spec (Task 5, step 4) explicitly states this should call f.add_plan_review(\"FAIL\", f\"Human rejected plan: {reason}\", reason). This is listed as a Critical Failure in test spec 3.1. Fix: Add f.add_plan_review(\"FAIL\", f\"Human rejected plan: {reason}\", reason) before f.add_history() in the handler.\n\nrequires_human_approval property allows non-boolean truthy values \u2014 state.py line 130: return bool(self._data.get(\"requires_human_approval\", False)) will return True for strings like \"banana\", \"true\", integer 1, etc. Edge case 2.1 requires: 'The system treats only explicit boolean true as enabling the gate. All other values (including truthy strings) are treated as false.' Fix: Change to val = self._data.get(\"requires_human_approval\", False); return val is True.\n\nNo dedicated tests written \u2014 The test results confirm 'There are NO tests specifically written for the allow-ideas-to-require-human-approval feature.' The test spec lists 22 behaviors and 11 edge cases that must be verified. None have tests.\n\nMODERATE ISSUES:\n\nWeb UI item details don't show requires_human_approval flag \u2014 Test spec 1.22 requires 'The flag value is displayed somewhere in the item detail panel.' The showFeature() function in index.html and client.html does not render the requires_human_approval value anywhere in the detail view.\n\nWeb UI reject from awaiting-human-approval doesn't add plan_review FAIL entry \u2014 The showRejectModal() function in both index.html and client.html just moves the item to 'ideas' stage. There's no mechanism to add a plan_review FAIL entry from the web UI. This means rejecting via the web UI violates test spec 1.10."
+    },
+    {
+      "ts": "2026-03-13T23:24Z",
+      "verdict": "FAIL",
+      "summary": "Two of five previous feedback items remain unaddressed: no dedicated tests exist for the feature (critical), and web UI reject from awaiting-human-approval still does not add a plan_review FAIL entry (moderate).",
+      "feedback": "CRITICAL ISSUES:\n\nNo dedicated tests written \u2014 The previous review flagged this as critical and it remains unaddressed. There are zero test files covering any of the 22 behaviors or 11 edge cases in the test spec. At minimum, tests must cover: (1) plan review routing with flag=true routes to awaiting-human-approval, (2) plan review routing with flag=false/absent routes to approved, (3) requires_human_approval property only accepts boolean true (val is True identity check), (4) approve from awaiting-human-approval moves to approved, (5) reject from awaiting-human-approval moves to ideas AND adds plan_review FAIL entry, (6) pipeline auto ignores awaiting-human-approval, (7) FeatureFile.create includes the flag. These are unit-testable without a running AI agent.\n\nMODERATE ISSUES:\n\nWeb UI reject from awaiting-human-approval doesn't add plan_review FAIL entry \u2014 In tui.py _on_move_requested (line 2187-2194), there is a special case for final-human-approval->implementing that adds an impl_review FAIL, but NO corresponding special case for awaiting-human-approval->ideas that adds a plan_review FAIL. When a user rejects from the web UI, the item moves to ideas with only a generic 'Moved via web UI' history entry and no plan_review record. This violates test spec 1.10 (reject requires plan_review FAIL entry with reason). Fix: Add a branch in _on_move_requested similar to the final-human-approval case:\n\n    if target_stage == 'ideas' and feature.current_stage == 'awaiting-human-approval' and reason:\n        feature.add_plan_review('FAIL', f'Human rejected plan: {reason}', reason)\n        feature.add_history('REJECTED', f'Plan rejected by human via web UI: {reason}')\n    elif target_stage == 'implementing' and feature.current_stage == 'final-human-approval' and reason:\n        ...(existing code)...\n    else:\n        feature.add_history(target_stage.upper(), 'Moved via web UI')"
+    },
+    {
+      "ts": "2026-03-14T02:04Z",
+      "verdict": "PASS",
+      "summary": "Implementation is complete and addresses both previous review feedback items. Tests cover 19 scenarios including phase registration, property identity checks, setter, create method, move_to_stage, plan review routing, HUMAN_STAGES, web UI stage registration, and server API. The web UI reject from awaiting-human-approval now correctly adds a plan_review FAIL entry.",
+      "feedback": null
+    }
+  ],
+  "ideation_summaries": [
+    "Explored three approaches for human-gated approval: (1) A dedicated 'final-human-approval' checkpoint phase inserted between 'approved' and 'spec-writing', triggered by a per-item flag like `\"requires_human_approval\": true` in the feature JSON. The pipeline's auto-advance logic in phases.py would check this flag after plan review passes and route flagged items to a hold phase instead of proceeding directly. This is the simplest approach and reuses the existing manual-move patterns already presen",
+    "The previous proposal has several significant gaps. First, the naming is confusing: it proposes adding 'awaiting-human-approval' as a new phase when 'final-human-approval' already exists for post-implementation gating. Two similarly-named human-hold phases will confuse both users and pipeline logic \u2014 a clearer distinction like 'human-gate-plan' vs 'final-human-approval' would be needed, or better yet, reuse the existing phase with metadata to distinguish pre-impl vs post-impl holds. Second, the ",
+    "After reviewing the actual codebase, the cleanest approach is to reuse the existing `final-human-approval` phase as a universal human gate rather than creating a new phase. The key insight is that `pipeline auto` in pipeline.py polls `approved` items and immediately runs the full pipeline (spec-writing through implementation). The gate must therefore intercept *before* an item reaches `approved`, or prevent `pipeline auto` from picking up gated `approved` items. The simplest and least invasive a",
+    "The third proposal's 'reuse final-human-approval' approach has four critical problems that undermine its claimed simplicity. First, the approve and reject handlers are hard-coded for post-implementation semantics: approve moves to 'done' and reject moves to 'implementing' with impl_review feedback. For pre-implementation gated items, rejection should route to 'plan-inbox' or 'ideas', not 'implementing', and approval should route to 'approved', not 'done'. Fixing both the TUI handler (tui.py ~lin"
+  ],
+  "Ideation": "The core problem is that the pipeline currently auto-advances all `approved` items through spec-writing and implementation without any human checkpoint. Some ideas should require explicit human sign-off before the pipeline is permitted to begin implementation work. The natural trigger for this is a per-item flag (e.g. `requires_human_approval: true`) in the feature JSON, so that the gating behavior is opt-in and doesn't affect existing items.\n\nFour rounds of debate converged on the key design tension: where to insert the gate and how to name it. Round 1 proposed a dedicated hold phase between `approved` and spec-writing. Round 2 flagged naming confusion with the existing `final-human-approval` phase (which gates post-implementation sign-off) and warned that two similarly-named phases would confuse users and pipeline logic. Round 3 proposed reusing `final-human-approval` as a universal human gate to avoid adding a new phase, intercepting before `pipeline auto` picks up `approved` items. Round 4 identified a fatal flaw in that approach: the existing approve/reject handlers are hard-coded with post-implementation semantics \u2014 approve routes to `done` and reject routes back to `implementing`. For a pre-implementation gate, rejection should route to `ideas` or `plan-inbox`, and approval should route to `approved`. Adapting the shared handler to serve both contexts would require conditional branching on gate type, which is more invasive than simply introducing a new, clearly-named phase.\n\nThe recommended approach is therefore a new `human-gate-plan` phase (or a similarly unambiguous name like `awaiting-plan-approval`) with its own routing logic: approval advances to `approved` so the pipeline can proceed, and rejection routes back to `ideas` for re-evaluation. The `pipeline auto` runner skips items in this phase, and a human must manually move them. The opt-in flag `requires_human_approval: true` in the feature JSON controls whether the pipeline routes a plan-reviewed item into this hold phase instead of directly to `approved`.\n\nKey risks and open questions include: choosing the right phase name to clearly distinguish it from `final-human-approval`; ensuring the TUI surface exposes the approve/reject actions for the new phase; and deciding whether the flag should be settable from the TUI at item-creation time or only by editing the JSON directly. The overall scope is small \u2014 one new phase directory, a routing branch in `phases.py`, and TUI handler additions \u2014 making this a low-risk, incremental addition.",
+  "plan_exploration_summary": "Explored the full pipeline codebase to understand phase transitions, auto-mode behavior, and existing human approval patterns.\n\nFiles examined:\n- pipeline/state.py: STAGES list defines all valid phases (line 20-23). FeatureFile.move_to_stage() validates against this list. FeatureFile.create() builds the initial JSON structure. No existing 'requires_human_approval' field exists.\n- pipeline/phases.py: Plan review passes route items to 'approved' via feature.move_to_stage('approved') at line 1437. The run_pipeline() function orchestrates planning -> plan-review -> approved -> spec-writing -> implementing -> testing -> review -> final-human-approval. Review PASS moves to final-human-approval (line 1355). Exhausted retries also route to final-human-approval.\n- pipeline/pipeline.py: The 'auto' command (line 520) polls for items in implementing, review, ideating, and approved stages. Approved items are picked up at line 636-637 and run through the full pipeline. human_stages = {'final-human-approval'} used for display only.\n- pipeline/tui.py: HUMAN_STAGES = {'final-human-approval'} (line 167). Per-stage key bindings at lines 1734-1748. The approve handler (line 2890) has stage-specific routing: ideas->plan-inbox, final-human-approval->done, review->final-human-approval. The reject handler (line 3017) for final-human-approval adds impl_review FAIL and moves to implementing.\n- pipeline/config.py: Stage directories are created in ensure_local_config() (line 121-126), setup_boards() (line 540-546), and add_board() (line 557-559). All three places list stages explicitly.\n- server/templates/index.html: Web UI has ALL_STAGES array (line 448) and shows approve/reject buttons only for final-human-approval (line 590-593).\n\nKey architecture insights:\n- Phases are filesystem directories under .mad/boards/<board>/<phase>/\n- The STAGES list in state.py is the source of truth for valid phases\n- Pipeline auto mode only processes items in: implementing, review, ideating, approved\n- The final-human-approval phase has hardcoded semantics: approve->done, reject->implementing with impl_review feedback\n- Plan review verdict PASS routes directly to 'approved' with no intervening check\n- No per-item flags exist for gating behavior currently\n\nAssumptions:\n- The new phase must be registered in STAGES, config stage lists, and have a directory created\n- The pipeline auto runner naturally skips unknown phases (it only polls specific stages)\n- The TUI and web UI need handlers for the new phase's approve/reject actions",
+  "test_results": {
+    "ts": "2026-03-13T16:31:44.241694",
+    "verdict": "PASS",
+    "results": {
+      "passed": 20,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 19 Python tests in test_human_approval.py pass, plus Go tests pass. Test coverage includes: phase registration, property getter/setter with edge cases (string 'true', integer 1, null, empty string treated as false), FeatureFile.create with flag, move_to_stage, conditional routing in phases.py, HUMAN_STAGES in TUI and pipeline, web UI ALL_STAGES, and server API stageOrder. Core functionality is verified. Not tested at runtime: actual approve/reject actions, pipeline auto exclusion (would require more test infrastructure)."
+  }
+}

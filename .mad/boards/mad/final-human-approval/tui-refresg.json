@@ -1,0 +1,310 @@
+{
+  "id": "fa06bd78",
+  "board": "mad",
+  "title": "TUI Service Management",
+  "type": "feature",
+  "created": "2026-03-08T05:39Z",
+  "description": "Add systemd user service management for MAD instances and a 'Restart' button in the web UI. Each MAD project directory gets its own systemd user service (via `pipeline service install`). The service runs the TUI/runner with `Restart=always`, so a graceful TUI exit triggers an automatic restart. The web UI gets a restart button that signals the TUI to exit, letting systemd bring it back up with fresh code.",
+  "plan": "## Systemd User Service Management + Web UI Restart\n\n### What\nTwo related capabilities:\n1. **Systemd user service management** \u2014 CLI commands to install, uninstall, and check status of per-project MAD TUI instances as systemd user services. Each project directory gets its own service that runs the TUI inside a tmux session, enabling later terminal attachment.\n2. **Web UI restart button** \u2014 A per-client restart button in the web dashboard that signals a specific TUI instance to gracefully exit, letting systemd's `Restart=always` bring it back with fresh code.\n\n### Why\n- **Persistence**: MAD TUI instances should survive terminal disconnects and run continuously, especially on dev servers or always-on workstations.\n- **Code refresh**: When MAD's pipeline code is updated (via pip upgrade or git pull), the only way to pick up new Python code is a full process restart. Systemd's auto-restart makes this seamless \u2014 the TUI exits cleanly and comes back with fresh imports.\n- **Remote management**: The web UI already serves as a remote dashboard. Adding restart capability lets users manage TUI lifecycle without SSH access to the host machine.\n\n### Design: Terminal Attachment via tmux\nThe user wants to be able to attach to a running TUI with a real terminal. The systemd service should launch the TUI inside a **tmux session** (named after the project, e.g., `mad-<project-name>`). This gives:\n- A real PTY for Textual to render into\n- The ability to `tmux attach -t mad-<project>` from any terminal\n- Clean detach/reattach without disrupting the TUI process\n- Systemd manages the tmux session lifecycle; tmux manages the terminal\n\nThe service's ExecStart runs something like `tmux new-session -d -s mad-<project> pipeline tui`, and ExecStop sends a graceful signal. tmux is a near-universal dependency on Linux systems.\n\n### Design: Restart Flow\nThe restart flow leverages the existing WebSocket command relay pattern:\n1. User clicks \"Restart\" next to a specific connected client in the web UI\n2. Web UI sends a restart command to the Go server, identifying the target client\n3. Go server relays the command to the specific TUI client's WebSocket connection\n4. TUI's ServerClient receives the message and triggers a graceful shutdown (Textual's app.exit())\n5. Textual cleans up terminal state, atexit releases the lock file\n6. Process exits with code 0\n7. Systemd detects the exit and spawns a fresh instance per `Restart=always`\n8. New process starts with clean Python module state, acquires lock, connects to server\n\nThis follows the exact same pattern as existing commands (start_agent, move_feature, etc.) \u2014 just a new message type in the relay chain.\n\n### Design: Service Identity\nEach project directory maps to one systemd user service. The service name is derived from the project directory path (sanitized/hashed to be filesystem-safe). The install command captures:\n- The working directory (project root)\n- The Python environment / virtualenv path (to ensure the right `pipeline` command is found)\n- tmux session name\n\n### Impact\n- **Go server**: Needs a new WebSocket message type for restart relay. Needs to expose per-client identity in the web UI so the restart button targets the right instance. Minimal change \u2014 follows existing patterns.\n- **TUI**: Needs a handler for the restart command that calls app.exit(). Very small change since the graceful exit path already works correctly (lock release, terminal restore).\n- **Web UI**: Needs a restart button per connected client. The client list already exists in the dashboard.\n- **New CLI surface**: `pipeline service install|uninstall|status` commands. Self-contained module.\n- **Lock system**: No changes needed. The existing PID-based lock with stale detection handles the restart window gracefully \u2014 the old process releases the lock on exit, and the new process acquires it on startup.\n\n### Risks\n- **tmux dependency**: tmux must be installed. If it's missing, the service install should fail with a clear error message rather than silently breaking. This is an acceptable hard dependency for Linux-only scope.\n- **Restart window**: There's a brief window between old process exit and new process startup where no TUI is running. The pipeline runner (if running an agent) will lose its parent \u2014 agent subprocesses may need to be killed before exit. The existing AgentRunner kill logic should handle this.\n- **Service name collisions**: If two project directories hash to the same service name, one would clobber the other. Using a sufficiently unique derivation (e.g., base64 of the absolute path, or a short hash) mitigates this.\n- **Python environment**: The service must use the correct Python/virtualenv. Capturing the full path to the `pipeline` executable at install time (rather than relying on PATH) avoids environment issues.\n\n### Scope\n**In scope:**\n- `pipeline service install` / `uninstall` / `status` CLI commands\n- Systemd user service template generation with tmux session management\n- Restart WebSocket message type through the existing relay chain\n- Per-client restart button in the web UI\n- Graceful TUI shutdown handler for the restart command\n- Linux with systemd only\n\n**Out of scope:**\n- macOS / launchd support\n- Automatic file-watching / auto-restart on code changes (restart is explicitly triggered)\n- Supervisor/wrapper process pattern (systemd IS the supervisor)\n- Hot-reloading Python code within a running process\n- Multiple TUI instances per project directory\n- Auto-starting services on MAD install (user explicitly runs `pipeline service install`)",
+  "impl_spec": "# Implementation Spec: TUI Service Management\n\n## Task 1: Create `pipeline/service.py` \u2014 Systemd Service Management Module\n\n**New file.** Self-contained module for install/uninstall/status of systemd user services.\n\n### 1a: Service name derivation\n- Function `service_name_for_dir(project_dir: Path) -> str`\n- Takes the absolute path, creates a short hash: `hashlib.sha256(str(project_dir).encode()).hexdigest()[:12]`\n- Returns `mad-tui-{hash}` (e.g., `mad-tui-a1b2c3d4e5f6`)\n- Also create `tmux_session_name(project_dir: Path) -> str` \u2014 returns `mad-{dir_name}` where dir_name is the last path component, sanitized (replace non-alphanumeric with `-`, lowercase, max 32 chars). If collision risk, append first 4 chars of the hash.\n\n### 1b: Service unit file generation\n- Function `generate_unit_file(project_dir: Path, pipeline_executable: Path) -> str`\n- Returns the systemd unit file content as a string:\n```ini\n[Unit]\nDescription=MAD TUI - {project_dir.name}\nAfter=network.target\n\n[Service]\nType=forking\nWorkingDirectory={project_dir}\nExecStart=/usr/bin/tmux new-session -d -s {tmux_session} -x 200 -y 50 {pipeline_executable} tui\nExecStop=/usr/bin/tmux kill-session -t {tmux_session}\nRestart=always\nRestartSec=3\nEnvironment=HOME={Path.home()}\nEnvironment=TERM=xterm-256color\n\n[Install]\nWantedBy=default.target\n```\n- Note: `Type=forking` because `tmux new-session -d` forks and returns immediately.\n- The `-x 200 -y 50` sets a reasonable default terminal size for Textual.\n\n### 1c: `install_service(project_dir: Path)` function\n- Check tmux is installed: `shutil.which('tmux')`. If not, print error and exit.\n- Check systemctl is available: `shutil.which('systemctl')`. If not, print error and exit.\n- Resolve `pipeline_executable`: use `shutil.which('pipeline')` first; if not found, use `sys.executable + ' ' + str(Path(__file__).parent / 'pipeline.py')` as fallback. Store the full absolute path.\n- Generate unit file content via `generate_unit_file()`.\n- Write to `~/.config/systemd/user/{service_name}.service` (create dirs with `mkdir -p`).\n- Run `systemctl --user daemon-reload` via `subprocess.run()`.\n- Run `systemctl --user enable {service_name}` to enable on login.\n- Run `systemctl --user start {service_name}` to start immediately.\n- Print: service name, tmux session name, how to attach (`tmux attach -t {session}`), how to view logs (`journalctl --user -u {service_name}`).\n\n### 1d: `uninstall_service(project_dir: Path)` function\n- Compute service_name from project_dir.\n- Run `systemctl --user stop {service_name}` (ignore errors if not running).\n- Run `systemctl --user disable {service_name}` (ignore errors).\n- Remove `~/.config/systemd/user/{service_name}.service`.\n- Run `systemctl --user daemon-reload`.\n- Kill tmux session if still alive: `tmux kill-session -t {session}` (ignore errors).\n- Print confirmation.\n\n### 1e: `service_status(project_dir: Path)` function\n- Compute service_name from project_dir.\n- Check if unit file exists at `~/.config/systemd/user/{service_name}.service`.\n- If exists: run `systemctl --user status {service_name}` and print output.\n- Also check tmux session: `tmux has-session -t {session}` (exit code 0 = running).\n- Print service name, tmux session name, whether service is installed/running, whether tmux session is alive.\n- If not installed, print \"Service not installed. Run: pipeline service install\"\n\n**Dependencies:** None. Standalone module.\n\n---\n\n## Task 2: Register `pipeline service` CLI Commands\n\n**Modify:** `pipeline/pipeline.py`\n\n### 2a: Add service command group\n- After the existing `@cli.group('lock')` / `@cli.group()` blocks, add:\n```python\n@cli.group('service')\ndef service_group():\n    \"\"\"Manage systemd user service for this MAD project.\"\"\"\n    pass\n```\n\n### 2b: Add `pipeline service install` command\n```python\n@service_group.command('install')\ndef service_install():\n    \"\"\"Install and start a systemd user service for this project's TUI.\"\"\"\n    from service import install_service\n    config = Config()\n    project_dir = config.code_path or Path.cwd()\n    install_service(project_dir)\n```\n\n### 2c: Add `pipeline service uninstall` command\n```python\n@service_group.command('uninstall')\ndef service_uninstall():\n    \"\"\"Stop and remove the systemd user service for this project.\"\"\"\n    from service import uninstall_service\n    config = Config()\n    project_dir = config.code_path or Path.cwd()\n    uninstall_service(project_dir)\n```\n\n### 2d: Add `pipeline service status` command\n```python\n@service_group.command('status')\ndef service_status_cmd():\n    \"\"\"Show the systemd service status for this project.\"\"\"\n    from service import service_status\n    config = Config()\n    project_dir = config.code_path or Path.cwd()\n    service_status(project_dir)\n```\n\n**Dependencies:** Task 1 (service.py must exist).\n\n---\n\n## Task 3: Add `restart_tui` WebSocket Message Handler in TUI\n\n**Modify:** `pipeline/server_client.py`\n\n### 3a: Add `on_restart` callback parameter\n- In `ServerClient.__init__()`, add parameter `on_restart=None`.\n- Store as `self._on_restart = on_restart`.\n\n### 3b: Handle `restart_tui` message type\n- In `_handle_incoming()`, add a new case:\n```python\nelif msg_type == \"restart_tui\":\n    logger.info(\"Received restart command from server\")\n    if self._on_restart:\n        await self._on_restart()\n```\n\n**Dependencies:** None.\n\n---\n\n## Task 4: Add Restart Handler in TUI App\n\n**Modify:** `pipeline/tui.py`\n\n### 4a: Register restart callback with ServerClient\n- In the `PipelineApp` code where `ServerClient` is instantiated (search for `ServerClient(` constructor call), add `on_restart=self._on_restart_requested` to the kwargs.\n\n### 4b: Implement `_on_restart_requested` method\n```python\nasync def _on_restart_requested(self):\n    \"\"\"Handle restart command from server. Gracefully exit the TUI.\"\"\"\n    logger.info(\"Restart requested via server, exiting gracefully...\")\n    # Kill any running agents first\n    if hasattr(self, '_plan_status') and self._plan_status and self._plan_status.running:\n        self._plan_status.kill_requested = True\n    if hasattr(self, '_impl_status') and self._impl_status and self._impl_status.running:\n        self._impl_status.kill_requested = True\n    # Small delay to let agents clean up\n    await asyncio.sleep(0.5)\n    # Exit the app \u2014 atexit handler will release the lock\n    self.exit()\n```\n\n- Note: `self.exit()` is Textual's `App.exit()` which properly restores terminal state and lets the process exit cleanly. The atexit handler registered in `run_tui()` will release the PipelineLock.\n\n**Dependencies:** Task 3 (on_restart callback must exist in ServerClient).\n\n---\n\n## Task 5: Add Restart API Endpoint in Go Server\n\n**Modify:** `server/api.go`\n\n### 5a: Add `restart` sub-route in `apiClientsHandler`\n- In the routing block inside `apiClientsHandler` (around line 293, after the `run-script` check), add:\n```go\nif sub == \"restart\" {\n    serveRestartTUI(w, r, hub, cfg, clientID)\n    return\n}\n```\n\n### 5b: Create `serveRestartTUI` handler function\n- Add to `api.go` (or a new file `api_restart.go` if preferred \u2014 but keeping in api.go follows the existing pattern):\n```go\nfunc serveRestartTUI(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string) {\n    if !checkAnyAuth(r, cfg) {\n        writeJSON(w, http.StatusUnauthorized, map[string]string{\"error\": \"unauthorized\"})\n        return\n    }\n    if r.Method != http.MethodPost {\n        writeJSON(w, http.StatusMethodNotAllowed, map[string]string{\"error\": \"method not allowed\"})\n        return\n    }\n\n    // Send restart_tui message to the target client\n    msg, _ := json.Marshal(map[string]string{\"type\": \"restart_tui\"})\n    err := hub.SendToClient(clientID, msg)\n    if err != nil {\n        writeJSON(w, http.StatusNotFound, map[string]string{\"error\": \"client not found or disconnected\"})\n        return\n    }\n\n    writeJSON(w, http.StatusOK, map[string]string{\"status\": \"restart signal sent\"})\n}\n```\n\n- This is a fire-and-forget pattern \u2014 the server sends the restart signal and returns immediately. There's no need to wait for confirmation since the TUI will disconnect from the WebSocket when it exits, and systemd will bring up a new instance that reconnects.\n\n**Dependencies:** Task 3 (TUI must handle `restart_tui` message type).\n\n---\n\n## Task 6: Add Restart Button in Web UI\n\n**Modify:** `server/templates/index.html`\n\n### 6a: Add restart button to connected clients table\n- In the connected clients table (the `{{range $client := .Clients}}` loop), add a new column \"Actions\" with a restart button:\n```html\n<td>\n    {{if $client.Connected}}\n    <button class=\"btn btn-sm btn-warning\" \n            onclick=\"restartClient('{{$client.ClientID}}')\"\n            title=\"Restart this TUI instance\">\n        Restart\n    </button>\n    {{end}}\n</td>\n```\n- Add \"Actions\" to the `<thead>` row.\n\n### 6b: Add JavaScript function for restart\n```javascript\nfunction restartClient(clientID) {\n    if (!confirm('Restart TUI instance ' + clientID + '? Running agents will be killed.')) {\n        return;\n    }\n    fetch('/api/clients/' + clientID + '/restart?key=' + dashboardKey, {\n        method: 'POST',\n        headers: {'Content-Type': 'application/json'}\n    })\n    .then(r => r.json())\n    .then(data => {\n        if (data.error) {\n            alert('Restart failed: ' + data.error);\n        } else {\n            showToast('Restart signal sent to ' + clientID);\n        }\n    })\n    .catch(err => alert('Error: ' + err));\n}\n```\n\n**Modify:** `server/templates/client.html`\n\n### 6c: Add restart button to per-client detail page\n- Add a restart button near the client status section at the top of the client detail page:\n```html\n<button class=\"btn btn-warning\" \n        onclick=\"restartClient('{{.ClientID}}')\"\n        title=\"Restart this TUI instance\">\n    Restart TUI\n</button>\n```\n- Include the same `restartClient()` JavaScript function.\n\n**Dependencies:** Task 5 (API endpoint must exist).\n\n---\n\n## Task 7: Rebuild Go Server Binary\n\n**Action:** After Go code changes, rebuild the server binary.\n- Run `cd server && go build -o mad-server .`\n- Verify the binary starts and the new endpoint responds.\n\n**Dependencies:** Task 5.\n\n---\n\n## Summary of Files\n\n| File | Action | Task |\n|------|--------|------|\n| `pipeline/service.py` | **Create** | 1 |\n| `pipeline/pipeline.py` | Modify (add `service` group + 3 commands) | 2 |\n| `pipeline/server_client.py` | Modify (add `on_restart` callback + handler) | 3 |\n| `pipeline/tui.py` | Modify (register callback, implement handler) | 4 |\n| `server/api.go` | Modify (add restart route + handler function) | 5 |\n| `server/templates/index.html` | Modify (add restart button + JS) | 6 |\n| `server/templates/client.html` | Modify (add restart button + JS) | 6 |\n\n## Execution Order\n\nTasks 1, 3, and 5 can be done in parallel (no dependencies on each other).\nTask 2 depends on Task 1.\nTask 4 depends on Task 3.\nTask 6 depends on Task 5.\nTask 7 depends on Task 5.",
+  "test_spec": "# Test Specification: TUI Service Management\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Service Name Derivation\n- **Behavior**: `service_name_for_dir()` produces a deterministic, filesystem-safe service name from any absolute path.\n- **Success criteria**: Same path always yields the same name. Different paths yield different names. Name matches pattern `mad-tui-[a-f0-9]{12}`.\n- **Expected output**: A string like `mad-tui-a1b2c3d4e5f6`.\n\n### 1.2 tmux Session Name Derivation\n- **Behavior**: `tmux_session_name()` produces a human-readable, sanitized session name from the project directory.\n- **Success criteria**: Name is based on the last path component, lowercased, non-alphanumeric characters replaced with `-`, max 32 characters. Name is valid for tmux (no dots, colons, or spaces).\n- **Expected output**: e.g., `/home/user/My Project!` -> `mad-my-project-`.\n\n### 1.3 Unit File Generation\n- **Behavior**: `generate_unit_file()` returns a valid systemd unit file string.\n- **Success criteria**: Contains correct `[Unit]`, `[Service]`, `[Install]` sections. WorkingDirectory matches the provided project path. ExecStart references the correct pipeline executable and tmux session name. Type is `forking`. Restart is `always`. RestartSec is set.\n- **Expected output**: A multi-line string parseable as a systemd unit file.\n\n### 1.4 Service Install\n- **Behavior**: `install_service()` creates a unit file, reloads systemd, enables, and starts the service.\n- **Success criteria**:\n  - Unit file written to `~/.config/systemd/user/{service_name}.service`.\n  - `systemctl --user daemon-reload` is called.\n  - `systemctl --user enable {service_name}` is called.\n  - `systemctl --user start {service_name}` is called.\n  - Output includes the service name, tmux session name, attach command, and journal command.\n\n### 1.5 Service Install \u2014 tmux Missing\n- **Behavior**: If `tmux` is not found on PATH, `install_service()` fails with a clear error.\n- **Success criteria**: Prints an error message mentioning tmux. Does NOT write a unit file. Does NOT call systemctl.\n\n### 1.6 Service Install \u2014 systemctl Missing\n- **Behavior**: If `systemctl` is not found on PATH, `install_service()` fails with a clear error.\n- **Success criteria**: Prints an error message mentioning systemd/systemctl. Does NOT write a unit file.\n\n### 1.7 Service Uninstall\n- **Behavior**: `uninstall_service()` stops, disables, and removes the service.\n- **Success criteria**:\n  - `systemctl --user stop` is called (errors ignored if not running).\n  - `systemctl --user disable` is called.\n  - Unit file is deleted from `~/.config/systemd/user/`.\n  - `systemctl --user daemon-reload` is called.\n  - tmux session kill is attempted (errors ignored).\n  - Confirmation message is printed.\n\n### 1.8 Service Status \u2014 Installed\n- **Behavior**: `service_status()` shows status when service is installed.\n- **Success criteria**: Reports service name, tmux session name, whether service is active/inactive, whether tmux session exists. Runs `systemctl --user status` and `tmux has-session`.\n\n### 1.9 Service Status \u2014 Not Installed\n- **Behavior**: `service_status()` shows helpful message when service is not installed.\n- **Success criteria**: Detects missing unit file. Prints message suggesting `pipeline service install`.\n\n### 1.10 CLI Command Registration\n- **Behavior**: `pipeline service install`, `pipeline service uninstall`, and `pipeline service status` are registered as CLI commands.\n- **Success criteria**: Running `pipeline service --help` lists all three subcommands. Each subcommand's `--help` shows a description.\n\n### 1.11 WebSocket `restart_tui` Message Handling\n- **Behavior**: When ServerClient receives a message with `type: restart_tui`, it invokes the `on_restart` callback.\n- **Success criteria**: Callback is called exactly once. If no callback is registered, the message is handled gracefully (no crash).\n\n### 1.12 TUI Restart Handler\n- **Behavior**: When the TUI receives a restart command, it gracefully exits.\n- **Success criteria**:\n  - Running agents have their `kill_requested` flag set before exit.\n  - `app.exit()` is called (Textual's graceful shutdown).\n  - Lock file is released via the atexit handler.\n  - Process exits with code 0.\n\n### 1.13 Go Server Restart API Endpoint\n- **Behavior**: `POST /api/clients/{clientID}/restart` sends a `restart_tui` message to the specified client.\n- **Success criteria**:\n  - Returns 200 with `{\"status\": \"restart signal sent\"}` when client exists and is connected.\n  - Returns 404 with error when client is not found or disconnected.\n  - Returns 401 when authentication is missing/invalid.\n  - Returns 405 for non-POST methods.\n\n### 1.14 Web UI Restart Button \u2014 Dashboard\n- **Behavior**: The dashboard (index.html) shows a Restart button for each connected client.\n- **Success criteria**:\n  - Button appears only for connected clients.\n  - Clicking the button shows a confirmation dialog mentioning the client ID and warning about running agents.\n  - On confirm, sends POST to `/api/clients/{clientID}/restart` with the dashboard key.\n  - On success, shows a toast/notification saying restart signal was sent.\n  - On error, shows an alert with the error message.\n\n### 1.15 Web UI Restart Button \u2014 Client Detail Page\n- **Behavior**: The client detail page (client.html) shows a Restart button.\n- **Success criteria**: Same behavior as the dashboard restart button but scoped to the current client.\n\n### 1.16 End-to-End Restart Flow\n- **Behavior**: Clicking restart in web UI causes the TUI to exit and (with systemd) restart.\n- **Success criteria**: Web UI -> Go server -> WebSocket -> TUI exit. The full chain works without errors. TUI exits cleanly (lock released, terminal restored).\n\n---\n\n## 2. Edge Cases\n\n### 2.1 Service Name Collisions\n- Two different project directories should produce different service names. Verify with paths that share the same basename (e.g., `/home/user/project` and `/opt/project`).\n\n### 2.2 Very Long Project Paths\n- A project directory with an extremely long absolute path (e.g., deeply nested). Service name derivation should still produce a valid, fixed-length name.\n\n### 2.3 Special Characters in Path\n- Project directory containing spaces, unicode, dots, or other special characters. Service name and tmux session name should be sanitized correctly.\n\n### 2.4 Install When Already Installed\n- Running `pipeline service install` when the service is already installed. Should either overwrite cleanly (update the unit file and restart) or warn the user. Should not leave duplicate services.\n\n### 2.5 Uninstall When Not Installed\n- Running `pipeline service uninstall` when no service exists. Should not crash. Should print a message indicating nothing to uninstall or that the service was not found.\n\n### 2.6 Restart When No Agent Running\n- Sending restart when the TUI has no active agents. Should exit cleanly without errors from the agent-kill logic.\n\n### 2.7 Restart When Agent Is Running\n- Sending restart while an agent subprocess is actively running. Agent should be killed before the TUI exits. No orphan processes.\n\n### 2.8 Restart When TUI Is Disconnected\n- Sending restart via API to a client that just disconnected. Server should return a 404/error, not crash.\n\n### 2.9 Multiple Rapid Restarts\n- Clicking restart multiple times in quick succession. The server should handle this gracefully \u2014 the first restart signal wins, subsequent ones to the same (now-disconnected) client return errors.\n\n### 2.10 Pipeline Executable Not Found\n- Running `install_service` when `pipeline` is not on PATH and the fallback path doesn't exist. Should fail with a clear error.\n\n### 2.11 Systemd User Directory Does Not Exist\n- `~/.config/systemd/user/` does not exist yet. `install_service` should create the directory tree before writing the unit file.\n\n### 2.12 Restart with Invalid Authentication\n- Calling the restart API endpoint without a valid key. Should return 401 and not relay any message.\n\n---\n\n## 3. What Constitutes Failure\n\n### 3.1 Service Management Failures\n- **Unit file not created** at the expected path after install.\n- **Systemctl commands not invoked** (daemon-reload, enable, start) during install.\n- **Unit file not removed** after uninstall.\n- **Crash or unhandled exception** when tmux or systemctl is missing \u2014 must fail gracefully with an error message.\n- **Crash on uninstall** when service is not installed.\n\n### 3.2 Restart Flow Failures\n- **TUI does not exit** after receiving `restart_tui` message.\n- **Lock file not released** after TUI exits \u2014 this would prevent the restarted instance from starting.\n- **Orphan agent processes** left running after restart.\n- **Go server crashes** when relaying restart to a disconnected client.\n- **Web UI JavaScript error** when clicking restart button.\n- **No confirmation dialog** before restart \u2014 restart should never be a single-click action.\n\n### 3.3 API Failures\n- **200 response for non-existent client** \u2014 must return 404.\n- **Restart succeeds without authentication** \u2014 must return 401.\n- **Non-POST method succeeds** \u2014 must return 405.\n\n### 3.4 General Failures\n- **Service name derivation is non-deterministic** \u2014 same path must always produce same name.\n- **tmux session name contains invalid characters** that tmux rejects.\n- **Unit file has syntax errors** that systemd rejects.\n\n---\n\n## 4. Out of Scope\n\n- **Actual systemd integration testing** \u2014 verifying that systemd actually starts/stops services requires a running systemd user session, which is environment-specific. Unit tests should mock subprocess calls.\n- **tmux session rendering** \u2014 whether Textual renders correctly inside tmux is a visual/manual test, not automatable.\n- **Restart timing** \u2014 how long the restart window takes (between old exit and new start) is a performance characteristic, not a correctness test.\n- **macOS / launchd** \u2014 explicitly out of scope per the plan.\n- **Multiple TUI instances per project** \u2014 not supported by design.\n- **Visual assertions** \u2014 button styling, layout, toast appearance in the web UI.\n- **Network latency** \u2014 WebSocket message delivery timing between Go server and TUI.\n- **Systemd journal log content** \u2014 what appears in `journalctl` output.\n- **File-watching / auto-restart** \u2014 restart is explicitly triggered, not automatic.\n- **Hot-reload of Python code** \u2014 out of scope; restart is the mechanism for code refresh.\n- **Load testing** \u2014 how many concurrent restart requests the server can handle.",
+  "impl_notes": "Fixed 4 bugs from previous review feedback: (1) Fixed tmux_session_name() to enforce 32-char total limit by truncating sanitized to 23 chars instead of 32; (2) Fixed test_very_long_path expected length from 17 to 20; (3) Fixed test_subprocess_error_handling to use assertRaises(SystemExit); (4) Fixed test_fallback_to_pipeline_py to verify return value contains sys.executable and pipeline.py. All 29 tests pass.",
+  "history": [
+    {
+      "ts": "2026-03-08T05:39Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T00:37Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-13T00:58Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-13T00:58Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T05:29Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-13T05:29Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T05:31Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-13T05:32Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T05:33Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-13T05:35Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis"
+    },
+    {
+      "ts": "2026-03-13T05:35Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-13T16:55Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-13T17:05Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T17:08Z",
+      "stage": "PLANNING",
+      "note": "Questions raised via claude"
+    },
+    {
+      "ts": "2026-03-13T17:14Z",
+      "stage": "MOVED",
+      "note": "Manual move: plan-inbox -> ideas"
+    },
+    {
+      "ts": "2026-03-13T17:14Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-13T18:27Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T18:28Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-13T18:28Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-13T18:28Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible. It properly uses systemd's Rest..."
+    },
+    {
+      "ts": "2026-03-13T18:28Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-13T18:55Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-13T18:55Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-13T19:00Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T19:01Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T19:01Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T19:10Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T19:10Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T19:10Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T19:14Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-13T19:14Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T19:15Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation covers all planned components (service.py, CLI commands, WebSocket..."
+    },
+    {
+      "ts": "2026-03-13T19:15Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T19:21Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T19:21Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T19:21Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T19:24Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-13T19:24Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T19:26Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - 3 of 29 tests fail. Two are test bugs (wrong expected values), one reveals a real..."
+    },
+    {
+      "ts": "2026-03-13T19:26Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T19:28Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T19:28Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T19:28Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T19:30Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-13T19:30Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T19:32Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - All 4 previous review feedback items are addressed. 29/29 tests pass. Implementat..."
+    },
+    {
+      "ts": "2026-03-13T19:32Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-13T18:28Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible. It properly uses systemd's Restart=always to achieve fresh Python module state on restart, addresses the lock file release via atexit, includes tmux dependency validation, and handles service name collisions. The restart flow correctly leverages existing WebSocket command relay patterns.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-13T19:15Z",
+      "verdict": "FAIL",
+      "summary": "Implementation covers all planned components (service.py, CLI commands, WebSocket restart handler, Go API endpoint, Web UI buttons), but has ZERO test coverage and a bug in _find_pipeline_executable() that produces invalid paths. 107 test failures in existing tests are unrelated.",
+      "feedback": "CRITICAL ISSUES:\n\nNo test file exists. The test spec defines 16 behaviors (1.1-1.16) plus 12 edge cases, but there is no test_service.py or any test file covering this feature. All test spec behaviors are untested. A test file must be created with unit tests for:\n   - service_name_for_dir() determinism, uniqueness, pattern matching\n   - tmux_session_name() sanitization, length limits, invalid char removal\n   - generate_unit_file() section presence, field correctness\n   - install_service() with mocked subprocess (verify systemctl calls, unit file creation, tmux/systemctl missing checks)\n   - uninstall_service() with mocked subprocess (verify stop/disable/remove/daemon-reload sequence)\n   - service_status() installed vs not-installed paths\n   - ServerClient restart_tui message handling (callback invoked, no-callback graceful handling)\n   - Go server restart endpoint (would need Go tests for 200/404/401/405 responses)\n\nBug in _find_pipeline_executable() (service.py:62): The fallback path construction Path(sys.executable) / fallback is incorrect. Path(sys.executable) is something like /usr/bin/python3 and dividing it by an absolute fallback path produces a nonsensical result. For the fallback case, the ExecStart in the unit file should reference {sys.executable} {fallback} (the Python interpreter followed by the script path as separate arguments). The function should either return a tuple (executable, args) or construct the full command string differently. Currently, if pipeline is not on PATH, the generated unit file will have a broken ExecStart.\n\ntmux_session_name() may produce trailing hyphens (service.py:22-25): For a path like /home/user/My Project!, the sanitization replaces ! with - producing my-project- then appends -{hash}, giving mad-my-project--a1b2. The double-hyphen is cosmetically ugly but functionally fine. More importantly, if the directory name is entirely special characters (e.g., ...), the sanitized name would be --- which is valid but unhelpful. Consider stripping trailing hyphens before appending the hash.\n\nNo error handling for subprocess failures in install_service() (service.py:93-95): If systemctl --user daemon-reload or enable or start fails (raises CalledProcessError due to check=True), the unit file has already been written but the service is not properly enabled/started. The error propagates as an exception with no cleanup. Consider catching the error, printing a helpful message, and potentially cleaning up the written unit file.\n\nWeb UI index.html restart button (line ~892): The restartClient function uses getKey() to get the dashboard key and passes it as a query parameter, which is correct and consistent with other API calls in the same file. However, the index.html version does NOT URL-encode the key ('/restart?key=' + key) while client.html does (encodeURIComponent(_dashKey)). Should be consistent \u2014 use encodeURIComponent in both places.\n\nPRIORITY ORDER:\nCreate test_service.py with comprehensive unit tests (BLOCKING)\nFix _find_pipeline_executable() fallback path bug (BLOCKING)\nFix URL encoding inconsistency in index.html\nConsider cosmetic fixes for tmux_session_name edge cases\nConsider subprocess error handling improvements in install_service"
+    },
+    {
+      "ts": "2026-03-13T19:26Z",
+      "verdict": "FAIL",
+      "summary": "3 of 29 tests fail. Two are test bugs (wrong expected values), one reveals a real implementation bug in tmux_session_name() where the total name length exceeds the 32-char spec limit.",
+      "feedback": "CRITICAL ISSUES:\n\ntmux_session_name() total length exceeds 32-char limit (implementation bug, service.py:22-26): The test spec says 'max 32 characters' but the function limits only the sanitized directory component to 32 chars, then prepends 'mad-' (4 chars) and appends '-{hash}' (5 chars), producing up to 41 chars. The 32-char truncation at line 22 should account for the prefix and suffix. Fix: sanitized = sanitized[:32 - len('mad-') - 5] (i.e., truncate to 23 chars) so the total never exceeds 32.\n\ntest_very_long_path has wrong expected length (test bug, test_service.py:63): self.assertEqual(len(name), 17) should be self.assertEqual(len(name), 20). 'mad-tui-' is 8 chars + 12 hex chars = 20, not 17.\n\ntest_subprocess_error_handling doesn't account for sys.exit (test bug, test_service.py:257-261): install_service() calls sys.exit(1) when subprocess fails, which raises SystemExit. The test wraps this in a bare try/except and calls self.fail(), but SystemExit propagates through the test. Fix: use self.assertRaises(SystemExit) to properly verify the graceful error handling via sys.exit.\n\ntest_fallback_to_pipeline_py doesn't verify the return value (test bug, test_service.py:172-186): The mock setup is overcomplicated and the test never asserts on the result. It should verify that the return value is a string containing both sys.executable and the fallback path. As-is, it just checks 'it doesn't crash' which isn't meaningful.\n\nPRIORITY ORDER:\nFix tmux_session_name() to enforce 32-char total limit (implementation bug)\nFix test_very_long_path expected length from 17 to 20\nFix test_subprocess_error_handling to use assertRaises(SystemExit)\nImprove test_fallback_to_pipeline_py to actually assert the return value"
+    },
+    {
+      "ts": "2026-03-13T19:32Z",
+      "verdict": "PASS",
+      "summary": "All 4 previous review feedback items are addressed. 29/29 tests pass. Implementation covers the full plan: service.py (systemd management), CLI commands in pipeline.py, restart_tui WebSocket handler in server_client.py, Go API endpoint, and web UI restart buttons with confirmation dialogs in both index.html and client.html.",
+      "feedback": null
+    }
+  ],
+  "ideation_summaries": [
+    "The original plan's reliance on Textual's live reload is misguided \u2014 Textual's --dev mode only hot-reloads CSS, not Python code. For true Python code reload, there are three viable approaches: (1) A supervisor/wrapper pattern where the TUI process is managed by a lightweight parent process that watches pipeline/*.py with watchdog and restarts the TUI on changes \u2014 this is the safest and most reliable approach since it avoids stale module state. (2) Using importlib.reload() to hot-reload changed m",
+    "The os.execv self-restart approach has several critical flaws that the previous proposal glossed over. First, os.execv does NOT run atexit handlers \u2014 it replaces the process image immediately \u2014 so the TUI's lock file (acquired via _acquire_lock, released via atexit.register) will never be released, causing the restarted process to fail lock acquisition and refuse to start. Second, os.execv does not cleanly shut down Textual's terminal state (alternate screen buffer, raw mode, mouse capture), so ",
+    "Both previous proposals miss a clean middle ground that avoids os.execv's flaws without the architectural overhead of a supervisor process. The solution is a restart loop inside run_tui() itself: wrap the existing app.run() call in a while loop, and when pipeline/*.py changes are detected (via the existing _check_for_changes polling, extended to also track pipeline code mtimes), set a flag like self._restart_requested = True and call self.exit(). Textual's exit() properly restores terminal state",
+    "The round 3 restart-loop proposal has a fatal gap: Python caches imported modules in sys.modules, so creating a fresh PipelineApp() inside a while loop does NOT actually pick up changed Python code. The old module bytecode remains loaded. To get fresh code, you'd need to explicitly purge changed modules from sys.modules before re-instantiating \u2014 but this is fragile because pipeline modules have deep cross-imports (tui imports runner, boards, lock, etc.), and selectively evicting modules without "
+  ],
+  "Ideation": "The goal is to add auto-reload to the TUI so it picks up changed pipeline Python code without requiring a manual restart. The original plan's reliance on Textual's live reload (--dev mode or app.run(live=True)) is fundamentally misguided: Textual's live reload only hot-reloads CSS files, not Python code. Any viable solution must deal with three distinct problems: detecting file changes, cleanly tearing down Textual's terminal state (alternate screen buffer, raw mode, mouse capture), and actually loading fresh Python bytecode.\n\nThree approaches were debated. The os.execv self-restart approach is attractive in theory \u2014 replace the process image in-place \u2014 but has critical flaws: os.execv bypasses atexit handlers entirely, so the TUI's lock file (acquired at startup, released via atexit) is never cleaned up, causing the restarted process to fail lock acquisition. A restart-loop inside run_tui() (wrap app.run() in a while loop, set a restart flag, call self.exit()) avoids the terminal-state problem since Textual's exit() properly restores the terminal, but it cannot load new Python code: Python caches all imported modules in sys.modules, so a fresh PipelineApp() instantiation inside the same process still runs the old bytecode. Purging sys.modules to force re-import is fragile given the deep cross-import graph between tui, runner, boards, and lock modules.\n\nThe only clean solution is a supervisor/wrapper pattern: a lightweight parent process watches pipeline/*.py using watchdog (or polling mtime), and when changes are detected it sends a graceful shutdown signal to the TUI child process (letting Textual's cleanup run), waits for it to exit, then spawns a fresh subprocess. The fresh subprocess inherits no stale module state and acquires the lock cleanly after the prior process released it on exit. This approach adds a small amount of process-management complexity but avoids every failure mode identified in the other approaches.\n\nKey risks and uncertainties: the supervisor process itself needs to avoid holding the TUI lock, and the handoff window (between old process exit and new process start) should be short enough to avoid confusing the pipeline runner. The existing _check_for_changes polling in tui.py can inform what files to watch, but the watcher logic should live in the supervisor layer, not inside the TUI app itself. If watchdog is not available, polling mtime on a 1-second interval is an acceptable fallback.",
+  "questions": [
+    {
+      "question": "Should the restart button in the web UI be per-connected-client (restart a specific TUI instance) or global (restart all connected TUI instances)? The server can have multiple TUI clients connected from different project directories.",
+      "answer": "Per connected client for sure"
+    },
+    {
+      "question": "For the systemd service, should it run the TUI in headless/background mode (no terminal attached) or should it run the full Textual TUI (which would need a virtual terminal)? Running Textual without a real terminal is problematic - should the service instead run just the pipeline runner/auto-mode without the TUI interface?",
+      "answer": "Oh... that's a good question.  I hadn't considered that.  I really like having TUI up and running on my desktop... bother.  Is there a way to run it such that I can attach to it with a real terminal later?"
+    },
+    {
+      "question": "Is this feature intended only for Linux systems with systemd, or should there be fallback support for macOS (launchd) or systems without systemd? This determines scope.",
+      "answer": "It is intended only for Linux with systemd."
+    }
+  ],
+  "plan_exploration_summary": "Explored the full TUI lifecycle, server architecture, lock system, and communication layer.\n\n**Files examined:**\n- pipeline/tui.py: TUI entry point via run_tui() which acquires a PipelineLock('tui'), registers atexit cleanup, creates PipelineApp(), calls app.run(), then explicitly releases lock. The TUI polls for board file changes every 10s via _check_for_changes. Connects to the Go server via ServerClient over WebSocket.\n- pipeline/lock.py: File-based lock system using PID:hostname:timestamp:username format. Lock files live in .mad/.pipeline-lock.<phase>. Supports stale detection (dead PID or >30min old), reentrant acquire for same PID, and force override.\n- pipeline/runner.py: AgentRunner manages headless/interactive AI agent subprocess execution. Has kill_requested and restart_requested flags on AgentStatus.\n- pipeline/server_client.py: WebSocket client connecting TUI to Go server. Handles message types: state_update, move_feature, start_agent, set_auto_mode, create_idea, edit_description, run_script, set_agent_for_phase. All commands flow from web UI -> Go server -> WebSocket -> TUI client.\n- server/mad-server: Go binary (ELF executable). Uses gorilla/websocket. Hub pattern for client management.\n- server/api.go: Defines stage order, board aggregation from connected clients.\n- server/hub.go: WebSocket hub with FeatureSummary struct, client state management.\n- server/mad.service: Existing systemd unit for the server (system-level, not user-level). Uses Restart=on-failure.\n\n**Key architecture insights:**\n- The TUI is the source of truth; the Go server is a relay/dashboard that receives state from TUI clients via WebSocket.\n- Commands from web UI are relayed through the Go server to the TUI via WebSocket messages.\n- The existing lock system cleanly handles PID-based ownership and stale detection, important for restart scenarios.\n- The atexit handler in run_tui() ensures lock release on graceful exit.\n- All web UI -> TUI commands follow a typed JSON message relay pattern through the Go server.\n- The existing mad.service is a system-level service for the Go server, not a user-level service for TUI instances.",
+  "test_results": {
+    "ts": "2026-03-13T12:30:53.301944",
+    "verdict": "PASS",
+    "results": {
+      "passed": 29,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 29 Python service tests pass. Tests cover service name derivation (1.1), tmux session names (1.2), unit file generation (1.3), service install (1.4-1.6), uninstall (1.7), status (1.8-1.9), and WebSocket restart callback (1.11). Gaps: CLI command registration (1.10), TUI restart handler (1.12), Go API restart endpoint (1.13), web UI restart buttons (1.14-1.15), and end-to-end flow (1.16) are not covered in Python tests."
+  }
+}

@@ -1,0 +1,140 @@
+{
+  "id": "d2475e93",
+  "board": "mad",
+  "title": "Rejecting an item from final-human-approval from webui moves to Rejected",
+  "type": "bug",
+  "created": "2026-03-13T19:03Z",
+  "description": "Rejecting an item from final-human-approval in the webui ends up moving it to the Rejected phase rather than moving back to Implemented.",
+  "done_script": "deploy-web-app",
+  "plan": "## Root Cause Analysis\n\nThe webui reject button in both the dashboard and client views unconditionally sends `target_stage: 'rejected'` when a user clicks Reject on any item, regardless of which phase the item is currently in. The pipeline client then faithfully moves the item to the \"rejected\" phase.\n\nHowever, for items in `final-human-approval`, rejection should mean \"send back for rework\" (i.e., move to `implementing`), not \"permanently reject the idea.\" The pipeline's move handler already has special logic to handle a move to `implementing` from `final-human-approval` \u2014 it preserves the rejection reason as review feedback so the implementation agent can address it. But the webui never triggers this path because it sends `rejected` instead of `implementing`.\n\n## Impact Assessment\n\nThis bug affects all items that reach `final-human-approval` and are rejected via the web UI. Instead of being sent back for rework with actionable feedback, items are moved to a terminal \"rejected\" state, losing the iterative review cycle. Users must manually move items back to \"implementing\" using the dropdown, which bypasses the feedback preservation logic.\n\n## Fix Strategy\n\nThe reject button's behavior in the web UI needs to be context-aware when the item is in `final-human-approval`. Instead of always sending `target_stage: 'rejected'`, the reject action should send `target_stage: 'implementing'` when the current item is in `final-human-approval`. This will activate the existing pipeline logic that records the rejection reason as implementation review feedback and properly cycles the item back for rework.\n\nBoth the dashboard view (index.html) and the client detail view (client.html) have their own `showRejectModal` / `approveFeature` functions that need the same fix.\n\nThe rejection reason prompt should remain \u2014 it's valuable feedback that gets recorded by the existing pipeline handler.\n\n## Risks\n\n- The fix must correctly detect the item's current stage in the webui context. The stage information should already be available from the feature detail data rendered in the UI.\n- Need to ensure the \"Reject\" button label and UX feedback text still make sense (e.g., saying \"Sending back for rework...\" rather than \"Rejecting...\").\n- There may be a legitimate use case for permanently rejecting an item from `final-human-approval` \u2014 but this can still be done via the manual move dropdown, so removing it from the Reject button is safe.\n\n## Scope\n\n- Fix the reject button behavior in both webui templates to be stage-aware for `final-human-approval`.\n- Do NOT change the pipeline-side move handler \u2014 it already handles this correctly.\n- Do NOT change the server API \u2014 it's a passthrough and works correctly.\n- Do NOT add new API endpoints or protocol changes.",
+  "plan_exploration_summary": "",
+  "impl_spec": "## Implementation Spec\n\n### Task 1: Fix `confirmReject()` in index.html (dashboard view)\n\n**File:** `server/templates/index.html`\n**Line:** 735\n**Function:** `confirmReject()`\n\n**Current code:**\n```javascript\nvar targetStage = _modalStage === 'awaiting-human-approval' ? 'ideas' : 'rejected';\n```\n\n**Change to:**\n```javascript\nvar targetStage = _modalStage === 'final-human-approval' ? 'implementing' : (_modalStage === 'awaiting-human-approval' ? 'ideas' : 'rejected');\n```\n\n**Rationale:** When `_modalStage` is `final-human-approval`, the reject action should send the item to `implementing` instead of `rejected`. This triggers the existing pipeline logic in the move handler that preserves the rejection reason as review feedback for the implementation agent. The `_modalStage` variable is already set from `card.getAttribute('data-stage')` at line 591.\n\n**Dependencies:** None.\n\n---\n\n### Task 2: Update feedback text in `approveFeature()` in index.html\n\n**File:** `server/templates/index.html`\n**Lines:** 742, 756\n**Function:** `approveFeature()`\n\n**Current code (line 742):**\n```javascript\nfeedbackEl.textContent = action === 'done' ? 'Approving...' : 'Rejecting...';\n```\n\n**Change to:**\n```javascript\nfeedbackEl.textContent = action === 'done' ? 'Approving...' : (action === 'implementing' ? 'Sending back for rework...' : 'Rejecting...');\n```\n\n**Current code (line 756):**\n```javascript\nfeedbackEl.textContent = action === 'done' ? 'Approved!' : 'Rejected!';\n```\n\n**Change to:**\n```javascript\nfeedbackEl.textContent = action === 'done' ? 'Approved!' : (action === 'implementing' ? 'Sent back for rework!' : 'Rejected!');\n```\n\n**Rationale:** When the target is `implementing`, the UX feedback should say \"Sending back for rework\" rather than \"Rejecting\" to accurately describe what's happening.\n\n**Dependencies:** Task 1 (the new target stage value must be in place for this text to trigger).\n\n---\n\n### Task 3: Fix `confirmReject()` in client.html (client detail view)\n\n**File:** `server/templates/client.html`\n**Line:** 1163\n**Function:** `confirmReject()`\n\n**Current code:**\n```javascript\nvar targetStage = _modalStage === 'awaiting-human-approval' ? 'ideas' : 'rejected';\n```\n\n**Change to:**\n```javascript\nvar targetStage = _modalStage === 'final-human-approval' ? 'implementing' : (_modalStage === 'awaiting-human-approval' ? 'ideas' : 'rejected');\n```\n\n**Rationale:** Same fix as Task 1, applied to the client detail view. The `_modalStage` variable is set at line 810.\n\n**Dependencies:** None.\n\n---\n\n### Task 4: Update feedback text in `approveFeature()` in client.html\n\n**File:** `server/templates/client.html`\n**Lines:** 1170, 1185\n**Function:** `approveFeature()`\n\n**Current code (line 1170):**\n```javascript\nfeedbackEl.textContent = action === 'done' ? 'Approving...' : 'Rejecting...';\n```\n\n**Change to:**\n```javascript\nfeedbackEl.textContent = action === 'done' ? 'Approving...' : (action === 'implementing' ? 'Sending back for rework...' : 'Rejecting...');\n```\n\n**Current code (line 1185):**\n```javascript\nfeedbackEl.textContent = action === 'done' ? 'Approved!' : 'Rejected!';\n```\n\n**Change to:**\n```javascript\nfeedbackEl.textContent = action === 'done' ? 'Approved!' : (action === 'implementing' ? 'Sent back for rework!' : 'Rejected!');\n```\n\n**Rationale:** Same feedback text fix as Task 2, applied to the client detail view.\n\n**Dependencies:** Task 3.\n\n---\n\n### Summary of changes\n\n- **2 files modified:** `server/templates/index.html`, `server/templates/client.html`\n- **0 new files**\n- **0 API changes**\n- **0 pipeline changes**\n- Each file gets the same 3 line changes: one in `confirmReject()` for stage-aware target, two in `approveFeature()` for appropriate feedback text.\n- The existing pipeline move handler already correctly handles `implementing` as a target from `final-human-approval`, preserving the rejection reason as review feedback.",
+  "test_spec": "# Test Specification: Rejecting an item from final-human-approval from webui moves to Rejected\n\n## 1. Behaviors That MUST Be Verified\n\n### B1: Reject from final-human-approval sends target_stage 'implementing'\nWhen a user clicks Reject on an item that is currently in the `final-human-approval` phase (in either the dashboard view or client detail view), the WebSocket message sent to the server must have `target_stage` set to `implementing`, NOT `rejected`.\n- **Success criteria:** The move request payload contains `target_stage: 'implementing'`.\n- **Expected output:** The item moves to the `implementing` phase, not `rejected`.\n\n### B2: Reject from awaiting-human-approval still sends target_stage 'ideas'\nWhen a user clicks Reject on an item in `awaiting-human-approval`, the existing behavior must be preserved: the target stage should be `ideas`.\n- **Success criteria:** The move request payload contains `target_stage: 'ideas'`.\n- **Expected output:** The item moves to the `ideas` phase.\n\n### B3: Reject from other phases still sends target_stage 'rejected'\nWhen a user clicks Reject on an item in any phase other than `final-human-approval` or `awaiting-human-approval`, the target stage should remain `rejected`.\n- **Success criteria:** The move request payload contains `target_stage: 'rejected'`.\n- **Expected output:** The item moves to the `rejected` phase.\n\n### B4: Rejection reason is still prompted and sent\nWhen rejecting from `final-human-approval`, the user should still be prompted for a rejection reason, and that reason must be included in the move request.\n- **Success criteria:** The rejection reason prompt appears, and the reason text is included in the WebSocket message payload.\n- **Expected output:** The rejection reason is preserved and available as review feedback for the implementation agent.\n\n### B5: Feedback text shows 'Sending back for rework...' for final-human-approval rejections\nWhen the reject action targets `implementing` (i.e., from `final-human-approval`), the in-progress feedback text should say 'Sending back for rework...' instead of 'Rejecting...'.\n- **Success criteria:** The feedback element's text content is 'Sending back for rework...' during the request.\n- **Expected output:** User sees contextually appropriate status text.\n\n### B6: Completion text shows 'Sent back for rework!' for final-human-approval rejections\nAfter a successful reject from `final-human-approval`, the completion feedback text should say 'Sent back for rework!' instead of 'Rejected!'.\n- **Success criteria:** The feedback element's text content is 'Sent back for rework!' after success.\n- **Expected output:** User sees contextually appropriate completion text.\n\n### B7: Feedback text remains 'Rejecting...' / 'Rejected!' for non-final-human-approval rejections\nFor rejections from phases other than `final-human-approval`, the feedback text should remain unchanged ('Rejecting...' and 'Rejected!').\n- **Success criteria:** The feedback text is 'Rejecting...' during and 'Rejected!' after for non-final-human-approval items.\n- **Expected output:** No change to existing UX for other phases.\n\n### B8: Approve action is unaffected\nThe approve button behavior (sending `target_stage: 'done'` with feedback text 'Approving...' / 'Approved!') must remain unchanged regardless of the current phase.\n- **Success criteria:** Approve requests still send `target_stage: 'done'` and show 'Approving...' / 'Approved!'.\n- **Expected output:** No regression in approve functionality.\n\n### B9: Both views (index.html and client.html) behave identically\nThe fix must be applied consistently to both the dashboard view (index.html) and the client detail view (client.html). Both must exhibit the same stage-aware reject behavior.\n- **Success criteria:** Identical reject behavior in both views for all phase scenarios.\n- **Expected output:** No discrepancy between dashboard and client views.\n\n## 2. Edge Cases\n\n### E1: Item with no stage data attribute\nIf a card element somehow lacks a `data-stage` attribute, `_modalStage` could be undefined or null. The reject logic should fall through to the default `rejected` target without errors.\n- **Expected behavior:** Falls through to `rejected` as the default target; no JavaScript error.\n\n### E2: Item moved out of final-human-approval between page load and reject click\nIf the item was in `final-human-approval` when the page loaded but was moved by another user/process before the reject button is clicked, the cached `_modalStage` may be stale.\n- **Expected behavior:** The reject action uses the stage as known at the time the reject modal was opened. The server/pipeline handles any phase mismatch gracefully.\n\n### E3: Empty rejection reason\nIf the user submits an empty rejection reason when rejecting from `final-human-approval`.\n- **Expected behavior:** The existing behavior for empty reasons should apply (either the prompt re-asks or submits with empty reason, depending on current implementation). The target stage logic should not be affected by the reason content.\n\n### E4: Rapid double-click on reject button\nIf a user clicks reject twice quickly.\n- **Expected behavior:** The existing debounce/guard behavior should prevent duplicate submissions. The stage-aware target logic should not introduce new race conditions.\n\n## 3. What Constitutes Failure\n\n### F1: Wrong target stage\nIf rejecting from `final-human-approval` sends `target_stage: 'rejected'` instead of `target_stage: 'implementing'`, the test fails. This is the core bug being fixed.\n\n### F2: Regression in other phase rejection targets\nIf rejecting from `awaiting-human-approval` no longer sends `target_stage: 'ideas'`, or rejecting from other phases no longer sends `target_stage: 'rejected'`, the test fails.\n\n### F3: Incorrect feedback text\nIf the in-progress or completion feedback text does not match the action being taken (e.g., showing 'Rejecting...' when the item is being sent back for rework from `final-human-approval`), the test fails.\n\n### F4: JavaScript errors\nIf any of the modified code paths produce JavaScript runtime errors (e.g., undefined variable access, syntax errors from the ternary chain), the test fails.\n\n### F5: Approve action regression\nIf the approve action behavior changes in any way as a side effect of the fix, the test fails.\n\n### F6: View inconsistency\nIf the dashboard view and client detail view behave differently for the same scenario, the test fails.\n\n## 4. Out of Scope\n\n- **Visual/CSS assertions:** Do not test button colors, layout, animations, or visual styling.\n- **Performance benchmarks:** Do not measure response times or rendering speed.\n- **Pipeline-side move handler logic:** The pipeline already correctly handles `implementing` as a target from `final-human-approval`. Do not re-test pipeline internals.\n- **Server API behavior:** The server is a passthrough. Do not test server-side request handling.\n- **Manual move dropdown:** The dropdown for manually moving items to any phase is not affected by this fix and should not be tested.\n- **Browser compatibility:** Do not test across different browsers or browser versions.\n- **Authentication/authorization:** Do not test user permissions for the reject action.\n- **WebSocket connection handling:** Do not test WebSocket reconnection, timeouts, or transport-level behavior.\n- **UI timing/animation:** Do not test the timing of feedback text transitions or modal animations.",
+  "impl_notes": "Fixed the bug where rejecting an item from final-human-approval in the web UI incorrectly moved it to the 'rejected' phase instead of sending it back for rework to 'implementing'. Modified both index.html (dashboard view) and client.html (client detail view) with: 1) updated confirmReject() to send target_stage 'implementing' when current stage is 'final-human-approval', 2) updated approveFeature() feedback text to show 'Sending back for rework...' and 'Sent back for rework!' for the implementing action. Build verified successfully.",
+  "ideation_summaries": [],
+  "Ideation": "",
+  "history": [
+    {
+      "ts": "2026-03-13T19:03Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T19:03Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-13T19:03Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T19:05Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-13T19:05Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-13T19:05Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-13T19:05Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-14T02:27Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-14T02:27Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-14T02:28Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-14T02:30Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-14T02:30Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-14T02:32Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-14T02:32Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-14T02:32Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-14T02:36Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-14T02:36Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T02:36Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation correctly fixes the reject button in both index.html and client.ht..."
+    },
+    {
+      "ts": "2026-03-14T02:36Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-13T19:05Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-14T02:36Z",
+      "verdict": "PASS",
+      "summary": "Implementation correctly fixes the reject button in both index.html and client.html to send target_stage 'implementing' when rejecting from final-human-approval, with appropriate feedback text. All 4 tasks from the impl spec are verified: confirmReject() stage-aware logic and approveFeature() feedback text updates are identical in both views. No previous review feedback to address. Test results show relevant tests passing.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-13T19:36:00.576353",
+    "verdict": "PASS",
+    "results": {
+      "passed": 982,
+      "failed": 122,
+      "errors": 0
+    },
+    "feedback": "The relevant pipeline tests pass (test_rejection_feedback.py, test_review_feedback_injection.py, test_human_approval.py). The 122 failing tests are pre-existing failures unrelated to this feature (they test checkpoint system, create idea, specific review slots, start agent e2e, and other features). Code inspection confirms the implementation in index.html (line 735) and client.html (line 1163) correctly sends target_stage 'implementing' when rejecting from final-human-approval, and feedback text shows 'Sending back for rework...' and 'Sent back for rework!' appropriately. Note: There is no explicit test coverage for the frontend JavaScript behaviors (B1-B9), as the test suite only tests Python/pipeline code."
+  }
+}

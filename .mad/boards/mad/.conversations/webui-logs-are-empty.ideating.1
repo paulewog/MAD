@@ -1,0 +1,3 @@
+{
+  "summary": "The web UI logs are empty because the `append_pipeline_log()` method in `pipeline/state.py` (FeatureFile class) is defined but never called anywhere in the codebase. The full chain works correctly — the Python client reads `pipeline_log` from feature data, sends it via WebSocket to the Go server, and the web UI polls for it via HTMX — but the source data is always an empty array because no pipeline phase (planning, implementing, reviewing, etc.) ever invokes `append_pipeline_log()` to record agent output. The fix is to add calls to `feature.append_pipeline_log(phase_name, output)` at the end of each phase execution in `pipeline/phases.py` or `pipeline/runner.py`, capturing the agent's output so it flows through the existing plumbing to the web UI."
+}

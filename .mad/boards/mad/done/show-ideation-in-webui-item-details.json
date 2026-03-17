@@ -1,0 +1,151 @@
+{
+  "id": "48ff4a41",
+  "board": "mad",
+  "title": "Show ideation in webui item details",
+  "type": "feature",
+  "created": "2026-03-13T05:13Z",
+  "description": "Add the ideation summary and history to the webui item details",
+  "done_script": "",
+  "plan": "## What\n\nDisplay ideation summaries (the list of synthesized debate rounds) in the web UI item detail panel, alongside the existing single ideation field. Each summary represents a round of AI-driven ideation debate, giving users visibility into how the feature concept evolved.\n\n## Why\n\nIdeation summaries capture the reasoning and evolution of feature ideas through multiple debate rounds. Currently this data exists in the feature JSON but is invisible to users in the web UI. Showing it helps users understand the design rationale, review AI-generated thinking, and make better decisions about feature direction.\n\n## Design Approach\n\nThe ideation summaries should appear in the item detail panel, below or alongside the existing single-line ideation display. Each summary should be shown as a distinct entry (numbered or separated) so users can follow the progression of thinking across rounds. The display should use the same styling conventions as existing detail sections (muted header label, content below).\n\nThe data needs to flow from the Go struct through to the HTML template as a data attribute on the card element, then be parsed and rendered by the JavaScript that builds the detail panel.\n\n## Impact\n\n- Affects only the web UI rendering layer \u2014 no backend logic changes needed beyond passing the existing field through to the template\n- No impact on the pipeline, CLI, or TUI interfaces\n- No data model changes required \u2014 the field already exists\n\n## Risks\n\n- Ideation summaries can be lengthy; the detail panel should handle long content gracefully (scrolling, not layout breakage)\n- JSON array serialization into an HTML data attribute needs proper escaping to avoid XSS or rendering issues\n\n## Scope\n\n**Included:**\n- Pass IdeationSummaries from Go struct to HTML template as a data attribute\n- Render ideation summaries in the item detail panel with clear visual separation between rounds\n- Proper escaping of content\n\n**Excluded:**\n- Editing ideation summaries from the web UI\n- Filtering or searching by ideation content\n- Changes to TUI or CLI display of ideation",
+  "plan_exploration_summary": "Explored Go struct FeatureSummary in server/hub.go which has both Ideation (string) and IdeationSummaries ([]string) fields. The web UI template (server/templates/client.html) currently renders the Ideation field via a data-ideation attribute on the card element, displayed in the item detail panel. However, IdeationSummaries is not passed as a data attribute and is not rendered anywhere in the template. The ideation summaries represent multiple rounds of debate synthesis and would provide richer context than the single Ideation string.",
+  "impl_spec": "## Implementation Spec: Show Ideation Summaries in Web UI Item Details\n\n### Task 1: Add data-ideation-summaries attribute to card element in client.html template\n\n**File:** `server/templates/client.html` (around line 1291)\n\n**What:** Add a `data-ideation-summaries` data attribute to the feature card element, right after the existing `data-ideation` attribute.\n\n**Change:** After the line:\n```\ndata-ideation=\"{{escapeAttr .Ideation}}\"\n```\nAdd:\n```\ndata-ideation-summaries=\"{{toJSON .IdeationSummaries}}\"\n```\n\n**Notes:**\n- Use the `toJSON` template function (already registered in `server/api.go:173`) which serializes the `[]string` slice to a JSON array string. This is the same approach used in `index.html` (line 885).\n- The `toJSON` function handles proper escaping for HTML attribute context.\n- No Go backend changes needed \u2014 `FeatureSummary` struct in `server/hub.go` already has the `IdeationSummaries []string` field.\n\n**Dependencies:** None.\n\n### Task 2: Render ideation summaries in the JavaScript detail panel builder in client.html\n\n**File:** `server/templates/client.html` (around line 875, after the existing ideation section)\n\n**What:** Add JavaScript code to read the `data-ideation-summaries` attribute, parse the JSON array, and render each summary as a numbered round in the item detail panel.\n\n**Change:** After the closing `}` of the existing ideation section (line 875), add:\n```javascript\n// Ideation Summaries section\ntry {\n    var ideationSummaries = JSON.parse(card.getAttribute('data-ideation-summaries') || '[]');\n    if (ideationSummaries && ideationSummaries.length > 0) {\n        html += '<div style=\"margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d\">' +\n            '<div style=\"color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem\">Ideation Summaries (' + ideationSummaries.length + ' rounds)</div>' +\n            '<div style=\"max-height:300px;overflow-y:auto\">';\n        for (var si = 0; si < ideationSummaries.length; si++) {\n            html += '<div style=\"font-size:0.75rem;padding:0.3rem 0;border-bottom:1px solid #161b22\">' +\n                '<span style=\"color:#d2a8ff;font-weight:600\">Round ' + (si + 1) + '</span>' +\n                '<div style=\"color:#c9d1d9;white-space:pre-wrap;margin-top:0.2rem\">' + escapeHtml(ideationSummaries[si]) + '</div></div>';\n        }\n        html += '</div></div>';\n    }\n} catch(e) {}\n```\n\n**Styling approach:**\n- Uses the same styling conventions as the existing client.html detail sections (muted `#8b949e` header, `0.7rem` font size for labels, `#21262d` border separators).\n- Each round is numbered (\"Round 1\", \"Round 2\", etc.) with purple `#d2a8ff` accent color matching the index.html implementation.\n- `max-height:300px;overflow-y:auto` on the container handles lengthy summaries without breaking layout.\n- Content is escaped via the existing `escapeHtml()` function to prevent XSS.\n- Wrapped in try/catch to handle malformed JSON gracefully (same pattern used for history parsing on line 878).\n\n**Dependencies:** Task 1 (the data attribute must exist for the JS to read it).\n\n### Summary of changes\n\n| File | Change | Lines |\n|------|--------|-------|\n| `server/templates/client.html` | Add `data-ideation-summaries` data attribute | ~1291 (after data-ideation) |\n| `server/templates/client.html` | Add JS rendering of ideation summaries | ~875 (after ideation section) |\n\nNo changes needed to:\n- `server/hub.go` (struct already has the field)\n- `server/api.go` (toJSON function already registered)\n- `server/templates/index.html` (already has this feature)\n- Any pipeline, CLI, or TUI code",
+  "test_spec": "# Test Spec: Show Ideation Summaries in Web UI Item Details\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Data Attribute Presence\n- **Behavior:** The feature card element in client.html must include a `data-ideation-summaries` attribute containing the JSON-serialized IdeationSummaries array.\n- **Success Criteria:** When a feature has IdeationSummaries populated (e.g., `[\"Round 1 summary\", \"Round 2 summary\"]`), the rendered HTML card element contains `data-ideation-summaries` with a valid JSON array string.\n- **Expected Output:** `data-ideation-summaries=\"[&quot;Round 1 summary&quot;,&quot;Round 2 summary&quot;]\"` (properly HTML-escaped JSON).\n\n### 1.2 Ideation Summaries Rendering in Detail Panel\n- **Behavior:** When a user clicks a feature card that has ideation summaries, the detail panel should display an \"Ideation Summaries\" section showing each summary as a numbered round.\n- **Success Criteria:** The detail panel HTML contains a header showing \"Ideation Summaries (N rounds)\" where N matches the array length, and each summary is displayed with a \"Round X\" label and its content.\n- **Expected Output:** For a feature with 3 summaries, the detail panel shows \"Ideation Summaries (3 rounds)\" followed by \"Round 1\", \"Round 2\", \"Round 3\" with their respective content.\n\n### 1.3 Proper Content Escaping\n- **Behavior:** Ideation summary content containing HTML special characters (`<`, `>`, `&`, `\"`, `'`) must be escaped before rendering to prevent XSS.\n- **Success Criteria:** If a summary contains `<script>alert('xss')</script>`, the rendered output shows the literal text, not an executed script. The `escapeHtml()` function is applied to each summary string.\n- **Expected Output:** Content displays as plain text with HTML entities replacing special characters.\n\n### 1.4 Summaries Appear Below Existing Ideation Field\n- **Behavior:** The ideation summaries section should render after (below) the existing single-line Ideation field in the detail panel, maintaining visual hierarchy.\n- **Success Criteria:** In the generated detail panel HTML, the ideation summaries block appears after the ideation block, separated by a border.\n\n### 1.5 Scrollable Container for Long Content\n- **Behavior:** When ideation summaries contain lengthy text or many rounds, the summaries container should be scrollable rather than breaking the layout.\n- **Success Criteria:** The summaries container has a max-height constraint with overflow-y:auto, preventing the detail panel from growing unbounded.\n\n### 1.6 Consistency with index.html Implementation\n- **Behavior:** The client.html implementation should mirror the existing index.html implementation in terms of data flow and rendering approach.\n- **Success Criteria:** Both templates use `toJSON .IdeationSummaries` for the data attribute, both parse with `JSON.parse()`, both use `escapeHtml()` for content, and both show numbered rounds with similar styling.\n\n## 2. Edge Cases\n\n### 2.1 Empty IdeationSummaries Array\n- **Input:** Feature with `ideation_summaries: []`\n- **Expected:** The `data-ideation-summaries` attribute should contain `[]` or `null`. The detail panel should NOT display the \"Ideation Summaries\" section at all.\n\n### 2.2 Null/Missing IdeationSummaries Field\n- **Input:** Feature JSON where `ideation_summaries` is missing or null (omitted due to `omitempty`).\n- **Expected:** The `data-ideation-summaries` attribute should contain `null` or be empty. The detail panel should NOT display the \"Ideation Summaries\" section. No JavaScript errors should occur.\n\n### 2.3 Single Summary Entry\n- **Input:** Feature with `ideation_summaries: [\"Only one round of debate\"]`\n- **Expected:** Detail panel shows \"Ideation Summaries (1 rounds)\" with \"Round 1\" and its content.\n\n### 2.4 Many Summary Entries\n- **Input:** Feature with 10+ ideation summaries.\n- **Expected:** All rounds render correctly. The scrollable container activates, allowing the user to scroll through all entries without layout breakage.\n\n### 2.5 Summary Containing Special Characters\n- **Input:** Summary text with HTML entities, quotes, angle brackets, newlines, and unicode characters (e.g., `\"Summary with <b>bold</b> & \\\"quotes\\\" and\\nnewlines\"`).\n- **Expected:** All special characters are properly escaped in both the data attribute (via toJSON) and in the rendered detail panel (via escapeHtml). Content displays as literal text.\n\n### 2.6 Summary Containing Very Long Text\n- **Input:** A single summary entry with 5000+ characters.\n- **Expected:** The text renders with white-space:pre-wrap and the scrollable container handles overflow. No truncation occurs unless explicitly styled.\n\n### 2.7 Malformed JSON in Data Attribute\n- **Input:** If somehow the `data-ideation-summaries` attribute contains invalid JSON.\n- **Expected:** The try/catch block catches the JSON.parse error silently. The detail panel renders without the ideation summaries section. No JavaScript errors propagate to the user.\n\n### 2.8 Feature With Ideation But No Ideation Summaries\n- **Input:** Feature has `ideation: \"Some ideation text\"` but `ideation_summaries: []`.\n- **Expected:** The single-line Ideation section displays normally. The Ideation Summaries section does not appear.\n\n### 2.9 Feature With Ideation Summaries But No Ideation\n- **Input:** Feature has `ideation: \"\"` but `ideation_summaries: [\"Round 1\", \"Round 2\"]`.\n- **Expected:** The single-line Ideation section does not appear. The Ideation Summaries section renders with both rounds.\n\n## 3. What Constitutes Failure\n\n### 3.1 Missing Data Attribute\n- **Failure:** The `data-ideation-summaries` attribute is not present on the card element in client.html when ideation summaries exist.\n- **Impact:** JavaScript cannot read the data, so summaries are never displayed.\n\n### 3.2 XSS Vulnerability\n- **Failure:** Summary content containing HTML/script tags is rendered without escaping, allowing script execution.\n- **Impact:** Security vulnerability \u2014 this is a critical failure.\n\n### 3.3 JavaScript Error on Parse\n- **Failure:** JSON.parse throws an uncaught exception that breaks the detail panel rendering entirely.\n- **Impact:** The entire detail panel fails to render, not just the summaries section.\n\n### 3.4 Layout Breakage\n- **Failure:** Long summaries or many rounds cause the detail panel to overflow its container, push other elements off-screen, or break the page layout.\n- **Impact:** Degraded user experience.\n\n### 3.5 Section Renders When No Data Exists\n- **Failure:** The \"Ideation Summaries\" header/section appears even when there are no summaries.\n- **Impact:** Confusing empty section in the UI.\n\n### 3.6 Inconsistency Between index.html and client.html\n- **Failure:** The client.html implementation uses a different data flow, escaping strategy, or rendering approach than index.html, leading to divergent behavior.\n- **Impact:** Maintenance burden and potential bugs in one view but not the other.\n\n## 4. Out of Scope\n\n- **Visual/pixel-perfect assertions:** Exact colors, font sizes, spacing measurements are styling details, not functional requirements.\n- **Performance benchmarks:** Load time or rendering speed of summaries is not tested.\n- **Browser compatibility testing:** Specific browser rendering differences are not in scope.\n- **TUI or CLI display:** This feature only affects the web UI; no testing of other interfaces.\n- **Editing summaries:** The UI is read-only for ideation summaries; no write/edit testing needed.\n- **Filtering or searching by ideation content:** Explicitly excluded from feature scope.\n- **Backend/API changes:** The Go struct and toJSON function already exist; no backend testing needed.\n- **Animation or transition effects:** No UI timing assertions.\n- **Concurrent user access:** Multiple users viewing the same detail panel simultaneously is not tested.\n- **Mobile/responsive layout:** Responsive behavior of the summaries section is not in scope.",
+  "impl_notes": "Implemented showing ideation summaries in web UI item details panel. Added data-ideation-summaries attribute to feature card element in client.html using toJSON template function, and added JavaScript to parse and render each summary as a numbered round with proper styling and escaping. Follows the same implementation pattern as index.html.",
+  "ideation_summaries": [],
+  "Ideation": "",
+  "history": [
+    {
+      "ts": "2026-03-13T05:13Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T05:13Z",
+      "stage": "PLAN-INBOX",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-13T05:15Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T05:17Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T05:18Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-13T05:18Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-13T05:19Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible. It identifies the correct data ..."
+    },
+    {
+      "ts": "2026-03-13T05:19Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-13T05:59Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-13T05:59Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-13T06:01Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T06:02Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T06:02Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T06:05Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T06:05Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T06:05Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T06:08Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-13T06:08Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T06:09Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation correctly adds ideation summaries to the client.html detail panel...."
+    },
+    {
+      "ts": "2026-03-13T06:09Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-13T16:06Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-13T05:19Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible. It identifies the correct data flow from Go struct through HTML template to JavaScript rendering, addresses the key risks around content length and XSS, and clearly defines scope with appropriate exclusions.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-13T06:09Z",
+      "verdict": "PASS",
+      "summary": "Implementation correctly adds ideation summaries to the client.html detail panel. Data attribute uses toJSON for serialization (line 1307), JS rendering parses with JSON.parse in a try/catch block (line 878), escapes content with escapeHtml(), shows numbered rounds with scrollable container (max-height:300px), and is consistent with the index.html implementation. All test spec requirements and edge cases are properly handled.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-12T23:08:29.089005",
+    "verdict": "PASS",
+    "results": {
+      "passed": 0,
+      "failed": 0,
+      "errors": 0,
+      "note": "No automated tests exist specifically for this feature. Go tests ran (server package) with 1 pre-existing unrelated failure (TestStartAgentMalformedJSON). Verification performed via code inspection against test spec requirements."
+    },
+    "feedback": "Implementation verified against all test spec requirements via code inspection: (1) data-ideation-summaries attribute present in client.html line 1307 using toJSON; (2) Detail panel shows 'Ideation Summaries (N rounds)' header with numbered rounds; (3) escapeHtml() used for XSS protection; (4) Section appears below ideation field with border-top; (5) Scrollable container with max-height:300px and overflow-y:auto; (6) Consistent with index.html implementation. All edge cases handled (empty array, null, single summary, many summaries, special chars, long text, malformed JSON)."
+  }
+}

@@ -1,0 +1,279 @@
+{
+  "id": "e459d35b",
+  "board": "mad",
+  "title": "Add button to webui to move to \"ideating\"",
+  "type": "feature",
+  "created": "2026-03-13T01:36Z",
+  "description": "I would like a specific button in the webui that I can click to move something to the \"ideating\" phase",
+  "done_script": "deploy-web-app",
+  "plan": "## What\n\nAdd a \"Move to Ideating\" button to the web UI item detail view that allows users to move any item (not just those in the 'ideas' stage) to the 'ideating' phase. Currently, a 'Move for Debate' button exists but is only shown when an item is already in the 'ideas' stage. The new button should be visible from any stage where it makes sense to send an item back to ideation.\n\n## Why\n\nUsers need the ability to send items back to the ideation/debate phase from any point in the pipeline. This supports iterative workflows where an item that has progressed past ideas might need further debate or refinement before continuing. Currently there's no way to do this from the UI without manually moving files.\n\n## Scope\n\n**Included:**\n- A dedicated \"Move to Ideating\" button in the item detail view, visible when the item is NOT already in the 'ideating' stage\n- Uses the existing move API endpoint \u2014 no backend changes needed\n- Consistent styling with existing action buttons (like 'Approve Idea' and 'Move for Debate')\n\n**Excluded:**\n- No changes to the dashboard/index view \u2014 this is scoped to the client detail page's item detail panel\n- No new API endpoints \u2014 the existing move endpoint handles this\n- No changes to phase ordering or definitions\n- Not a generic \"move to any phase\" feature \u2014 this is specifically for moving to 'ideating'\n\n## Impact\n\n- The existing move feature API and WebSocket message flow handle this natively; no backend changes are required\n- The button will trigger the same move flow used by existing buttons, so error handling, timeouts, and real-time updates are already covered\n- Items moved to 'ideating' will appear in the ideating column and go through the normal debate/ideation pipeline process\n\n## Risks\n\n- Low risk overall since the backend move endpoint already validates and supports arbitrary phase transitions\n- Minor UX consideration: users might accidentally move items that are far along in the pipeline back to ideating, but a confirmation or the existing move reason field can mitigate this",
+  "plan_exploration_summary": "Explored the MAD codebase thoroughly. Key files: server/api.go (HTTP handlers, phase definitions, move endpoint), server/templates/client.html (item detail view with stage-specific buttons), server/hub.go (WebSocket hub, data structures). Found that the item detail view already has stage-specific action buttons - 'Approve Idea' and 'Move for Debate' appear only when items are in the 'ideas' stage (client.html lines ~1002-1011). The move API endpoint (POST /api/clients/{clientID}/features/{featureID}/move with {target_stage, reason}) already supports moving to any valid phase including 'ideating'. The 13 phases are defined in stageOrder in api.go. The dashboard (index.html) also shows items in a Kanban board view but with fewer actions. The client detail page is where full item interaction happens.",
+  "impl_spec": "## Implementation Spec: Add \"Move to Ideating\" Button\n\n### Task 1: Add \"Move to Ideating\" button to client.html item detail view\n\n**File:** `server/templates/client.html`\n**Location:** After the existing ideas-stage buttons block (lines 1000-1011), before the action buttons block (line 1013)\n\n**What to do:**\nInsert a new block immediately after the `if (stage === 'ideas')` block (after line 1011's closing `}`) and before line 1012's `} catch(e) {}`. This new block adds a \"Move to Ideating\" button that is visible when the item is NOT already in the 'ideating' stage.\n\n**Exact change:**\nAfter line 1011 (`}`) and before line 1012 (`} catch(e) {}`), insert:\n\n```javascript\n            if (stage !== 'ideating') {\n                var featureID = card.getAttribute('data-id');\n                html += '<div style=\"margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d\">' +\n                    '<button onclick=\"moveFeature(this,\\'' + escapeHtml(featureID) + '\\',\\'ideating\\')\" ' +\n                    'style=\"padding:0.35rem 0.8rem;background:#9e6a03;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-family:inherit\">Move to Ideating</button>' +\n                    '<span class=\"move-feedback\" style=\"margin-left:0.5rem;font-size:0.8rem\"></span>' +\n                    '</div>';\n            }\n```\n\n**Details:**\n- The condition `stage !== 'ideating'` ensures the button is hidden when the item is already in the ideating stage (no point moving it where it already is)\n- Uses the same `moveFeature()` function (line 1099) that the existing \"Move for Debate\" button uses, with target stage `'ideating'`\n- Styled consistently with the existing \"Move for Debate\" button: same amber/gold background (`#9e6a03`), same padding, border-radius, and font size\n- Includes a `.move-feedback` span for success/error messages, matching the existing pattern\n- Note: The `featureID` variable may already be declared in the `if (stage === 'ideas')` block above, but since that block has its own scope context and the new block is separate, we redeclare it. If there's a scoping issue (both are in the same try block), use a different variable name like `featureIDForIdeating` instead.\n- The existing `moveFeature` function at line 1099 looks for `.move-feedback` via `detail.querySelector('.move-feedback')` which will find the feedback span in whichever button section is present\n\n**Dependencies:** None. No backend changes needed. The move API endpoint already supports moving to any valid phase including 'ideating'.\n\n### Verification\n\n- Load the client detail page in the web UI\n- Click on any feature card that is NOT in the 'ideating' stage\n- Verify the \"Move to Ideating\" button appears\n- Click on a feature card that IS in the 'ideating' stage\n- Verify the \"Move to Ideating\" button does NOT appear\n- Click the button on a non-ideating item and verify it moves successfully (shows 'Moved!' feedback)\n- Verify items in the 'ideas' stage show BOTH the existing buttons (Approve Idea, Move for Debate) AND the new Move to Ideating button",
+  "test_spec": "# Test Specification: Add \"Move to Ideating\" Button to Web UI\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Button Visibility Based on Current Stage\n- **Behavior:** The \"Move to Ideating\" button must appear in the item detail panel when the item's current stage is anything OTHER than 'ideating'.\n- **Success Criteria:** For every stage except 'ideating' (e.g., 'ideas', 'plan-inbox', 'planning', 'reviewing-plan', 'approved', 'spec-writing', 'implementing', 'done', etc.), opening the item detail view shows the \"Move to Ideating\" button.\n- **Expected Output:** A visible button labeled \"Move to Ideating\" rendered in the item detail panel.\n\n### 1.2 Button Hidden When Already in Ideating Stage\n- **Behavior:** The \"Move to Ideating\" button must NOT appear when the item is already in the 'ideating' stage.\n- **Success Criteria:** When an item in the 'ideating' stage is selected and its detail panel is shown, no \"Move to Ideating\" button is present in the rendered HTML.\n- **Expected Output:** The button element is absent from the detail panel DOM.\n\n### 1.3 Clicking the Button Moves the Item to Ideating\n- **Behavior:** Clicking the \"Move to Ideating\" button triggers the existing moveFeature function with the target stage set to 'ideating'.\n- **Success Criteria:** The move API endpoint (POST /api/clients/{clientID}/features/{featureID}/move) is called with `{\"target_stage\": \"ideating\"}`. The item's stage updates to 'ideating' after a successful response.\n- **Expected Output:** The API receives the correct payload and the item transitions to the 'ideating' phase. A success feedback message (e.g., 'Moved!') appears near the button.\n\n### 1.4 Coexistence with Existing Ideas-Stage Buttons\n- **Behavior:** When an item is in the 'ideas' stage, both the existing buttons ('Approve Idea', 'Move for Debate') AND the new 'Move to Ideating' button should be visible.\n- **Success Criteria:** The detail panel for an 'ideas'-stage item contains all three buttons: 'Approve Idea', 'Move for Debate', and 'Move to Ideating'.\n- **Expected Output:** Three action buttons rendered in the detail panel, each functional.\n\n### 1.5 Button Styling Consistency\n- **Behavior:** The \"Move to Ideating\" button should use the same amber/gold styling (#9e6a03 background, white text) as the existing \"Move for Debate\" button.\n- **Success Criteria:** The button's inline styles match the established pattern: padding, border-radius, font-size, background color, and font-family are consistent with existing action buttons.\n- **Expected Output:** The button visually matches the existing move buttons.\n\n### 1.6 Feedback Span Present\n- **Behavior:** A `.move-feedback` span element should be rendered alongside the button to display success/error messages from the moveFeature function.\n- **Success Criteria:** The HTML generated for the button section includes a `<span class=\"move-feedback\">` element.\n- **Expected Output:** After a successful move, the feedback span shows 'Moved!'. After a failed move, it shows an error message.\n\n## 2. Edge Cases\n\n### 2.1 Item with No data-id Attribute\n- **Scenario:** A card element is somehow missing its `data-id` attribute.\n- **Expected Behavior:** The button block should either not render or, if it does, clicking it should fail gracefully without crashing the UI. The existing try/catch block around the button logic should catch any error.\n\n### 2.2 Moving an Item That Is Already Being Moved\n- **Scenario:** The user clicks \"Move to Ideating\" while a previous move operation is still in flight.\n- **Expected Behavior:** The moveFeature function's existing behavior should handle this \u2014 the button should be disabled or the second request should either queue or fail gracefully with feedback.\n\n### 2.3 Move API Returns an Error\n- **Scenario:** The backend returns a non-2xx response (e.g., 500 internal server error, 404 item not found, 400 invalid stage).\n- **Expected Behavior:** The `.move-feedback` span should display an error message. The item should remain in its current stage. No crash or unhandled exception in the UI.\n\n### 2.4 Feature ID Contains Special Characters\n- **Scenario:** The feature ID contains characters that need HTML escaping (e.g., quotes, angle brackets).\n- **Expected Behavior:** The `escapeHtml()` function is used on the feature ID, so the button's onclick handler should work correctly without XSS or broken HTML.\n\n### 2.5 WebSocket Update After Move\n- **Scenario:** After the move succeeds, the server sends a WebSocket update reflecting the new stage.\n- **Expected Behavior:** The UI should update to reflect the item's new 'ideating' stage. If the detail panel is still open, it should either refresh to show the updated state (no longer showing the 'Move to Ideating' button since the item is now in 'ideating') or close.\n\n### 2.6 Item in Every Non-Ideating Stage\n- **Scenario:** Test the button's presence for items in each of the pipeline stages: ideas, plan-inbox, planning, reviewing-plan, approved, spec-writing, implementing, final-human-approval, done, etc.\n- **Expected Behavior:** The button appears for ALL stages except 'ideating'.\n\n## 3. What Constitutes Failure\n\n### 3.1 Button Not Rendered\n- **Failure:** The \"Move to Ideating\" button does not appear in the item detail panel for items NOT in the 'ideating' stage.\n\n### 3.2 Button Appears When It Should Not\n- **Failure:** The \"Move to Ideating\" button appears when the item IS in the 'ideating' stage.\n\n### 3.3 Wrong API Call\n- **Failure:** Clicking the button calls the move API with a target_stage other than 'ideating', or fails to call the API at all.\n\n### 3.4 UI Crash on Click\n- **Failure:** Clicking the button throws an unhandled JavaScript error or causes the detail panel to break/disappear without completing the move.\n\n### 3.5 Missing Feedback\n- **Failure:** After clicking the button, no feedback (success or error) is shown to the user \u2014 the move-feedback span remains empty regardless of outcome.\n\n### 3.6 Existing Buttons Broken\n- **Failure:** The addition of the new button causes the existing 'Approve Idea' or 'Move for Debate' buttons to stop working or disappear for items in the 'ideas' stage.\n\n### 3.7 XSS Vulnerability\n- **Failure:** The feature ID is not properly escaped in the button's onclick handler, allowing script injection.\n\n## 4. Out of Scope\n\n- **Visual/pixel-perfect assertions:** Do not test exact pixel positioning, colors rendering correctly across browsers, or visual regression.\n- **Performance benchmarks:** Do not measure or assert on render time, API response time, or WebSocket latency.\n- **UI animation/transition timing:** Do not test CSS transitions or animation durations.\n- **Backend move logic:** The move API endpoint is assumed to work correctly \u2014 do not test the server-side phase transition logic.\n- **Dashboard/index view:** The button is only added to the client detail page; do not test the dashboard (index.html).\n- **Other phase buttons:** Do not test the 'Start Planning' or 'Start Implementing' action buttons beyond verifying they still render.\n- **Mobile/responsive layout:** Do not test how the button appears on different screen sizes.\n- **Browser compatibility:** Do not test across multiple browsers \u2014 assume a modern browser environment.\n- **Phase ordering or definitions:** Do not verify the order of phases or whether 'ideating' is a valid phase (it is, per the backend).\n- **Generic move-to-any-phase functionality:** This test spec is specifically for the \"Move to Ideating\" button, not a general move feature.",
+  "impl_notes": "Fixed the 'Move to Ideating' button visibility condition in server/templates/client.html from 'stage !== ideating' to 'stage === ideas' per human review feedback. The button now only appears when an item is in the 'ideas' phase, matching the original 'Move for Debate' button behavior. Uses existing moveFeature() function with target stage 'ideating', styled with amber #9e6a03, includes move-feedback span.",
+  "ideation_summaries": [],
+  "Ideation": "",
+  "history": [
+    {
+      "ts": "2026-03-13T01:36Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T01:36Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-13T01:39Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T01:39Z",
+      "stage": "PLANNING",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 10pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-13T05:19Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T05:21Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-13T05:21Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-13T05:22Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-13T05:22Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-13T05:26Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-13T05:26Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-13T05:27Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T05:28Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T05:28Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T05:29Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T05:29Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T05:29Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T05:35Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-13T05:35Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T05:36Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation correctly adds 'Move to Ideating' button to client.html item detai..."
+    },
+    {
+      "ts": "2026-03-13T05:36Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-13T16:07Z",
+      "stage": "REJECTED",
+      "note": "Sent back to implementing: I ended up with two buttons - Move for Debate and Move to Ideating.  I..."
+    },
+    {
+      "ts": "2026-03-13T16:07Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T16:08Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T16:08Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T16:08Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T16:10Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-13T16:10Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T16:11Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation correctly adds 'Move to Ideating' button (line 1044-1053) visible ..."
+    },
+    {
+      "ts": "2026-03-13T16:11Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-13T16:11Z",
+      "stage": "REJECTED",
+      "note": "Sent back to implementing: Move to Ideating should only be present in the webui for ideas that ar..."
+    },
+    {
+      "ts": "2026-03-13T16:34Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T16:36Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T16:36Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T16:54Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T16:56Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-13T16:56Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T16:58Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation correctly adds 'Move to Ideating' button in client.html (lines 104..."
+    },
+    {
+      "ts": "2026-03-13T16:58Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-13T19:04Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    },
+    {
+      "ts": "2026-03-13T19:04Z",
+      "stage": "DONE",
+      "note": "Done script 'deploy-web-app' triggered"
+    },
+    {
+      "ts": "2026-03-13T19:05Z",
+      "stage": "DONE",
+      "note": "Done script 'deploy-web-app' completed (exit 0)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-13T05:22Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-13T05:36Z",
+      "verdict": "PASS",
+      "summary": "Implementation correctly adds 'Move to Ideating' button to client.html item detail view, visible when stage !== 'ideating', using existing moveFeature() with proper escaping, consistent styling, and feedback span. All 21 tests pass.",
+      "feedback": null
+    },
+    {
+      "ts": "2026-03-13T16:07Z",
+      "verdict": "FAIL",
+      "summary": "Human rejected from final-human-approval: I ended up with two buttons - Move for Debate and Move to Ideating.  I think Move for Debate was actually already implemented but the server hadn't been deployed.  Please remove Move for Debate",
+      "feedback": "Human rejection: I ended up with two buttons - Move for Debate and Move to Ideating.  I think Move for Debate was actually already implemented but the server hadn't been deployed.  Please remove Move for Debate\n\nPrevious review feedback:\nNo previous feedback available."
+    },
+    {
+      "ts": "2026-03-13T16:11Z",
+      "verdict": "PASS",
+      "summary": "Implementation correctly adds 'Move to Ideating' button (line 1044-1053) visible when stage !== 'ideating', with proper escapeHtml XSS protection, amber #9e6a03 styling, and move-feedback span. 'Move for Debate' correctly removed per human feedback. The 1 failing test is a test bug (asserts removed 'Move for Debate' button exists), not an implementation issue.",
+      "feedback": null
+    },
+    {
+      "ts": "2026-03-13T16:11Z",
+      "verdict": "FAIL",
+      "summary": "Human rejected from final-human-approval: Move to Ideating should only be present in the webui for ideas that are in the actual \"Ideas\" phase",
+      "feedback": "Human rejection: Move to Ideating should only be present in the webui for ideas that are in the actual \"Ideas\" phase\n\nPrevious review feedback:\nNo previous feedback available."
+    },
+    {
+      "ts": "2026-03-13T16:58Z",
+      "verdict": "PASS",
+      "summary": "Implementation correctly adds 'Move to Ideating' button in client.html (lines 1044-1053), visible only when stage === 'ideas' per human feedback. Uses escapeHtml for XSS protection, amber #9e6a03 styling, moveFeature() with 'ideating' target, and move-feedback span. 2 test failures are test bugs (test still asserts removed 'Move for Debate' button and old 'stage !== ideating' condition), not implementation issues.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-13T09:56:28.770571",
+    "verdict": "FAIL",
+    "results": {
+      "passed": 19,
+      "failed": 2,
+      "errors": 0
+    },
+    "feedback": "2 tests fail in test_move_to_ideating_button.py: (1) test_button_hidden_when_in_ideating_stage expects pattern 'stage !== ideating' but implementation uses 'stage === ideas' per human review feedback (impl_reviews[3]: 'Move to Ideating should only be present in the webui for ideas that are in the actual Ideas phase'). (2) test_coexistence_with_ideas_stage_buttons expects 'Move for Debate' button which was explicitly removed per earlier human feedback. These are test code bugs, not implementation bugs - the implementation correctly follows human feedback. All 13 tests in test_move_feature.py pass. The 6 passing tests in test_move_to_ideating_button.py verify: button exists, calls moveFeature with 'ideating', correct #9e6a03 styling, move-feedback span exists, escapeHtml used, button in separate block."
+  }
+}

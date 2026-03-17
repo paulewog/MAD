@@ -1,0 +1,155 @@
+{
+  "id": "3c09aea2",
+  "board": "mad",
+  "title": "Webui in-progress indicator only works on aggregate page",
+  "type": "bug",
+  "created": "2026-03-14T18:48Z",
+  "description": "The spinner on items in progress on the webui is not present on the individual client page",
+  "done_script": "deploy-web-app",
+  "plan": "## Root Cause Analysis\n\nThe spinner indicator that shows which items are actively being worked on by agents is implemented in two parts:\n1. A CSS animation (spinning circle via `@keyframes spin`) applied to items with a `data-active=\"true\"` attribute\n2. Server-side logic that builds an `ActiveSlugs` map by checking which features are currently being processed by plan/impl agents across all clients\n\nBoth parts exist **only** on the aggregate dashboard page. The individual client page is missing:\n- The `@keyframes spin` CSS and the `[data-active=\"true\"] .title::before` style rule\n- The `data-active` attribute on feature item elements\n- The `ActiveSlugs` data being passed from the server to the template\n\nAdditionally, the HTMX fragment endpoint that refreshes the feature list on the client page also doesn't compute or pass `ActiveSlugs`.\n\n## Impact Assessment\n\n- **Severity**: Low/cosmetic \u2014 functionality is not broken, just the visual indicator is missing on client-specific pages\n- **Scope**: Affects all individual client pages; the aggregate page works correctly\n- **Related risk**: The client page only has one client's agent state available, so `ActiveSlugs` must be computed from just that single client's agents (which is simpler than the aggregate case)\n\n## Fix Strategy\n\n1. **Add the spinner CSS** to the client page template \u2014 the same `@keyframes spin` animation and `[data-active]` selector rule\n2. **Compute and pass `ActiveSlugs`** when rendering the client page \u2014 derive it from the single client's plan/impl agent state\n3. **Add the `data-active` attribute** to feature items in the client page template, matching how the aggregate page does it\n4. **Update the HTMX features fragment** for the client page to also include `ActiveSlugs` so that dynamic refreshes maintain the spinner\n\n## Risks\n\n- Minimal risk \u2014 this is adding visual-only functionality that already works on the aggregate page\n- Need to ensure the fragment refresh path also gets ActiveSlugs so spinners don't disappear after a WebSocket-triggered refresh\n\n## Scope\n\n- Should touch the client page template (CSS + data attribute) and the server handler that renders it (pass ActiveSlugs)\n- Should NOT change the aggregate page or its behavior\n- Should NOT change agent state tracking or any backend logic",
+  "plan_exploration_summary": "",
+  "impl_spec": "## Implementation Spec: In-Progress Spinner on Client Page\n\n### Task 1: Add spinner CSS to client.html\n\n**File:** `server/templates/client.html`\n**Location:** Line 14, inside the `<style>` block, right after `* { margin: 0; padding: 0; box-sizing: border-box; }`\n\n**Add these two CSS rules:**\n```css\n@keyframes spin { to { transform: rotate(360deg); } }\n[data-active=\"true\"] .title::before {\n    content: '';\n    display: inline-block;\n    width: 10px;\n    height: 10px;\n    border: 2px solid #58a6ff;\n    border-top-color: transparent;\n    border-radius: 50%;\n    animation: spin 0.7s linear infinite;\n    vertical-align: middle;\n    margin-right: 5px;\n}\n```\n\nThese are identical to the rules on `index.html` lines 15-27.\n\n**Dependencies:** None.\n\n---\n\n### Task 2: Compute and pass ActiveSlugs in the client page handler\n\n**File:** `server/api.go`\n**Location:** The `serveClient` function, around lines 916-932 where the `data` map is built for the client page.\n\n**Changes:**\n\n1. Before the `data` map construction (before line 916), add:\n```go\nactiveSlugs := map[string]bool{}\nif state.PlanAgent.Running && state.PlanAgent.Feature != \"\" {\n    activeSlugs[state.PlanAgent.Feature] = true\n}\nif state.ImplAgent.Running && state.ImplAgent.Feature != \"\" {\n    activeSlugs[state.ImplAgent.Feature] = true\n}\n```\n\nNote: Unlike the aggregate page which loops over all clients, the client page only has a single `state` (the specific client), so we check `state.PlanAgent` and `state.ImplAgent` directly.\n\n2. Add `\"ActiveSlugs\": activeSlugs,` to the `data` map (alongside the existing entries like `\"ClientID\"`, `\"Features\"`, etc.).\n\n**Dependencies:** None.\n\n---\n\n### Task 3: Compute and pass ActiveSlugs in the HTMX features fragment endpoint\n\n**File:** `server/api.go`\n**Location:** The HTMX fragment handler at lines 895-904, inside the `case \"features\":` block.\n\n**Changes:**\n\n1. Before the `fdata` map construction (before line 896), add the same activeSlugs computation:\n```go\nactiveSlugs := map[string]bool{}\nif state.PlanAgent.Running && state.PlanAgent.Feature != \"\" {\n    activeSlugs[state.PlanAgent.Feature] = true\n}\nif state.ImplAgent.Running && state.ImplAgent.Feature != \"\" {\n    activeSlugs[state.ImplAgent.Feature] = true\n}\n```\n\n2. Add `\"ActiveSlugs\": activeSlugs,` to the `fdata` map, so it becomes:\n```go\nfdata := map[string]interface{}{\n    \"StageGroups\": groupFeaturesByStage(state.Features),\n    \"Key\":         key,\n    \"ActiveSlugs\": activeSlugs,\n}\n```\n\n**Dependencies:** None.\n\n---\n\n### Task 4: Add data-active attribute to feature cards in the feature_stages template\n\n**File:** `server/templates/client.html`\n**Location:** Line 1682, inside the `{{define \"feature_stages\"}}` template, in the feature-card div attributes.\n\nThe feature-card div currently ends with:\n```\ndata-requires-human-approval=\"{{.RequiresHumanApproval}}\">\n```\n\n**Change to:**\n```\ndata-requires-human-approval=\"{{.RequiresHumanApproval}}\"\ndata-active=\"{{if index $.ActiveSlugs .Slug}}true{{end}}\">\n```\n\nThis adds the `data-active` attribute, matching the pattern used in `index.html` at line 1193. The `$.ActiveSlugs` refers to the top-level template data (passed as part of StageGroups context), and `.Slug` is the feature's slug.\n\n**Dependencies:** Tasks 2 and 3 must be done first so that `ActiveSlugs` is available in the template data.\n\n---\n\n### Task 5: Include data-active in the client page's feature card identity hash (for HTMX diff)\n\n**File:** `server/templates/client.html`\n**Location:** Around line 506, in the JavaScript function that computes a feature card's identity for HTMX morphing/diffing. Look for the function that calls `getAttribute('data-id')` etc.\n\n**Examine the existing code:** The aggregate page includes `data-active` in its card identity function (index.html line 435). Check if the client page's equivalent function also needs updating.\n\nIf the client page has a similar identity function that doesn't include `data-active`, add it so that changes in active state trigger a visual refresh:\n```javascript\nc.getAttribute('data-active')\n```\n\n**Dependencies:** Task 4 must be done first.\n\n---\n\n### Summary of files modified:\n- `server/templates/client.html` \u2014 CSS rules + data-active attribute in feature_stages template + JS identity hash\n- `server/api.go` \u2014 ActiveSlugs computation in serveClient handler and HTMX features fragment handler\n\n### Testing:\n1. Start the server, open the aggregate dashboard, verify spinners still work\n2. Navigate to an individual client page while an agent is running\n3. Verify the spinner appears on the active feature card\n4. Wait for an HTMX refresh (or trigger one) and verify the spinner persists\n5. Stop the agent and verify the spinner disappears after next refresh",
+  "test_spec": "## Test Specification: In-Progress Spinner on Client Page\n\n### 1. Behaviors That MUST Be Verified\n\n#### 1.1 Spinner CSS exists on client page\n- **Behavior:** The client page template (`client.html`) must include the `@keyframes spin` CSS animation and the `[data-active=\"true\"] .title::before` style rule.\n- **Success criteria:** The CSS block in client.html contains both the keyframes definition and the pseudo-element rule, identical to those on the aggregate page (`index.html`).\n- **Expected output:** When a feature card has `data-active=\"true\"`, a spinning circle indicator appears before the title text.\n\n#### 1.2 ActiveSlugs computed and passed for full client page render\n- **Behavior:** When the server renders the client page (`serveClient` handler), it must compute an `ActiveSlugs` map from the single client's `PlanAgent` and `ImplAgent` state and pass it to the template.\n- **Success criteria:** If `state.PlanAgent.Running` is true and `state.PlanAgent.Feature` is non-empty, that feature slug appears in `ActiveSlugs`. Same for `state.ImplAgent`. The map is included in the template data.\n- **Expected output:** Feature cards for actively-processed items render with `data-active=\"true\"`.\n\n#### 1.3 ActiveSlugs computed and passed for HTMX features fragment\n- **Behavior:** When the HTMX fragment endpoint refreshes the feature list on the client page, it must also compute and pass `ActiveSlugs`.\n- **Success criteria:** The `fdata` map in the `case \"features\"` HTMX handler includes `ActiveSlugs` derived from the client's agent state.\n- **Expected output:** After an HTMX-triggered refresh (e.g., via WebSocket), active features still display the spinner.\n\n#### 1.4 data-active attribute rendered on feature cards\n- **Behavior:** Each feature card in the client page's `feature_stages` template must include a `data-active` attribute that is set to `\"true\"` when the feature's slug is in `ActiveSlugs`, and empty/absent otherwise.\n- **Success criteria:** A feature being actively processed has `data-active=\"true\"` on its card div. A feature not being processed does not have `data-active=\"true\"`.\n- **Expected output:** Only active features get the spinner indicator.\n\n#### 1.5 Spinner appears when PlanAgent is running\n- **Behavior:** When a client's PlanAgent is running for a specific feature, navigating to that client's page shows a spinner on that feature's card.\n- **Success criteria:** The feature card has `data-active=\"true\"` and the CSS spinner is visible.\n- **Expected output:** Spinning indicator before the feature title.\n\n#### 1.6 Spinner appears when ImplAgent is running\n- **Behavior:** When a client's ImplAgent is running for a specific feature, navigating to that client's page shows a spinner on that feature's card.\n- **Success criteria:** Same as 1.5 but triggered by ImplAgent state.\n- **Expected output:** Spinning indicator before the feature title.\n\n#### 1.7 Spinner disappears when agent stops\n- **Behavior:** When an agent finishes processing a feature, the next HTMX refresh should remove the spinner from that feature's card.\n- **Success criteria:** `data-active` is no longer `\"true\"` after the agent stops and a refresh occurs.\n- **Expected output:** No spinner on the feature card.\n\n#### 1.8 Aggregate page is unchanged\n- **Behavior:** The existing spinner behavior on the aggregate dashboard page must not be affected by these changes.\n- **Success criteria:** The aggregate page still computes `ActiveSlugs` by looping over all clients and still renders spinners correctly.\n- **Expected output:** Aggregate page spinners work exactly as before.\n\n#### 1.9 Card identity hash includes data-active\n- **Behavior:** The JavaScript function that computes a feature card's identity for HTMX morphing/diffing on the client page must include the `data-active` attribute.\n- **Success criteria:** When a feature's active state changes, the identity hash changes, triggering a visual refresh via HTMX morph.\n- **Expected output:** Spinner appears/disappears reactively without full page reload.\n\n### 2. Edge Cases\n\n#### 2.1 No agents running\n- **Condition:** Neither PlanAgent nor ImplAgent is running for the client.\n- **Expected:** `ActiveSlugs` is an empty map. No feature cards have `data-active=\"true\"`. No spinners appear.\n\n#### 2.2 Both agents running on different features\n- **Condition:** PlanAgent is running on feature-A and ImplAgent is running on feature-B.\n- **Expected:** Both feature-A and feature-B have spinners. All other features do not.\n\n#### 2.3 Both agents running on the same feature\n- **Condition:** PlanAgent and ImplAgent are both running on the same feature slug.\n- **Expected:** That feature has a spinner. The map simply has the slug set to true (idempotent). Only one spinner indicator appears (not two).\n\n#### 2.4 Agent running but Feature field is empty\n- **Condition:** `state.PlanAgent.Running` is true but `state.PlanAgent.Feature` is `\"\"`.\n- **Expected:** No slug is added to `ActiveSlugs`. No spinner appears for an empty-string key.\n\n#### 2.5 Agent not running but Feature field is non-empty\n- **Condition:** `state.PlanAgent.Running` is false but `state.PlanAgent.Feature` is `\"some-feature\"`.\n- **Expected:** No slug is added to `ActiveSlugs`. The feature should not show a spinner because the agent is not actively running.\n\n#### 2.6 Feature slug in ActiveSlugs but not in current feature list\n- **Condition:** ActiveSlugs contains a slug that doesn't match any feature card on the page (e.g., feature was removed or renamed).\n- **Expected:** No error. The data-active attribute is simply never applied because no card matches.\n\n#### 2.7 Client page for a client with no features\n- **Condition:** The client has zero features in its feature list.\n- **Expected:** No feature cards rendered, no spinners, no errors. ActiveSlugs may be non-empty but has no effect.\n\n#### 2.8 Rapid agent state transitions during refresh\n- **Condition:** Agent starts and stops between two consecutive HTMX refreshes.\n- **Expected:** The spinner state reflects the state at the time of each render. If agent stopped before the refresh, no spinner. No stale state.\n\n### 3. What Constitutes Failure\n\n- **Missing CSS:** Client page does not contain `@keyframes spin` or `[data-active=\"true\"] .title::before` rule.\n- **Missing data attribute:** Feature cards on the client page never have `data-active` attribute regardless of agent state.\n- **ActiveSlugs not passed:** Template rendering fails with an error when trying to access `$.ActiveSlugs`, or the attribute is always empty because the data wasn't passed.\n- **HTMX fragment missing ActiveSlugs:** Spinner appears on initial page load but disappears after the first HTMX fragment refresh because the fragment handler doesn't pass `ActiveSlugs`.\n- **Spinner on wrong features:** Features that are NOT being actively processed show spinners.\n- **Spinner never disappears:** Once a spinner appears, it persists even after the agent has stopped and refreshes have occurred.\n- **Aggregate page broken:** Any change in spinner behavior on the aggregate page (regressions).\n- **Template rendering error:** Server returns 500 or template error when rendering client page due to missing `ActiveSlugs` in template data.\n- **Identity hash not updated:** Changing active state doesn't trigger HTMX morph update because `data-active` is not included in the card identity computation.\n\n### 4. Out of Scope\n\n- **Visual/CSS correctness:** Exact pixel dimensions, color values, or animation timing of the spinner. These are cosmetic and covered by the existing aggregate page implementation.\n- **Animation smoothness:** Frame rate or rendering performance of the CSS animation.\n- **WebSocket transport:** Testing the WebSocket connection itself or message delivery reliability. We only verify that the HTMX fragment includes the correct data.\n- **Agent lifecycle management:** How agents start, stop, or report their state. We assume the agent state (`PlanAgent.Running`, `PlanAgent.Feature`, etc.) is correct.\n- **Browser compatibility:** Whether the CSS animation works across different browsers.\n- **Load/performance testing:** How the page performs with many features or many active agents.\n- **Aggregate page testing:** Deep testing of the aggregate page spinner (it already works; we only verify no regressions).\n- **Backend agent state tracking changes:** No changes to how agent state is tracked or stored.",
+  "impl_notes": "Implemented the in-progress spinner indicator on client pages by adding CSS, computing ActiveSlugs in both the full page handler and HTMX fragment handler, adding data-active attributes to feature cards, and including data-active in the cardHash function for HTMX morphing.",
+  "ideation_summaries": [],
+  "Ideation": "",
+  "history": [
+    {
+      "ts": "2026-03-14T18:48Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-14T18:48Z",
+      "stage": "PLAN-INBOX",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-14T18:48Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-14T18:50Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-14T18:50Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-14T18:50Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-14T18:50Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-14T19:11Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-14T19:11Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-14T19:13Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-14T19:14Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-14T19:14Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-14T19:17Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-14T19:17Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-14T19:17Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-14T19:21Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-14T19:21Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T19:22Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation is complete and correct. All 5 tasks from the plan are addressed: ..."
+    },
+    {
+      "ts": "2026-03-14T19:22Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-14T21:13Z",
+      "stage": "DONE",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-14T21:13Z",
+      "stage": "DONE",
+      "note": "Done script 'deploy-web-app' triggered"
+    },
+    {
+      "ts": "2026-03-14T21:14Z",
+      "stage": "DONE",
+      "note": "Done script 'deploy-web-app' completed (exit 0)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-14T18:50Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-14T19:22Z",
+      "verdict": "PASS",
+      "summary": "Implementation is complete and correct. All 5 tasks from the plan are addressed: spinner CSS added to client.html, ActiveSlugs computed from single client state in both full page and HTMX fragment handlers, data-active attribute rendered on feature cards, and cardHash updated for HTMX morphing. Aggregate page is unchanged. Edge cases (empty feature, agent not running) handled correctly.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-14T12:21:11.531591",
+    "verdict": "FAIL",
+    "results": {
+      "passed": 1,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All existing tests pass (server tests: ok mad-server 25.924s). However, test coverage is INADEQUATE - none of the existing tests verify the spinner feature behaviors specified in the test spec. Specifically: (1) No tests verify CSS @keyframes spin exists in client.html, (2) No tests verify ActiveSlugs is computed and passed in serveClient handler, (3) No tests verify ActiveSlugs is computed and passed in HTMX features fragment, (4) No tests verify data-active attribute is rendered on feature cards, (5) No tests verify spinner appears when PlanAgent/ImplAgent is running, (6) No tests verify spinner disappears when agent stops, (7) No tests verify edge cases. The implementation appears correct based on code inspection, but cannot be verified via tests."
+  }
+}

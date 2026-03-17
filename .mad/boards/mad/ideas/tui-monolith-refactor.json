@@ -14,9 +14,110 @@
       "ts": "2026-03-08T06:00Z",
       "stage": "IDEAS",
       "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T00:37Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-13T00:37Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-13T00:37Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T05:56Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-13T05:56Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T05:57Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-13T05:58Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T05:59Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-13T06:00Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis"
+    },
+    {
+      "ts": "2026-03-13T06:01Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-13T21:25Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-13T21:30Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-13T21:30Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T21:31Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-13T21:32Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T21:33Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-13T21:34Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis"
+    },
+    {
+      "ts": "2026-03-13T21:35Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
     }
   ],
   "pipeline_log": [],
   "plan_reviews": [],
-  "impl_reviews": []
+  "impl_reviews": [],
+  "ideation_summaries": [
+    "The TUI file (pipeline/tui.py) has grown to 4,082 lines with at least 5 distinct concerns tangled together: (1) 10+ modal dialog classes (RejectModal, NewBoardModal, AnswerQuestionsModal, NewFeatureModal, EditDoneScriptModal, MoveFeatureModal, RunScriptModal, ConfirmModal, UnifiedEditModal \u2014 ~600 lines), (2) sidebar panes like SettingsPane, ScriptsPane, AgentStatusWidget (~225 lines), (3) standalone helper functions for formatting/markdown/CLI (~225 lines), (4) lock management and entry-point bo",
+    "The previous proposal's decomposition is directionally sound but underestimates three key risks. First, extracting modals/panes as 'purely presentational with minimal coupling' is misleading \u2014 several modals (AnswerQuestionsModal, UnifiedEditModal, RunScriptModal) receive FeatureFile objects or ScriptConfig lists and call back into PipelineApp via dismiss() results that trigger async workflows, so the extraction boundary isn't clean UI vs. logic but rather requires defining a stable callback/mes",
+    "Both prior proposals correctly identify the decomposition axes but disagree on where the hard boundary lives. The real leverage point is recognizing that PipelineApp's ~40 action_* methods follow exactly two patterns that can be mechanically separated: (1) 'state-query-then-modal' actions (action_move, action_new_feature, action_unified_edit, etc.) that read current state, push a modal, and handle the callback \u2014 these can become a thin ActionDispatcher mixin or be driven by a declarative action ",
+    "The three prior proposals converge on a reasonable decomposition but collectively suffer from a critical sequencing blind spot and two underexamined risks. First, on sequencing: all proposals treat modal extraction as the 'safest first step,' but this is a trap \u2014 modals are the least painful part of the monolith (they're already self-contained classes with clear boundaries at lines 568-1300), and extracting them first creates a false sense of progress while deferring the genuinely hard work. The",
+    "The existing ideation correctly identifies the decomposition axes and sequencing trap around modals, but overlooks a practical incremental approach that exploits the file's natural seams. The 4,298-line tui.py has five clear extraction layers visible in the line ranges: (1) Lines 84-481 are pure standalone functions (_feature_markdown, _escape_markup, _format_json_text, _build_feature_detail_widgets, handle_cli_commands, _handle_config_command, _handle_context_command) with zero PipelineApp coup",
+    "The previous proposal's incremental extraction plan (helpers first, then free-function action modules) is pragmatically sound but underweights three structural risks that could make the refactor stall mid-way. First, the 'free async functions that accept a PipelineApp instance' pattern for action_* methods is essentially a God Object anti-pattern in disguise \u2014 passing the entire PipelineApp as a parameter means every extracted function still has implicit access to all 30+ reactive attributes, th",
+    "The prior rounds correctly identify the decomposition axes and the modal-first sequencing trap, but both overarchitect the solution by proposing new abstractions (ActionDispatcher, BoardDataStore, PipelineOrchestrator, callback protocols) before exploiting the file's existing mechanical seams. A more pragmatic approach recognizes that the 4,298-line file has three extraction tiers of decreasing risk. Tier 1 (zero-risk, immediate): lines 84-481 are pure standalone functions with zero PipelineApp ",
+    "The prior rounds converge on a reasonable decomposition strategy but share a blind spot: they treat the refactor as a design problem when it's primarily a migration-safety problem. The real risk isn't choosing the wrong module boundaries\u2014all three proposals' boundaries are defensible\u2014it's that a mid-flight refactor of a 4,298-line file with no test coverage will silently break behavior. The file has zero unit tests for PipelineApp (test_unified_edit_modal.py tests one modal in isolation, and tes"
+  ],
+  "Ideation": "The core problem is that tui.py has grown to ~4,300 lines as a monolithic PipelineApp class, making it difficult to navigate, test, and maintain. The file has natural seams that suggest a multi-tier extraction strategy: Tier 1 (zero-risk) extracts pure standalone helper functions (lines 84-481) with no PipelineApp dependencies into a tui_helpers.py module; Tier 2 (low-risk) extracts free async action functions that accept a PipelineApp instance into focused action modules (e.g., tui_item_actions.py, tui_board_actions.py); Tier 3 (higher-risk) tackles modal subclasses, which are tightly coupled to PipelineApp's reactive attributes and require careful interface design.\n\nThe primary risk is not choosing wrong module boundaries\u2014multiple defensible decompositions exist\u2014but rather migration safety when refactoring a file with minimal test coverage. Silently broken behavior is the real danger. Before any structural extraction, a behavioral characterization test suite should be added: snapshot tests for key screen renders, integration tests that drive the TUI through critical flows (item creation, phase transitions, modal interactions), and regression guards for the most common user paths. This test harness transforms the refactor from a risky rewrite into a verifiable series of safe moves.\n\nKey tradeoffs to consider: the 'free async functions accepting PipelineApp' pattern for action modules is pragmatic and minimizes immediate disruption, but risks recreating a God Object anti-pattern in disguise since every extracted function retains implicit access to all 30+ reactive attributes. A cleaner long-term architecture would define explicit data transfer objects or narrow interfaces (e.g., a BoardDataStore protocol) that each action module depends on\u2014but this level of abstraction should be deferred until after Tier 1 and Tier 2 extractions prove out the basic module boundaries. The modal subclasses (Tier 3) are genuinely the most complex because they mix UI widget construction, event handling, and business logic; these should be extracted last, only after the simpler tiers establish confidence in the refactoring approach.\n\nThe recommended sequencing is: (1) add characterization tests first, (2) extract pure helpers with no behavior changes and verify tests pass, (3) extract action free-functions one module at a time with continuous test validation, (4) revisit modal extraction only if the prior tiers demonstrate the approach is working cleanly. Each step should be committed independently so any regression is immediately attributable. The goal is a file structure where tui.py contains only the PipelineApp class wiring and Textual lifecycle methods, with domain logic distributed across purpose-specific modules."
 }

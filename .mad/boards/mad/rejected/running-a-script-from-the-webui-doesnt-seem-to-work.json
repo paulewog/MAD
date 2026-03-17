@@ -1,0 +1,61 @@
+{
+  "id": "192e1269",
+  "board": "mad",
+  "title": "Running a script from the webui doesn't seem to work",
+  "type": "bug",
+  "created": "2026-03-14T01:45Z",
+  "description": "Running a script from the webui doesn't seem to work. Also, the scripts don't populate initially, which seems a little strange; there's a few second delay.",
+  "done_script": "",
+  "plan": "",
+  "plan_exploration_summary": "",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "ideation_summaries": [],
+  "Ideation": "",
+  "history": [
+    {
+      "ts": "2026-03-14T01:45Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-14T01:45Z",
+      "stage": "IDEATING",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-14T01:47Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-14T01:47Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-14T04:03Z",
+      "stage": "IDEAS",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-14T04:03Z",
+      "stage": "IDEATING",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-14T18:40Z",
+      "stage": "IDEAS",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-14T18:41Z",
+      "stage": "REJECTED",
+      "note": "Moved via web UI"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [],
+  "impl_reviews": []
+}

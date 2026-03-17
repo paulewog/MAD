@@ -1,0 +1,3 @@
+{
+  "summary": "The 'done' and 'final-human-approval' phases should be collapsed by default in the webui to reduce visual clutter. The approach is straightforward: modify the Go template conditions in index.html that control the collapsed/hidden CSS classes on stage toggles and stage bodies. Currently these phases only collapse when empty (no features). Adding `(eq .Stage \"done\")` and `(eq .Stage \"final-human-approval\")` checks to the existing template conditionals will collapse them by default while still allowing users to expand them on click. This is a minimal, low-risk UI change — just two template condition edits on the toggle button class and the stage body class."
+}

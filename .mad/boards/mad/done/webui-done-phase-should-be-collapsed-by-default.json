@@ -1,0 +1,203 @@
+{
+  "id": "5bf8d214",
+  "board": "mad",
+  "title": "webui \"Done\" phase should be collapsed by default",
+  "type": "feature",
+  "created": "2026-03-13T19:04Z",
+  "description": "Collapse the \"done\" phase by default in the webui.  Also the final-human-approval phase.  They get pretty long.",
+  "done_script": "deploy-web-app",
+  "plan": "## What\nCollapse the 'done' and 'final-human-approval' phases by default in the web UI board view, so these stages render with their content hidden when the page loads or when a full refresh occurs.\n\n## Why\nThese phases accumulate items over time and create visual clutter on the board. Users rarely need to interact with completed items or items awaiting final approval during normal workflow. Collapsing them by default keeps the board focused on active work while still allowing users to expand them on demand.\n\n## Impact\n- The toggle button and item count remain visible even when collapsed, so users can still see at a glance how many items are in each phase and expand with a single click.\n- The smart polling mechanism already preserves user-toggled state across refresh cycles, meaning if a user manually expands these phases, they stay expanded until a full page reload. This provides good UX without additional work.\n- No backend changes are needed; this is purely a template-level presentation change.\n\n## Risks\n- Minimal risk. Users might not notice new items appearing in collapsed phases, but the visible item count indicator mitigates this.\n- The collapse condition is redundant with the existing empty-stage collapse for zero-item cases, but this overlap is harmless.\n\n## Scope\n- IN SCOPE: Collapsing 'done' and 'final-human-approval' phases by default in the web UI board view.\n- NOT IN SCOPE: Persisting user collapse preferences across page reloads (e.g., via localStorage). Not changing TUI behavior. Not adding any new configuration options for which phases should be collapsed.",
+  "plan_exploration_summary": "Examined server/templates/index.html for stage rendering and collapse logic. Found the board_fragment template at line 900 which iterates StageGroups. Line 901 has the toggle button with collapsed class conditional: `{{if or (not .Features) (eq .Stage \"done\") (eq .Stage \"final-human-approval\")}} collapsed{{end}}`. Line 905 has the stage-body with hidden class using the same conditional. The HTMX smart polling logic at lines 395-421 preserves user-toggled collapsed state across 5-second refresh cycles by reading curBtn.classList before applying updates. Examined server/api.go for StageGroup struct (line 61), groupFeaturesByStage function (line 75), and stageLabel helper (line 170). The stage ordering and grouping logic passes stage names like 'done' and 'final-human-approval' through to the template, matching the conditions already in place. CSS at line 159 handles the arrow rotation for collapsed state, and line 177 hides the stage-body. The implementation is already complete and correct in the current codebase.",
+  "impl_spec": "## Implementation Spec: Collapse 'done' and 'final-human-approval' phases by default\n\n### Status: Already Implemented\n\nThe collapse-by-default behavior is already correctly implemented in the current codebase. No additional code changes are needed.\n\n### Task 1: Template collapse conditions (ALREADY DONE)\n\n**File:** `server/templates/index.html`\n\n**Line 958** \u2014 The `board_fragment` template's stage toggle button already includes collapse conditions:\n```html\n<button type=\"button\" class=\"stage-toggle{{if or (not .Features) (eq .Stage \"done\") (eq .Stage \"final-human-approval\")}} collapsed{{end}}\" onclick=\"toggleStage(this)\">\n```\n\n**Line 962** \u2014 The stage body already includes the matching hidden conditions:\n```html\n<div class=\"stage-body{{if or (not .Features) (eq .Stage \"done\") (eq .Stage \"final-human-approval\")}} hidden{{end}}\">\n```\n\nThe `or` conditional chains three conditions:\n1. `(not .Features)` \u2014 collapse when the stage has zero items (pre-existing behavior)\n2. `(eq .Stage \"done\")` \u2014 always collapse the 'done' phase by default\n3. `(eq .Stage \"final-human-approval\")` \u2014 always collapse the 'final-human-approval' phase by default\n\n### Task 2: CSS support (ALREADY DONE)\n\n**File:** `server/templates/index.html`\n\n- **Line 159:** `.stage-toggle.collapsed .arrow { transform: rotate(-90deg); }` \u2014 rotates the arrow indicator when collapsed\n- **Line 177:** `.stage-body.hidden { display: none; }` \u2014 hides the stage body content when collapsed\n\n### Task 3: Smart polling state preservation (ALREADY DONE)\n\n**File:** `server/templates/index.html`, lines 423-431\n\nThe smart polling logic preserves user-toggled collapse state across 5-second refresh cycles:\n- Line 426: Reads current collapsed state before update: `var wasCollapsed = curBtn.classList.contains('collapsed');`\n- Line 427: Applies new class from server: `curBtn.className = newBtn.className;`\n- Line 428: Restores user's collapsed state: `if (wasCollapsed) curBtn.classList.add('collapsed');`\n\nThis means if a user manually expands a collapsed phase, it stays expanded across polling refreshes until a full page reload.\n\n### Task 4: Toggle interaction (ALREADY DONE)\n\n**File:** `server/templates/index.html`, line 582\n\nThe `toggleStage()` function handles user clicks to expand/collapse:\n```javascript\nbtn.classList.toggle('collapsed');\n```\nThis toggles both the button's collapsed class and the sibling stage-body's hidden class.\n\n### Dependencies\nNone \u2014 all tasks are independent and already complete.\n\n### Verification\nTo verify the feature works:\n1. Load the web UI board view\n2. Confirm 'done' and 'final-human-approval' phases render collapsed (arrow pointing right, items hidden)\n3. Confirm the item count badge is visible on collapsed phases\n4. Click to expand a collapsed phase \u2014 items should appear\n5. Wait for a polling refresh (~5 seconds) \u2014 expanded phase should stay expanded\n6. Full page reload \u2014 phases should collapse again by default",
+  "test_spec": "# Test Specification: WebUI \"Done\" Phase Should Be Collapsed by Default\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Default Collapse State on Initial Page Load\n- **Behavior:** When the web UI board view loads for the first time, the 'done' phase must render with its content hidden (collapsed).\n- **Success Criteria:** The toggle button for the 'done' stage has the CSS class 'collapsed'. The stage-body div for the 'done' stage has the CSS class 'hidden'.\n- **Expected Output:** The 'done' phase shows only its header (stage label, item count badge, and collapsed arrow indicator). No feature cards within the 'done' phase are visible.\n\n### 1.2 Default Collapse State for 'final-human-approval' on Initial Page Load\n- **Behavior:** When the web UI board view loads, the 'final-human-approval' phase must also render collapsed by default.\n- **Success Criteria:** The toggle button for 'final-human-approval' has the CSS class 'collapsed'. The stage-body div has the CSS class 'hidden'.\n- **Expected Output:** Same as 1.1 but for the 'final-human-approval' phase.\n\n### 1.3 Item Count Remains Visible When Collapsed\n- **Behavior:** Even when 'done' or 'final-human-approval' phases are collapsed, the item count badge must remain visible in the phase header.\n- **Success Criteria:** The stage-count span is rendered inside the toggle button (outside the stage-body), so it is visible regardless of collapse state.\n- **Expected Output:** Users can see how many items are in the collapsed phase without expanding it.\n\n### 1.4 User Can Expand Collapsed Phases\n- **Behavior:** Clicking the toggle button on a collapsed 'done' or 'final-human-approval' phase expands it, showing all feature cards.\n- **Success Criteria:** After clicking, the 'collapsed' class is removed from the toggle button and the 'hidden' class is removed from the stage-body.\n- **Expected Output:** Feature cards become visible. The arrow indicator rotates to point downward.\n\n### 1.5 Smart Polling Preserves User-Expanded State\n- **Behavior:** If a user manually expands a collapsed 'done' or 'final-human-approval' phase, subsequent polling refreshes (every ~5 seconds) must preserve the expanded state.\n- **Success Criteria:** The polling update logic reads the current collapsed state before applying the server response, then restores the user's toggled state after the DOM update.\n- **Expected Output:** The phase remains expanded across multiple polling cycles until a full page reload occurs.\n\n### 1.6 Full Page Reload Resets to Collapsed\n- **Behavior:** After a full page reload (browser refresh), previously user-expanded 'done' and 'final-human-approval' phases return to their default collapsed state.\n- **Success Criteria:** The server-rendered HTML always includes the 'collapsed' and 'hidden' classes for these phases.\n- **Expected Output:** Phases are collapsed again after reload, regardless of prior user interaction.\n\n### 1.7 Other Phases Are NOT Collapsed by Default\n- **Behavior:** Phases other than 'done' and 'final-human-approval' (e.g., 'ideas', 'planning', 'implementing', 'testing') must NOT be collapsed by default when they contain items.\n- **Success Criteria:** Only empty phases (zero items) and the two specified phases receive the collapsed/hidden classes.\n- **Expected Output:** Active workflow phases with items render expanded.\n\n### 1.8 Empty Phases Remain Collapsed\n- **Behavior:** The existing behavior of collapsing empty phases (phases with zero items) must continue to work alongside the new default collapse for 'done' and 'final-human-approval'.\n- **Success Criteria:** The template condition uses `or` to combine both the empty check and the stage name checks.\n- **Expected Output:** An empty 'ideas' phase is collapsed. An empty 'done' phase is collapsed. A non-empty 'done' phase is also collapsed.\n\n## 2. Edge Cases\n\n### 2.1 'done' Phase with Zero Items\n- The phase should be collapsed (both the existing empty-stage logic and the new stage-name logic apply). No conflict expected since both conditions trigger the same CSS classes.\n\n### 2.2 'done' Phase with Many Items (50+)\n- The phase should still render collapsed. The item count badge should show the correct count. Expanding should reveal all items without layout issues.\n\n### 2.3 'final-human-approval' Phase with Exactly One Item\n- The phase should be collapsed by default. Expanding should show the single item. The count badge should show '1'.\n\n### 2.4 Rapid Toggle (Expand/Collapse/Expand)\n- Quickly clicking the toggle button multiple times should result in a consistent final state matching the last click action.\n\n### 2.5 Polling Refresh During Toggle Animation\n- If a polling refresh occurs while the user is mid-click on a toggle, the state-preservation logic should still correctly reflect the user's last toggled state.\n\n### 2.6 New Item Added to Collapsed 'done' Phase\n- When an item moves to 'done' while the phase is collapsed, the item count badge should update to reflect the new count. The phase should remain collapsed.\n\n### 2.7 Board with No 'done' or 'final-human-approval' Phases Present\n- If a board configuration does not include these phases, no errors should occur. The collapse logic should simply not apply.\n\n## 3. What Constitutes Failure\n\n### 3.1 Critical Failures\n- The 'done' phase renders expanded (not collapsed) on initial page load when it contains items.\n- The 'final-human-approval' phase renders expanded on initial page load when it contains items.\n- The toggle button is missing or non-functional for collapsed phases.\n- Clicking to expand a collapsed phase does not reveal the items.\n- The item count badge is not visible when the phase is collapsed.\n\n### 3.2 Regression Failures\n- Non-'done'/non-'final-human-approval' phases with items render collapsed by default (they should be expanded).\n- Empty phases that were previously collapsed no longer collapse correctly.\n- The smart polling mechanism overwrites user-expanded state, causing phases to snap back to collapsed during a polling cycle.\n\n### 3.3 No Specific Error Messages Expected\n- This is a presentation-layer change. There are no error messages, API responses, or rollback behaviors to verify. Failures manifest as incorrect visual state (wrong CSS classes applied).\n\n## 4. Out of Scope\n\n- **Visual/pixel-level assertions:** Do not test exact arrow rotation angles, font sizes, colors, or spacing.\n- **Performance benchmarks:** Do not measure rendering time for collapsed vs expanded phases.\n- **localStorage persistence:** Per the plan, user collapse preferences are NOT persisted across full page reloads. Do not test for this.\n- **TUI behavior:** The collapse-by-default change applies only to the web UI. Do not test any TUI collapse behavior.\n- **Configuration options:** There is no setting for which phases should be collapsed. Do not test for configurable collapse behavior.\n- **Backend/API changes:** No backend changes are involved. Do not test API responses or server-side logic beyond template rendering.\n- **Browser compatibility:** Do not test across different browsers or browser versions.\n- **Accessibility (screen readers, keyboard navigation):** Not in scope for this feature unless explicitly requested.\n- **Mobile/responsive layout:** Do not test collapse behavior at different viewport sizes.",
+  "impl_notes": "Feature already implemented in server/templates/index.html. The collapse-by-default logic for 'done' and 'final-human-approval' phases is present at lines 958 and 962. The code uses 'or' conditions to collapse these phases along with empty stages. Smart polling preserves user-expanded state. Verified: build passes, Go tests pass.",
+  "ideation_summaries": [
+    "The 'done' and 'final-human-approval' phases should be collapsed by default in the webui to reduce visual clutter. The approach is straightforward: modify the Go template conditions in index.html that control the collapsed/hidden CSS classes on stage toggles and stage bodies. Currently these phases only collapse when empty (no features). Adding `(eq .Stage \"done\")` and `(eq .Stage \"final-human-approval\")` checks to the existing template conditionals will collapse them by default while still allo",
+    "The proposed approach of adding template conditions to collapse 'done' and 'final-human-approval' phases is sound and already appears implemented in the current codebase (lines 900 and 904 of index.html). However, there are two gaps worth noting: (1) The HTMX polling refresh logic (around line 395-421) preserves collapsed state during updates, which means if a user expands these phases to check something, they'll stay expanded across refreshes \u2014 this is good UX but should be verified it works co",
+    "The collapse-by-default behavior for 'done' and 'final-human-approval' is already correctly implemented in the template (index.html lines 900 and 904) using `(eq .Stage \"done\")` and `(eq .Stage \"final-human-approval\")` conditions on both the toggle button's 'collapsed' class and the body's 'hidden' class. The smart polling logic (lines 395-400) correctly preserves user-toggled state across 5-second refresh cycles by reading the current collapsed class before applying updates. The second reviewer",
+    "After reviewing the implementation at index.html lines 901 and 905, the collapse-by-default logic for 'done' and 'final-human-approval' is correctly implemented and the polling state-preservation logic at lines 398-421 properly handles user-toggled expansion across refreshes. One minor gap worth noting: the current logic collapses these phases even when they contain zero items (the `or (not .Features)` check already handles empty stages), meaning the done/final-human-approval conditions are only"
+  ],
+  "Ideation": "The core problem is visual clutter in the web UI: the 'done' and 'final-human-approval' phases display expanded by default, filling the board with completed or awaiting-approval items that users rarely need to interact with during normal workflow. The solution is to collapse these phases by default by adding `(eq .Stage \"done\")` and `(eq .Stage \"final-human-approval\")` conditions to the Go template conditionals in index.html that control the 'collapsed' CSS class on the toggle button and the 'hidden' CSS class on the stage body.\n\nThe implementation has already been applied at index.html lines 900-905, where both conditions are correctly set. The smart HTMX polling logic (lines 395-421) preserves user-toggled state across 5-second refresh cycles by reading the current collapsed class before applying updates, ensuring that if a user manually expands these phases, they remain expanded until the page is reloaded \u2014 a good UX behavior that works correctly with the collapse-by-default change.\n\nOne subtle point noted in review: the collapse conditions apply even when these phases are empty (zero items), but since the existing `(not .Features)` check already collapses empty stages, the done/final-human-approval conditions are only redundantly active for empty stages and exclusively active for non-empty ones. This overlap is harmless and the overall logic is sound.\n\nNo alternative approaches were seriously considered since the template-based solution is minimal, direct, and fully reversible by user interaction. The main risk \u2014 that users might not realize items exist in collapsed phases \u2014 is mitigated by the visible toggle button and item count indicators remaining visible even when collapsed.",
+  "history": [
+    {
+      "ts": "2026-03-13T19:04Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T19:20Z",
+      "stage": "IDEATING",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-13T19:33Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-13T19:33Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T19:34Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-13T19:35Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T19:35Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-13T19:36Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis"
+    },
+    {
+      "ts": "2026-03-13T19:36Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-13T21:24Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-13T21:24Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T21:25Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-13T21:25Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-13T21:26Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-13T21:26Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-14T02:59Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-14T02:59Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-14T03:00Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-14T03:01Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-14T03:01Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-14T03:03Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-14T03:03Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-14T03:03Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-14T03:07Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-14T03:07Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T03:08Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation is correct and complete. The Go template at index.html lines 958 a..."
+    },
+    {
+      "ts": "2026-03-14T03:08Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-14T19:05Z",
+      "stage": "DONE",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-14T19:05Z",
+      "stage": "DONE",
+      "note": "Done script 'deploy-web-app' triggered"
+    },
+    {
+      "ts": "2026-03-14T19:06Z",
+      "stage": "DONE",
+      "note": "Done script 'deploy-web-app' completed (exit 0)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-13T21:26Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-14T03:08Z",
+      "verdict": "PASS",
+      "summary": "Implementation is correct and complete. The Go template at index.html lines 958 and 962 correctly applies 'collapsed'/'hidden' CSS classes to 'done' and 'final-human-approval' phases using an 'or' conditional that also preserves existing empty-phase collapse behavior. Smart polling (lines 426-449) correctly preserves user-toggled state across refresh cycles. CSS rules at lines 159 and 177 handle the visual presentation. The stage count badge is inside the toggle button (line 959), remaining v...",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-13T20:07:17.163707",
+    "verdict": "FAIL",
+    "results": {
+      "passed": 0,
+      "failed": 0,
+      "errors": 0,
+      "go_tests": "Pass (ok mad-server 25.898s)",
+      "python_tests": "32 failed, 738 passed (not related to this feature)",
+      "feature_specific_tests": "NONE - No tests exist for this feature"
+    },
+    "feedback": "NO TEST COVERAGE FOR THIS FEATURE. While the implementation appears correct based on code review (server/templates/index.html lines 958, 962 add 'collapsed'/'hidden' classes for 'done' and 'final-human-approval' phases, line 959 places stage-count inside toggle button, lines 426-428 preserve user-expanded state during polling), there are NO automated tests that specifically verify this web UI presentation-layer feature. The test spec requires verifying CSS classes in rendered HTML, but no tests exist for this. Go tests pass but don't test HTML output. Python tests don't include web UI collapse tests."
+  }
+}

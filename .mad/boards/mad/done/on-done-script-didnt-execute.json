@@ -1,0 +1,241 @@
+{
+  "id": "a3413be9",
+  "board": "mad",
+  "title": "On-done script didn't execute",
+  "type": "bug",
+  "created": "2026-03-13T16:32Z",
+  "description": "I don't think the on-done script actually executed.  We need some sort of \"audit trail\" for that - perhaps if we run a script because an item was supposed to run it when it was makred done, we add that to the history (script triggered, script done)?  Also, please double check that the done script actually IS triggered.  I'll check that box on this ticket.",
+  "done_script": "deploy-web-app",
+  "plan": "## Root Cause Analysis\n\nThe bug has two distinct issues:\n\n1. **Daemon thread kills script prematurely**: The done script is executed in a background thread marked as `daemon=True`. Since the script runs a full AI agent session (which takes minutes), the parent process (TUI or pipeline CLI) almost certainly exits before the thread finishes. Daemon threads are killed when the parent process exits, meaning the script never completes.\n\n2. **No audit trail**: There are zero history entries written to the feature's JSON when a done script is triggered, completes, or fails. The only evidence is a log file that the thread tries to write on completion \u2014 but since the thread is killed early (issue #1), even that log is never written.\n\n## Impact Assessment\n\n- **Severity: High** \u2014 Done scripts silently never complete. Users have no way to know whether a script ran, succeeded, or failed.\n- **Affected functionality**: All paths that move a feature to \"done\" trigger this bug \u2014 approval from final-human-approval in the TUI, moving to done via web UI, pipeline CLI completion, and direct phase promotion. All four call sites are equally affected.\n- **Related risk**: The script log saving mechanism inside the thread also never fires, so there's no fallback evidence of execution.\n\n## Fix Strategy\n\n### Part 1: Ensure script threads survive process exit\n\nKeep the daemon thread model but add a module-level registry of pending script threads and an `atexit` handler that joins them with a generous timeout. This ensures:\n- Normal operation is unaffected (no blocking unless scripts are running)\n- When the process exits with live scripts, it waits for them to finish (up to timeout)\n- The TUI doesn't hang indefinitely on exit \u2014 the timeout provides a safety valve\n\n### Part 2: Add audit trail via feature history\n\nWrite history entries to the feature's JSON at two points:\n1. **Before spawning the thread** (synchronous): A \"script triggered\" entry. This is never lost even if the process crashes.\n2. **After script completes or fails** (inside the thread): A \"script completed\" or \"script failed\" entry. This is safe because the feature is in the \"done\" directory and won't be moved again, eliminating path-change race conditions.\n\nThe feature's existing `add_history()` mechanism is the right place for this \u2014 it's where users already look for lifecycle events.\n\n## Risks\n\n- **atexit + TUI terminal state**: The atexit handler runs after the TUI has torn down its terminal state, so the join is safe (no terminal conflicts). However, if the script thread itself tries to interact with the TUI after teardown, it could error \u2014 the thread should be self-contained.\n- **Timeout choice**: Too short and scripts still get killed; too long and users wait on exit. A generous default (e.g., 5-10 minutes) with a log message explaining the wait is appropriate.\n- **Thread safety of add_history()**: The completion history write happens inside the thread. Since the feature file is in \"done\" and no other process moves it, there's no race on the file path. However, concurrent JSON reads/writes to the same file should use a brief lock or atomic write pattern.\n\n## Scope\n\n### In scope\n- Fixing the daemon thread lifecycle so scripts complete\n- Adding history entries for script trigger/completion/failure\n- The script execution module only \u2014 no changes to callers needed\n\n### Out of scope\n- Changing how scripts are invoked (still thread-based, not subprocess)\n- Adding UI indicators for running scripts (separate enhancement)\n- Changing the script execution model itself",
+  "plan_exploration_summary": "",
+  "impl_spec": "## Implementation Spec: On-done script didn't execute\n\n### Task 1: Add pending-script thread registry and atexit handler\n\n**File:** `pipeline/scripts.py`\n\n**Changes:**\n\n1. Add `import atexit` and `import threading` at the top of the file (move the `import threading` out of `execute_done_script`).\n\n2. Add module-level registry and atexit handler after the imports:\n\n```python\n_pending_scripts: list[threading.Thread] = []\n_pending_scripts_lock = threading.Lock()\n_SCRIPT_WAIT_TIMEOUT = 600  # 10 minutes\n\ndef _wait_for_pending_scripts():\n    \"\"\"atexit handler: join all pending script threads so they complete before process exit.\"\"\"\n    with _pending_scripts_lock:\n        threads = list(_pending_scripts)\n    if not threads:\n        return\n    log.info(f\"Waiting for {len(threads)} pending done script(s) to finish (timeout: {_SCRIPT_WAIT_TIMEOUT}s)...\")\n    for t in threads:\n        t.join(timeout=_SCRIPT_WAIT_TIMEOUT)\n        if t.is_alive():\n            log.warning(f\"Script thread {t.name} did not finish within timeout\")\n\natexit.register(_wait_for_pending_scripts)\n```\n\n3. In `execute_done_script()`, after `thread.start()`, register the thread and set up cleanup:\n\n```python\nwith _pending_scripts_lock:\n    _pending_scripts.append(thread)\n```\n\n4. In the `run_in_background()` closure inside `execute_done_script()`, add a `finally` block that removes the thread from `_pending_scripts`:\n\n```python\ndef run_in_background():\n    try:\n        ...\n    except Exception as e:\n        ...\n    finally:\n        with _pending_scripts_lock:\n            if thread in _pending_scripts:\n                _pending_scripts.remove(thread)\n```\n\n**Dependencies:** None. This is self-contained.\n\n---\n\n### Task 2: Add \"script triggered\" history entry (synchronous, before thread spawn)\n\n**File:** `pipeline/scripts.py`\n\n**Changes:**\n\nIn `execute_done_script()`, after finding the script and before creating the thread, add a synchronous history entry. This requires the feature's `add_history()` method. The `feature` parameter is already a `FeatureFile` instance.\n\nAdd this line before the thread creation:\n\n```python\nfeature.add_history(\"DONE\", f\"Done script '{script.id}' triggered\")\n```\n\nThis write is synchronous and happens before the thread spawns, so it is never lost even if the process crashes afterward.\n\n**Dependencies:** None.\n\n---\n\n### Task 3: Add \"script completed\" / \"script failed\" history entries (inside thread)\n\n**File:** `pipeline/scripts.py`\n\n**Changes:**\n\nInside the `run_in_background()` closure in `execute_done_script()`, after `run_script()` returns, write a completion or failure history entry. The feature file is in the \"done\" directory at this point and won't be moved, so writing to it from the thread is safe.\n\nHowever, we need to reload the FeatureFile from disk inside the thread since the in-memory object may be stale (other processes could have written to it). Use `FeatureFile(feature.path)` to reload.\n\n```python\ndef run_in_background():\n    context = f\"Triggered by completion of {feature.item_type}: {feature.title}\"\n    try:\n        run_script(script, config, status, context)\n        log.info(f\"Done script '{script.id}' completed for feature {feature.id}\")\n        try:\n            from state import FeatureFile as FF\n            updated = FF(feature.path)\n            updated.add_history(\"DONE\", f\"Done script '{script.id}' completed (exit 0)\")\n        except Exception as he:\n            log.warning(f\"Failed to write completion history: {he}\")\n    except Exception as e:\n        log.error(f\"Done script '{script.id}' failed for feature {feature.id}: {e}\")\n        try:\n            from state import FeatureFile as FF\n            updated = FF(feature.path)\n            updated.add_history(\"DONE\", f\"Done script '{script.id}' failed: {e}\")\n        except Exception as he:\n            log.warning(f\"Failed to write failure history: {he}\")\n    finally:\n        with _pending_scripts_lock:\n            if thread in _pending_scripts:\n                _pending_scripts.remove(thread)\n```\n\n**Notes:**\n- We reload the feature from disk inside the thread to avoid stale data.\n- The history writes inside the thread are wrapped in try/except so that a failure to write history doesn't mask the actual script outcome.\n- The `from state import FeatureFile` is done inside the function to avoid circular import issues (scripts.py is imported by other modules that also import state.py).\n\n**Dependencies:** Task 1 (for the `_pending_scripts` cleanup in `finally`).\n\n---\n\n### Task 4: Keep thread as daemon but name it for debuggability\n\n**File:** `pipeline/scripts.py`\n\n**Changes:**\n\nKeep `daemon=True` on the thread (the atexit handler handles the lifecycle). Add a descriptive name:\n\n```python\nthread = threading.Thread(\n    target=run_in_background,\n    daemon=True,\n    name=f\"done-script-{script.id}-{feature.id}\"\n)\n```\n\nThe thread stays daemon so that if the atexit handler times out, the process still exits cleanly rather than hanging forever.\n\n**Dependencies:** None.\n\n---\n\n### Summary of all changes\n\nAll changes are in a single file: `pipeline/scripts.py`\n\n1. Move `import threading` to top-level, add `import atexit`\n2. Add `_pending_scripts` list, `_pending_scripts_lock`, `_SCRIPT_WAIT_TIMEOUT`, and `_wait_for_pending_scripts()` atexit handler\n3. In `execute_done_script()`: add synchronous history write before thread spawn\n4. In `execute_done_script()`: name the thread descriptively\n5. In `execute_done_script()`: register thread in `_pending_scripts` after `thread.start()`\n6. In `run_in_background()`: reload feature from disk and write completion/failure history; remove thread from `_pending_scripts` in `finally`\n\nNo changes needed to callers, state.py, or any other file.",
+  "test_spec": "# Test Specification: On-done script didn't execute\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Script thread survives process exit (atexit handler)\n\n**Behavior:** When a done script is running and the process exits, the atexit handler joins the script thread, allowing it to complete before the process terminates.\n\n**Success criteria:**\n- A module-level `_pending_scripts` list exists and tracks all active script threads.\n- When `execute_done_script()` spawns a thread, that thread appears in `_pending_scripts`.\n- When the thread completes, it removes itself from `_pending_scripts`.\n- The registered atexit handler calls `join(timeout=...)` on all threads in `_pending_scripts`.\n- If the thread finishes before the timeout, the process exits cleanly.\n- If the thread does NOT finish before the timeout, a warning is logged and the process still exits (does not hang forever).\n\n**Expected outputs:**\n- After a script thread finishes normally, `_pending_scripts` is empty.\n- If atexit fires with a live thread, the handler logs \"Waiting for N pending done script(s)...\".\n- If a thread exceeds the timeout, the handler logs a warning naming the specific thread.\n\n### 1.2 Synchronous \"script triggered\" history entry\n\n**Behavior:** Before spawning the background thread, `execute_done_script()` writes a history entry to the feature's JSON file indicating the script was triggered.\n\n**Success criteria:**\n- After `execute_done_script()` returns (which is nearly instant since the work is in a thread), the feature's history array contains an entry with stage \"DONE\" and a note mentioning the script ID and the word \"triggered\".\n- This history entry exists even if the thread has not started yet \u2014 it is synchronous.\n- The history entry is written via `feature.add_history()`.\n\n**Expected outputs:**\n- Feature JSON history includes: `{\"stage\": \"DONE\", \"note\": \"Done script '<script_id>' triggered\"}`\n\n### 1.3 Thread writes \"script completed\" history entry on success\n\n**Behavior:** When the done script runs successfully (exit code 0), the background thread writes a completion history entry to the feature's JSON.\n\n**Success criteria:**\n- After the script thread completes successfully, the feature's history array contains an entry with stage \"DONE\" and a note containing the script ID and \"completed\".\n- The feature file is reloaded from disk inside the thread before writing (to avoid stale data).\n- If the history write itself fails, a warning is logged but the script's success is not affected.\n\n**Expected outputs:**\n- Feature JSON history includes: `{\"stage\": \"DONE\", \"note\": \"Done script '<script_id>' completed (exit 0)\"}`\n\n### 1.4 Thread writes \"script failed\" history entry on failure\n\n**Behavior:** When the done script fails (throws an exception), the background thread writes a failure history entry to the feature's JSON.\n\n**Success criteria:**\n- After the script thread fails, the feature's history array contains an entry with stage \"DONE\" and a note containing the script ID, \"failed\", and the error message.\n- The feature file is reloaded from disk inside the thread before writing.\n- If the history write itself fails, a warning is logged.\n\n**Expected outputs:**\n- Feature JSON history includes: `{\"stage\": \"DONE\", \"note\": \"Done script '<script_id>' failed: <error message>\"}`\n\n### 1.5 Thread naming\n\n**Behavior:** The spawned thread has a descriptive name that includes the script ID and feature ID.\n\n**Success criteria:**\n- The thread's `name` attribute matches the pattern `done-script-<script_id>-<feature_id>`.\n\n### 1.6 Thread remains daemon\n\n**Behavior:** The thread is still created with `daemon=True` so that the atexit timeout is the safety valve, not a non-daemon thread blocking forever.\n\n**Success criteria:**\n- `thread.daemon` is `True`.\n\n### 1.7 No-op when feature has no done_script\n\n**Behavior:** If the feature's `done_script` field is empty/None, `execute_done_script()` returns immediately without spawning a thread or writing history.\n\n**Success criteria:**\n- No thread is created.\n- No history entry is written.\n- `_pending_scripts` remains unchanged.\n\n### 1.8 No-op when script ID not found in scripts.json\n\n**Behavior:** If the feature references a `done_script` that doesn't exist in scripts.json, a warning is logged and no thread is spawned.\n\n**Success criteria:**\n- A warning is logged mentioning the missing script ID.\n- No thread is created.\n- No history entry is written.\n\n## 2. Edge Cases\n\n### 2.1 Multiple concurrent done scripts\n- If two features are moved to done simultaneously, both script threads should be registered in `_pending_scripts` and the atexit handler should join both.\n- The `_pending_scripts_lock` should prevent race conditions when adding/removing threads concurrently.\n\n### 2.2 Script thread completes before atexit fires\n- The thread should have already removed itself from `_pending_scripts`, so the atexit handler has nothing to join and returns immediately.\n\n### 2.3 Feature file becomes unreadable inside thread\n- If the feature JSON file is deleted or corrupted between the synchronous \"triggered\" write and the thread's attempt to reload it, the thread should log a warning but not crash.\n- The script execution result (success/failure) should still be returned correctly even if the history write fails.\n\n### 2.4 atexit handler with empty pending list\n- If no scripts are running when the process exits, the atexit handler should return immediately with no log output.\n\n### 2.5 Thread cleanup after exception in run_script\n- If `run_script()` raises an unexpected exception, the thread must still remove itself from `_pending_scripts` in the `finally` block.\n\n### 2.6 History write failure does not mask script outcome\n- If `add_history()` raises an exception inside the thread, the exception should be caught and logged as a warning. The script's actual success or failure should still be logged correctly via the existing log.info/log.error calls.\n\n### 2.7 Concurrent history writes to the same feature file\n- Although unlikely (a done feature shouldn't have other writers), if two threads attempt to write history to the same feature file simultaneously, neither should corrupt the JSON. The implementation should use atomic writes or brief locking.\n\n## 3. What Constitutes Failure\n\n### 3.1 Script thread killed before completion\n- **Failure:** The process exits and the script thread is terminated before `run_script()` returns, with no completion/failure history entry.\n- **Expected:** The atexit handler should have joined the thread, allowing it to finish.\n\n### 3.2 Missing \"triggered\" history entry\n- **Failure:** After `execute_done_script()` returns, the feature's history does not contain a \"triggered\" entry.\n- **Expected:** The synchronous history write should always succeed if the feature file is writable.\n\n### 3.3 Missing completion/failure history entry\n- **Failure:** After the script thread finishes, the feature's history has a \"triggered\" entry but no \"completed\" or \"failed\" entry, AND no warning was logged about a history write failure.\n- **Expected:** Either a completion/failure entry exists, or a warning was logged explaining why it couldn't be written.\n\n### 3.4 Thread leak in _pending_scripts\n- **Failure:** After a script thread finishes (successfully or with error), the thread is still present in `_pending_scripts`.\n- **Expected:** The `finally` block always removes the thread.\n\n### 3.5 Process hangs on exit\n- **Failure:** The process blocks indefinitely during the atexit handler because a script thread never finishes.\n- **Expected:** The join timeout expires, a warning is logged, and the process exits.\n\n### 3.6 Regression: existing behavior broken\n- **Failure:** The done script no longer executes at all, or `execute_done_script()` blocks the caller.\n- **Expected:** The function still returns immediately after spawning the thread. The script still runs in the background.\n\n## 4. Out of Scope\n\n- **UI indicators:** Whether the TUI or web UI shows a running/completed script indicator is not part of this test spec.\n- **Visual assertions:** No testing of terminal rendering, TUI layout, or web UI appearance.\n- **Performance benchmarks:** No measurement of how long scripts take or what the ideal timeout value should be.\n- **Script execution content:** Whether the done script's actual command/task succeeds is irrelevant \u2014 we only test that the execution lifecycle (trigger, run, complete/fail) is properly tracked.\n- **Changes to callers:** We do not test that callers of `execute_done_script()` have changed \u2014 the fix is entirely within scripts.py.\n- **Subprocess or multiprocessing alternatives:** We do not test alternative execution models \u2014 the fix uses the existing thread model with atexit.\n- **Terminal state conflicts:** We do not test TUI teardown interactions with the atexit handler \u2014 the handler runs after TUI cleanup and is designed to be safe.\n- **Script log file writing:** The existing `_save_script_log()` mechanism is not changed and not re-tested.\n- **load_scripts() behavior:** Loading and parsing scripts.json is existing functionality and not under test.",
+  "impl_notes": "Fixed the 'on-done-script-didnt-execute' bug. The main fix was moving _pending_scripts.append(thread) to BEFORE thread.start() to prevent a race condition where quickly-completing threads would never be removed from the pending list. Added 10 new tests covering: atexit handler behavior (waits for threads, logs waiting message, handles timeout), synchronous 'triggered' history entry, completion/failure history entries written by thread, thread naming, and daemon status. All 50 tests pass.",
+  "ideation_summaries": [
+    "Investigated the done_script execution path and identified two root-cause concerns plus a concrete audit-trail proposal. First, `execute_done_script()` in `pipeline/scripts.py` runs the script in a daemon thread (`daemon=True`), which means the Python process can exit before the script finishes \u2014 this is likely why the script appeared not to execute. Second, there is zero feedback written back to the feature's history array when a done_script is triggered or completes; the only evidence is a tim",
+    "The previous proposal correctly identifies the daemon thread as a root cause and the lack of audit trail as a gap, but has several weaknesses. First, changing daemon=True to daemon=False is risky in the TUI context \u2014 if the script hangs or takes a long time, it will block the entire TUI process from exiting cleanly, potentially leaving orphan terminal state. A better approach would be to keep the daemon thread but use atexit hooks or signal handlers that join with a timeout, or better yet, use s",
+    "Both previous rounds correctly identify the daemon thread and missing audit trail as the core issues, but round 2's critique of round 1 overcomplicates the solution. The real execution model matters here: `run_script()` doesn't run a shell command directly \u2014 it invokes `runner.headless()`, which spawns a full AI agent session. This means execution takes minutes, not milliseconds, making the daemon=True problem even worse since the TUI or pipeline process is very likely to exit before the agent c",
+    "Round 3's subprocess.Popen proposal fundamentally misunderstands the execution model it correctly identified: run_script() calls runner.headless(), which is a Python-level AI agent session \u2014 not a shell command. You cannot subprocess.Popen a Python method call with start_new_session=True; you'd need to wrap it in a separate CLI entry point or use multiprocessing, adding significant complexity. The sidecar JSON status file approach also introduces its own problems: it creates an ever-growing set "
+  ],
+  "Ideation": "The bug has two distinct problems: the done_script likely never completes, and there is no audit trail when it runs. The root cause of the first issue is that `execute_done_script()` in `pipeline/scripts.py` spawns the script in a daemon thread (`daemon=True`). Since `run_script()` internally calls `runner.headless()` \u2014 a full AI agent session that takes minutes to complete \u2014 the parent process (TUI or pipeline) almost certainly exits before the thread finishes, and daemon threads are killed on process exit. The second issue is that no history entries are written to the feature's JSON when a done_script is triggered or completes, leaving no evidence the script ran at all.\n\nThe key tension in solving the lifecycle problem is that the script runs a long-lived Python-level AI agent session, not a simple shell command. This rules out `subprocess.Popen` with `start_new_session=True` (which would require wrapping `runner.headless()` in a dedicated CLI entry point or using `multiprocessing`, adding significant complexity). Changing `daemon=True` to `daemon=False` is also problematic in the TUI context, where a hanging or slow script would block the process from exiting cleanly and leave orphaned terminal state.\n\nThe consensus solution is: keep the daemon thread but register it in a module-level list and add an `atexit` handler that joins all pending script threads with a generous timeout. This only delays process exit when there are live scripts \u2014 it does not block normal operation. Critically, the 'script triggered' history entry should be written synchronously before the thread is spawned (so it is never lost even if the process later crashes), and the thread itself can safely write a 'script completed/failed' entry back to the feature's JSON once done, because a feature in the 'done' directory will not be moved again, eliminating any path-change race condition.\n\nThis approach keeps the audit trail inside the feature's own history file (where users already look), avoids new file proliferation or polling complexity, and fixes the daemon-thread problem with minimal added complexity. Implementation is localized to `pipeline/scripts.py`: add a `_pending_scripts` list, an `atexit.register` call, and two history-write calls (one before spawning, one at completion/failure inside the thread).",
+  "history": [
+    {
+      "ts": "2026-03-13T16:32Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T16:56Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-13T16:59Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-13T16:59Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T17:00Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-13T17:01Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T17:02Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-13T17:03Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis"
+    },
+    {
+      "ts": "2026-03-13T17:03Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-13T17:06Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-13T17:08Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T17:09Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-13T17:09Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-13T17:10Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-13T17:10Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-13T17:17Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-13T17:17Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-13T17:19Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T17:20Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T17:20Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T17:23Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T17:23Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T17:23Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T17:25Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-13T17:25Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T17:26Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Race condition: thread registered in _pending_scripts AFTER start(), causing leak..."
+    },
+    {
+      "ts": "2026-03-13T17:26Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T17:39Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T17:39Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T17:39Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T17:41Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-13T17:41Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T17:43Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation correctly addresses both root causes: daemon thread lifecycle (ate..."
+    },
+    {
+      "ts": "2026-03-13T17:43Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-13T18:56Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    },
+    {
+      "ts": "2026-03-13T18:56Z",
+      "stage": "DONE",
+      "note": "Done script 'deploy-web-app' triggered"
+    },
+    {
+      "ts": "2026-03-13T18:57Z",
+      "stage": "DONE",
+      "note": "Done script 'deploy-web-app' completed (exit 0)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-13T17:10Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-13T17:26Z",
+      "verdict": "FAIL",
+      "summary": "Race condition: thread registered in _pending_scripts AFTER start(), causing leak if thread finishes before registration. Test coverage inadequate: only 2 of 8 spec behaviors tested.",
+      "feedback": "Two issues must be fixed:\n\nRace condition in thread registration (scripts.py:246-248): thread.start() is called on line 246, but the thread isn't added to _pending_scripts until line 248. If the thread's run_in_background() completes before line 248, the finally block (line 238) finds the thread is NOT in _pending_scripts (it hasn't been added yet) and does nothing. Then line 248 adds the already-finished thread, which is never removed \u2014 a permanent leak. Fix: move the _pending_scripts.append(thread) call to BEFORE thread.start().\n\nMissing tests for 6 of 8 required behaviors: The test spec requires verification of:\n   - 1.1: atexit handler joins pending threads, logs waiting message, handles timeout\n   - 1.2: synchronous 'triggered' history entry written before thread spawn (verify feature.add_history called with 'DONE' and 'triggered')\n   - 1.3: 'completed (exit 0)' history entry written by thread on success (verify FeatureFile reloaded from disk and add_history called)\n   - 1.4: 'failed' history entry written by thread on failure\n   - 1.5: thread name matches 'done-script-<script_id>-<feature_id>'\n   - 1.6: thread.daemon is True\n   \n   All of these are straightforward to test with mocks and should be added to TestExecuteDoneScript."
+    },
+    {
+      "ts": "2026-03-13T17:43Z",
+      "verdict": "PASS",
+      "summary": "Implementation correctly addresses both root causes: daemon thread lifecycle (atexit handler with pending scripts registry) and missing audit trail (synchronous triggered + thread-based completed/failed history entries). Race condition from first review fixed. All 50 tests pass covering all 8 spec behaviors.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-13T10:41:26.761760",
+    "verdict": "PASS",
+    "results": {
+      "passed": 50,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 50 tests in test_scripts.py pass. TestExecuteDoneScript class has 14 tests covering all required behaviors from the test spec: (1.1) atexit handler waits for threads, logs waiting message, handles timeout; (1.2) synchronous triggered history entry; (1.3) thread writes completion history; (1.4) thread writes failure history; (1.5) thread naming; (1.6) daemon status; (1.7) no-op when done_script empty; (1.8) no-op when script not found. Additional tests verify run_script is called correctly, exceptions are handled, thread is added before start and removed after completion. Coverage is adequate."
+  }
+}

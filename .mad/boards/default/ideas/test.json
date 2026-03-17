@@ -1,0 +1,46 @@
+{
+  "id": "test123",
+  "board": "default",
+  "title": "Test Feature",
+  "description": "Test description",
+  "created": "2024-01-01T00:00:00Z",
+  "ideation_summaries": [
+    "Default round response"
+  ],
+  "history": [
+    {
+      "ts": "2026-03-17T18:37Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-17T18:37Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (claude/default)"
+    },
+    {
+      "ts": "2026-03-17T18:37Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 1)"
+    },
+    {
+      "ts": "2026-03-17T18:37Z",
+      "stage": "IDEATING",
+      "note": "Consensus reached after 1 rounds"
+    },
+    {
+      "ts": "2026-03-17T18:37Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    }
+  ],
+  "ideation_cycle_verdicts": [
+    {
+      "cycle": 1,
+      "verdict": "consensus",
+      "reason": "agree",
+      "rounds_completed": 1
+    }
+  ],
+  "Ideation": "Test\n\n[Ideation concluded by consensus after 1 rounds, 1 cycles.]"
+}

@@ -1,0 +1,155 @@
+{
+  "id": "f94b39c8",
+  "board": "mad",
+  "title": "Update prompt to weight description over ideation",
+  "type": "feature",
+  "created": "2026-03-13T17:01Z",
+  "description": "Need to update the planning prompt to weight description over ideation if there are discrepencies.  Sometimes I interact with AI *after* the ideation phase.",
+  "done_script": "",
+  "plan": "## What\nAdd explicit guidance to the planning prompt templates (both feature and bug variants) instructing the planning agent that the feature description is the authoritative source of truth and should take precedence over ideation summaries when there are discrepancies between them.\n\n## Why\nThe user sometimes interacts with AI or refines their thinking after the ideation phase has completed. This means the description field may contain updated, more accurate requirements while the ideation summaries reflect an earlier understanding. Without explicit priority guidance, the planning agent may follow stale ideation content that contradicts the user's current intent.\n\n## Impact\n- Affects the output quality of all future planning phases for both features and bugs\n- No impact on other pipeline phases (impl-spec, testing, review) since those don't reference ideation directly\n- No structural or schema changes required\n\n## Risks\n- Low risk: this is a prompt-only change with no code logic changes\n- Minor risk that in rare cases where ideation is more detailed/correct and the description is vague, the agent might under-weight useful ideation context. However, this matches the user's intent since they control the description directly.\n\n## Scope\n- In scope: Adding a priority/precedence note to plan-headless.md and plan-bug.md templates\n- Out of scope: Changing how ideation summaries are generated or stored, modifying the prompt construction logic in phases.py, changing any other prompt templates",
+  "plan_exploration_summary": "Explored the planning prompt system. Two template files are used: plan-headless.md (features) and plan-bug.md (bugs). Both include {description} at the top and {ideation_synthesis} in a Feature Context section, but neither provides guidance on priority when they conflict. In phases.py (lines 887-897), the planning prompt is built by substituting feature.description and feature.Ideation into the template. The description comes from the user directly; ideation comes from AI debate rounds synthesized via compact.md. The user sometimes updates the description after ideation has run, meaning the description reflects the user's latest intent while ideation may be stale or divergent.",
+  "impl_spec": "## Implementation Spec: Update prompt to weight description over ideation\n\n### Task 1: Add precedence note to plan-headless.md\n\n**File:** `pipeline/prompts/plan-headless.md`\n\n**What:** Add a \"Source Priority\" section immediately after the \"## Feature Context\" header and before the \"**Ideation (synthesized):**\" line.\n\n**Exact change:** Insert the following block between line 7 (the `---` separator) and line 9 (\"You are an AI helping plan this feature\"):\n\n```\n## Source Priority\n\n**IMPORTANT:** The feature **description** above is the authoritative source of truth. Ideation summaries below provide useful background context and exploration, but if there is any conflict or discrepancy between the description and the ideation content, **always defer to the description**. The user may have refined their requirements after ideation completed.\n```\n\n**Placement rationale:** Placing this before the ideation section ensures the agent reads the precedence rule before encountering ideation content. Placing it after the description field means the agent has already read the authoritative source.\n\n**Dependencies:** None\n\n### Task 2: Add precedence note to plan-bug.md\n\n**File:** `pipeline/prompts/plan-bug.md`\n\n**What:** Add the same \"Source Priority\" section to the bug planning template, in the equivalent location.\n\n**Exact change:** Insert the following block between line 7 (the `---` separator) and line 9 (\"You are an AI helping plan a bug fix\"):\n\n```\n## Source Priority\n\n**IMPORTANT:** The bug **description** above is the authoritative source of truth. Ideation summaries below provide useful background context and exploration, but if there is any conflict or discrepancy between the description and the ideation content, **always defer to the description**. The user may have refined their requirements after ideation completed.\n```\n\n**Placement rationale:** Same as Task 1 \u2014 consistent placement across both templates.\n\n**Dependencies:** None (can be done in parallel with Task 1)\n\n### Task 3: Verify placeholder preservation\n\n**What:** After making the edits, confirm that all existing `{placeholder}` template variables remain intact in both files:\n- `{title}`\n- `{description}`\n- `{previous_plan}`\n- `{ideation_synthesis}`\n- `{feature_file_path}`\n- `{checkpoint_instructions}`\n\n**How:** Read both files after editing and verify all placeholders are present and unchanged.\n\n**Dependencies:** Tasks 1 and 2\n\n### Notes\n\n- The new section introduces no new template placeholders \u2014 it is static text only.\n- The wording is intentionally identical in both templates to maintain consistency.\n- No changes to `phases.py` or any other Python code are needed since the prompt templates are loaded as-is with `.format()` substitution on existing placeholders only.",
+  "test_spec": "# Test Specification: Update prompt to weight description over ideation\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Precedence note present in plan-headless.md\n- **Behavior:** The file `pipeline/prompts/plan-headless.md` contains a \"Source Priority\" section that instructs the planning agent to treat the feature description as the authoritative source of truth over ideation summaries.\n- **Success criteria:** The section exists, appears after the `---` separator and before the line \"You are an AI helping plan this feature\", and contains the key phrases: \"authoritative source of truth\", \"always defer to the description\", and \"refined their requirements after ideation completed\".\n- **Expected output:** Reading the file shows the new section in the correct location.\n\n### 1.2 Precedence note present in plan-bug.md\n- **Behavior:** The file `pipeline/prompts/plan-bug.md` contains the same \"Source Priority\" section adapted for bug reports.\n- **Success criteria:** The section exists, appears after the `---` separator and before the line \"You are an AI helping plan a bug fix\", and contains equivalent key phrases about description taking precedence over ideation.\n- **Expected output:** Reading the file shows the new section in the correct location.\n\n### 1.3 All existing template placeholders preserved in plan-headless.md\n- **Behavior:** All existing `{placeholder}` variables remain intact and unmodified after the edit.\n- **Success criteria:** The file contains all of: `{title}`, `{description}`, `{previous_plan}`, `{ideation_synthesis}`, `{feature_file_path}`, `{checkpoint_instructions}`.\n- **Expected output:** A search/scan of the file finds every placeholder exactly once (or in their original count).\n\n### 1.4 All existing template placeholders preserved in plan-bug.md\n- **Behavior:** Same as 1.3 but for the bug template.\n- **Success criteria:** The file contains all of: `{title}`, `{description}`, `{previous_plan}`, `{ideation_synthesis}`, `{feature_file_path}`, `{checkpoint_instructions}`.\n- **Expected output:** A search/scan of the file finds every placeholder exactly once (or in their original count).\n\n### 1.5 No new template placeholders introduced\n- **Behavior:** The added section is static text only and does not introduce any new `{...}` placeholders.\n- **Success criteria:** The new \"Source Priority\" section contains zero `{...}` patterns. The total set of placeholders in each file is unchanged from before the edit.\n- **Expected output:** Counting `{...}` patterns in the new section yields zero.\n\n### 1.6 Templates still render without errors via Python str.format()\n- **Behavior:** Both templates can be loaded and rendered using Python's `.format()` with the existing set of keyword arguments without raising `KeyError` or `IndexError`.\n- **Success criteria:** Calling `.format(title=..., description=..., previous_plan=..., ideation_synthesis=..., feature_file_path=..., checkpoint_instructions=...)` on both templates succeeds without exceptions.\n- **Expected output:** Rendered strings contain the substituted values and the static \"Source Priority\" text.\n\n### 1.7 Wording consistency between templates\n- **Behavior:** The precedence guidance in both templates conveys the same rule with the only difference being \"feature\" vs \"bug\" terminology where appropriate.\n- **Success criteria:** The core instruction (description is authoritative, defer to description over ideation) is semantically identical in both files.\n\n## 2. Edge Cases\n\n### 2.1 Empty ideation synthesis\n- **Behavior:** When `{ideation_synthesis}` is empty or \"No ideation available\", the precedence note should still be present but causes no confusion (it simply has no effect since there's nothing to conflict with).\n- **Success criteria:** Template renders cleanly with `ideation_synthesis=\"\"` and `ideation_synthesis=\"No ideation available\"`.\n\n### 2.2 Empty description\n- **Behavior:** When `{description}` is empty, the precedence note still renders. The note says to defer to description, which would mean deferring to nothing \u2014 this is acceptable since an empty description is a data issue, not a template issue.\n- **Success criteria:** Template renders without error with `description=\"\"`.\n\n### 2.3 Description containing curly braces\n- **Behavior:** If the description contains literal `{` or `}` characters, the template rendering should handle them per Python's `.format()` rules (they would need to be escaped as `{{` and `}}`). This is an existing concern unrelated to this change.\n- **Success criteria:** The new section does not introduce any new vulnerability to this edge case.\n\n### 2.4 Previous plan section present\n- **Behavior:** When `{previous_plan}` is populated (re-planning scenario), the Source Priority section should still appear and still instruct the agent to prefer description over ideation.\n- **Success criteria:** The Source Priority section is not conditionally hidden or affected by the presence of previous plan content.\n\n## 3. What Constitutes Failure\n\n- **Missing section:** Either template file does not contain the Source Priority section after implementation.\n- **Wrong placement:** The Source Priority section appears after the ideation content rather than before it, defeating the purpose of priming the agent.\n- **Broken placeholders:** Any existing `{placeholder}` is missing, misspelled, or duplicated after the edit.\n- **New placeholders:** The added text accidentally contains `{something}` that would cause a `KeyError` during `.format()` rendering.\n- **Rendering error:** Calling `.format()` with the standard keyword arguments raises an exception on either template.\n- **Inconsistent guidance:** One template says to prefer description, the other says something different or omits the guidance entirely.\n- **Modified existing content:** Any existing content in either template (outside the new section) has been altered, removed, or reordered.\n\n## 4. Out of Scope\n\n- **Testing LLM behavior:** We do NOT test whether the planning agent actually follows the precedence instruction. That is an LLM behavioral concern, not a template correctness concern.\n- **Testing phases.py logic:** The prompt construction code in phases.py is not being modified and should not be tested as part of this change.\n- **Testing ideation generation:** How ideation summaries are created or stored is unchanged.\n- **Testing other prompt templates:** Only plan-headless.md and plan-bug.md are in scope. Other prompts (implement.md, review-impl.md, fix-feedback.md, etc.) are not affected.\n- **Performance testing:** No performance implications to test.\n- **UI/TUI testing:** No user interface changes.\n- **End-to-end pipeline runs:** Running the full pipeline to see if plans are \"better\" is subjective and out of scope.\n- **Regression testing of unrelated features:** Only the two template files are modified; no other system behavior should be affected.",
+  "impl_notes": "Now I'll make the edits to both files as specified in the instructions. I need to add the \"Source Priority\" section between the --- separator (line 7) and the \"You are an AI helping...\" line (line 9).\nNow let me verify the changes by reading both files and checking that all placeholders are preserved:\nNow let me verify all placeholders are preserved and test that the templates render correctly:\nAll placeholders are preserved. Let me verify the templates render correctly:",
+  "ideation_summaries": [],
+  "Ideation": "",
+  "history": [
+    {
+      "ts": "2026-03-13T17:01Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T17:01Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-13T17:03Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T17:05Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-13T17:05Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-13T17:05Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible. It correctly identifies the two..."
+    },
+    {
+      "ts": "2026-03-13T17:05Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-13T17:59Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-13T17:59Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-13T18:00Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T18:46Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-13T18:46Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-13T18:47Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T18:48Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T18:48Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T18:51Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T18:51Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T18:51Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T18:54Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-13T18:54Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T18:55Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation is correct. Both plan-headless.md and plan-bug.md have the Source ..."
+    },
+    {
+      "ts": "2026-03-13T18:55Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-13T17:05Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible. It correctly identifies the two template files to modify, explains the rationale clearly, and acknowledges the minor risk of vague descriptions.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-13T18:55Z",
+      "verdict": "PASS",
+      "summary": "Implementation is correct. Both plan-headless.md and plan-bug.md have the Source Priority section correctly placed after the --- separator and before the 'You are an AI helping...' line. All existing placeholders are preserved, no new placeholders introduced, and wording is consistent between templates (only 'feature' vs 'bug' differs). Templates render correctly via the existing str.replace() mechanism in _build_prompt().",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-13T11:54:50.242249",
+    "verdict": "PASS",
+    "results": {
+      "passed": 91,
+      "failed": 9,
+      "errors": 0
+    },
+    "feedback": "All required behaviors verified: (1) Source Priority section present in plan-headless.md with correct key phrases, (2) Source Priority section present in plan-bug.md with correct key phrases, (3) All existing placeholders preserved in both templates, (4) No new placeholders introduced in Source Priority sections, (5) Templates render correctly via Python str.format() with all edge cases (empty ideation, empty description, 'No ideation available', with previous_plan), (6) Wording consistent between templates. The 9 test failures in test_consolidate_phase_execution.py are unrelated to this feature - they concern phase configuration registry, checkpoint markers, and missing write-tests.md template."
+  }
+}

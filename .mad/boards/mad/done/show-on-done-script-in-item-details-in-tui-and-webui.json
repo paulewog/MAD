@@ -1,0 +1,150 @@
+{
+  "id": "0bb67f90",
+  "board": "mad",
+  "title": "Show on-done script in item details in TUI and webui",
+  "type": "feature",
+  "created": "2026-03-13T16:06Z",
+  "description": "I would like to see the configured on-done script in the item details in TUI and webui",
+  "done_script": "",
+  "plan": "This feature is already fully implemented. The on-done script is currently displayed in item details across all interfaces:\n\n**TUI:** When a feature has a done_script set, the detail view shows 'Done Script: {label}' as an always-visible element. It resolves the script ID to a human-readable label from the scripts registry, and shows '[MISSING] {id}' if the script is not found.\n\n**Web UI (Dashboard - index.html):** The feature modal shows the done_script value in a detail row with purple styling when present. A purple 'Script' badge also appears on the card itself.\n\n**Web UI (Client - client.html):** The inline feature detail shows the done_script value identically to the dashboard view, with the same purple styling and card badge.\n\n**Recommendation:** No changes are needed. This feature can be moved directly to done. If the user wants enhancements beyond the current display (e.g., showing the actual script content, the script file path, or making it editable), that would be a separate feature request with different scope.",
+  "plan_exploration_summary": "Explored the TUI (pipeline/tui.py), web dashboard (server/templates/index.html), and web client view (server/templates/client.html). Found that the done_script field is ALREADY displayed in all three views: (1) TUI shows 'Done Script: {label}' via _build_feature_detail_widgets() at line 349-355, resolving the script ID to a human-readable label from the scripts registry. (2) index.html shows done_script in the feature modal at line 575 with purple (#d2a8ff) styling. (3) client.html shows done_script in the inline detail view at line 848 with the same purple styling. Both web templates also display a purple 'Script' badge on the card metadata line when done_script is set. The done_script property is defined in pipeline/state.py (FeatureFile class) and stored as a string ID in the feature JSON files.",
+  "impl_spec": "No coding tasks required \u2014 this feature is already fully implemented.\n\nVerification of existing implementation:\n\n1. **TUI (pipeline/tui.py, _build_feature_detail_widgets(), ~line 349-355):**\n   - When a feature has a `done_script` set, the detail view renders 'Done Script: {label}' as an always-visible widget.\n   - The script ID is resolved to a human-readable label via the scripts registry.\n   - If the script ID is not found in the registry, it displays '[MISSING] {id}'.\n   - No changes needed.\n\n2. **Web UI Dashboard (server/templates/index.html, ~line 575):**\n   - The feature modal includes a detail row showing the `done_script` value with purple (#d2a8ff) styling when the field is non-empty.\n   - A purple 'Script' badge appears on the feature card metadata line when `done_script` is set.\n   - No changes needed.\n\n3. **Web UI Client (server/templates/client.html, ~line 848):**\n   - The inline feature detail view shows the `done_script` value with the same purple styling as the dashboard.\n   - A purple 'Script' badge appears on the card when `done_script` is set.\n   - No changes needed.\n\n4. **Data model (pipeline/state.py, FeatureFile class):**\n   - The `done_script` property is defined and stored as a string ID in the feature JSON files.\n   - No changes needed.\n\n**Recommendation:** Move this feature directly to done. All three interfaces (TUI, dashboard, client) already display the on-done script in item details as requested.",
+  "test_spec": "# Test Specification: Show on-done script in item details in TUI and WebUI\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 TUI - Done Script Display in Detail View\n- **Behavior:** When viewing item details for a feature that has a `done_script` set, the detail view shows 'Done Script: {label}' where {label} is the human-readable name resolved from the scripts registry.\n- **Success Criteria:** The done script label appears as an always-visible element in the detail widget list.\n- **Expected Output:** A line reading 'Done Script: <human-readable label>' in the feature detail view.\n\n### 1.2 TUI - Missing Script Handling\n- **Behavior:** When a feature has a `done_script` set to an ID that does not exist in the scripts registry, the detail view shows '[MISSING] {id}'.\n- **Success Criteria:** The missing script indicator appears with the raw script ID.\n- **Expected Output:** A line reading 'Done Script: [MISSING] <script_id>' in the feature detail view.\n\n### 1.3 TUI - No Done Script\n- **Behavior:** When a feature has no `done_script` set (empty string or not present), the done script line should not appear in the detail view.\n- **Success Criteria:** No 'Done Script' line is rendered.\n- **Expected Output:** The detail view omits any done script reference.\n\n### 1.4 Web UI Dashboard (index.html) - Done Script in Modal\n- **Behavior:** When opening the feature modal for an item with a `done_script`, the modal shows the done_script value in a detail row with purple (#d2a8ff) styling.\n- **Success Criteria:** The done_script value appears in the modal details section.\n- **Expected Output:** A detail row showing the done_script identifier with purple styling.\n\n### 1.5 Web UI Dashboard (index.html) - Script Badge on Card\n- **Behavior:** When a feature has a `done_script` set, a purple 'Script' badge appears on the feature card in the board view.\n- **Success Criteria:** The badge is visible on cards with done_script and absent on cards without.\n- **Expected Output:** A purple badge labeled 'Script' on the card metadata line.\n\n### 1.6 Web UI Dashboard - No Done Script\n- **Behavior:** When a feature has no `done_script`, neither the modal detail row nor the card badge should appear.\n- **Success Criteria:** No script-related UI elements are rendered.\n- **Expected Output:** Modal has no done_script row; card has no Script badge.\n\n### 1.7 Web UI Client (client.html) - Done Script in Inline Detail\n- **Behavior:** When viewing feature details in the client view for an item with a `done_script`, the inline detail shows the done_script value with purple styling.\n- **Success Criteria:** The done_script value appears in the inline detail section.\n- **Expected Output:** A detail element showing the done_script value with purple (#d2a8ff) styling.\n\n### 1.8 Web UI Client (client.html) - Script Badge on Card\n- **Behavior:** When a feature has a `done_script` set, a purple 'Script' badge appears on the card in the client view.\n- **Success Criteria:** Badge is present on cards with done_script, absent on those without.\n- **Expected Output:** A purple badge labeled 'Script' on the card.\n\n### 1.9 Data Model - done_script Property\n- **Behavior:** The FeatureFile class in state.py exposes a `done_script` property that reads from and writes to the feature JSON data.\n- **Success Criteria:** Getting and setting done_script works correctly, and persists to the JSON file.\n- **Expected Output:** The done_script field is correctly stored and retrieved as a string.\n\n## 2. Edge Cases\n\n### 2.1 Empty String done_script\n- A feature with `done_script` set to an empty string (\"\") should be treated the same as no script \u2014 no display in TUI, no badge or detail row in web UI.\n\n### 2.2 Null/Missing done_script Field\n- A feature JSON file that lacks the `done_script` field entirely should not cause errors. The UI should gracefully handle the missing field and show no script information.\n\n### 2.3 Script ID with Special Characters\n- A done_script value containing special characters (e.g., spaces, dashes, dots) should be displayed correctly without breaking the UI layout.\n\n### 2.4 Very Long Script Label\n- A script with a very long human-readable label should not break the TUI layout or overflow web UI elements.\n\n### 2.5 Script Registry Becomes Unavailable\n- If the scripts registry cannot be loaded when rendering TUI details, the system should handle this gracefully (e.g., show the raw ID rather than crashing).\n\n### 2.6 done_script Set Then Removed\n- If a feature previously had a done_script and it is cleared (set to empty string), the UI should stop showing the script information on the next render.\n\n## 3. What Constitutes Failure\n\n- **TUI failure:** The detail view crashes, omits the done script line when one is configured, or shows it when none is configured.\n- **TUI label resolution failure:** The script ID is shown raw when it exists in the registry, or the system crashes when the ID is missing from the registry.\n- **Web UI modal failure:** The feature modal does not show the done_script when present, or shows a done_script row when the field is empty.\n- **Web UI badge failure:** The Script badge appears on cards without a done_script, or is missing from cards that have one.\n- **Data model failure:** The done_script property raises an exception on read or write, or fails to persist to the JSON file.\n- **Crash on missing data:** Any UI component crashes when encountering a feature with no done_script field in the JSON.\n\n## 4. Out of Scope\n\n- **Visual/styling assertions:** Exact color values, font sizes, spacing, or pixel-level layout verification.\n- **Performance benchmarks:** Load times, render speeds, or memory usage.\n- **Script execution:** Whether the on-done script actually runs when an item is moved to done \u2014 this test spec only covers *display* of the script information.\n- **Script editing:** Ability to change the done_script from the UI (this is a separate feature).\n- **Script content display:** Showing the actual script file contents or file path (this is a separate enhancement).\n- **Browser compatibility:** Testing across different browsers or browser versions.\n- **TUI terminal compatibility:** Testing across different terminal emulators or screen sizes.\n- **Concurrent editing:** Multiple users editing the same feature's done_script simultaneously.\n- **UI animation/transition timing:** How elements appear or disappear during state changes.",
+  "impl_notes": "Feature is already fully implemented. Verified all implementations: (1) TUI shows 'Done Script: {label}' in detail view with label resolution from scripts registry, '[MISSING] {id}' if not found. (2) Web UI Dashboard shows done_script in detail row with purple styling and purple Script badge on cards. (3) Web UI Client shows done_script in inline detail with purple styling and purple Script badge on cards. (4) Data model has done_script property in FeatureFile class. No code changes required.",
+  "ideation_summaries": [],
+  "Ideation": "",
+  "history": [
+    {
+      "ts": "2026-03-13T16:06Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T16:22Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-13T16:22Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T16:23Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T16:26Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-13T16:26Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-13T16:27Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible. The feature is already implemen..."
+    },
+    {
+      "ts": "2026-03-13T16:27Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-14T02:36Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-14T02:36Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-14T02:37Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-14T02:38Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-14T02:38Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-14T02:39Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-14T02:39Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-14T02:39Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-14T02:42Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-14T02:42Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T02:43Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Feature is fully implemented across all three interfaces. TUI shows 'Done Script:..."
+    },
+    {
+      "ts": "2026-03-14T02:43Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-14T19:05Z",
+      "stage": "DONE",
+      "note": "Moved via web UI"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-13T16:27Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible. The feature is already implemented as verified by code showing Done Script displayed in TUI, index.html, client.html, and client_full2.html with appropriate styling.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-14T02:43Z",
+      "verdict": "PASS",
+      "summary": "Feature is fully implemented across all three interfaces. TUI shows 'Done Script: {label}' with script registry resolution and [MISSING] fallback (tui.py:350-356). Web UI Dashboard shows done_script in modal detail row with purple styling and Script badge on cards (index.html:609, 982). Web UI Client shows identical display (client.html:822, 1467). Data model has done_script property with getter/setter in FeatureFile (state.py:111-126). 7 data model tests pass covering default, set, clear, cr...",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-13T19:42:14.196058",
+    "verdict": "FAIL",
+    "results": {
+      "passed": 7,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "Coverage gap: Only data model tests pass (7/7). No tests exist for TUI display behaviors (1.1-1.3: detail view, missing script, no script), Web UI Dashboard modal (1.4-1.6), or Web UI Client (1.7-1.8). test_slimmer_item_details_tui.py has 20 failing tests due to outdated mock missing required attributes (Ideation, done_script). No Web UI tests exist at all. Test spec requires verifying done_script display in TUI detail widgets, TUI missing script handling ([MISSING] {id}), Web UI modal with purple styling, Script badge on cards - none of these are tested."
+  }
+}

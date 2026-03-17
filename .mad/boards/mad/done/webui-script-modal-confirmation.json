@@ -1,0 +1,489 @@
+{
+  "id": "4472a135",
+  "board": "mad",
+  "title": "Webui Script Modal Confirmation",
+  "type": "feature",
+  "created": "2026-03-09T15:32Z",
+  "description": "Use a modal for the webui script confirmation.  Also, just combine the \"additional context\" with the confirmation.",
+  "done_script": "",
+  "plan": "# Webui Script Modal Confirmation Implementation Plan\n\n## Overview\nReplace the current script execution flow that uses separate browser native `prompt()` and `confirm()` dialogs with a single, integrated modal that combines additional context input with confirmation.\n\n## Current State Analysis\n- Script execution in `server/templates/client.html` uses `runScript()` function\n- Two separate dialogs: `prompt()` for context (always shown) + `confirm()` for confirmation (if script.confirm=true)\n- Modal infrastructure exists with consistent `.modal-overlay` and `.modal` CSS classes\n- Scripts configured in `.mad/scripts.json` with `confirm: boolean` property\n- API endpoint `/api/clients/:clientID/run-script` already accepts context parameter\n\n## Implementation Plan\n\n### 1. Create Script Confirmation Modal HTML\n**File: `server/templates/client.html`**\n- Add new modal element `script-confirmation-modal` after existing modals\n- Include:\n  - Script name/label display\n  - Script description (if available)\n  - Text area for additional context input\n  - Cancel and Run buttons\n  - Feedback area for error messages\n\n### 2. Add Modal CSS Styles\n**File: `server/templates/client.html`**\n- Extend existing modal styles to support script confirmation\n- Style text area, buttons, and script info display\n- Ensure mobile responsiveness\n\n### 3. Update JavaScript Functions\n**File: `server/templates/client.html`**\n\n#### 3.1 Replace `runScript()` function\n- Remove direct `prompt()` and `confirm()` calls\n- Show modal instead with script information pre-populated\n- Handle both confirmed and non-confirmed scripts uniformly in modal\n\n#### 3.2 Add modal control functions\n- `showScriptConfirmationModal(clientId, scriptId, scriptLabel, scriptDescription, requireConfirm)`\n- `closeScriptConfirmationModal()`\n- `confirmRunScript()` - handles actual API call with context from modal\n\n#### 3.3 Update script button click handler\n- Modify script button `onclick` to call new modal function\n- Pass script metadata (label, description, confirm flag) to modal\n\n### 4. Modal Behavior Logic\n\n#### For scripts with `confirm: true`:\n- Show modal with confirmation message\n- Require explicit \"Run\" button click\n- Allow cancellation\n\n#### For scripts with `confirm: false`:\n- Still show modal for context input consistency\n- Pre-focus \"Run\" button or auto-submit after context entry\n- Maintain same UX flow but streamlined\n\n### 5. Context Input Enhancement\n- Make context input optional but prominent\n- Add placeholder text: \"Additional context for the agent (optional)\"\n- Support multi-line input for detailed context\n- Remember context between modal opens (session storage)\n\n### 6. Error Handling\n- Display API errors in modal feedback area instead of `alert()`\n- Keep modal open on error to allow retry\n- Clear errors when modal reopens\n\n### 7. Keyboard Navigation\n- Support Enter key to submit (when focused on Run button)\n- Support Escape key to cancel\n- Auto-focus context input when modal opens\n\n## Files to Modify\n- `server/templates/client.html` - Main implementation\n\n## Testing Considerations\n- Test with scripts that have `confirm: true` and `confirm: false`\n- Verify context is properly passed to API\n- Test modal open/close behavior\n- Test error handling and display\n- Verify keyboard navigation works\n- Test mobile responsiveness\n\n## Implementation Notes\n- Maintain backward compatibility with existing script configuration\n- Use existing modal patterns for consistency\n- Preserve all current functionality while improving UX\n- No changes needed to API endpoints or script configuration format\n\nThis implementation will provide a more polished, consistent user experience while consolidating the context input and confirmation into a single, well-designed modal interface.",
+  "impl_spec": "# Script Modal Confirmation Implementation Spec\n\n## Task 1: Add Script Confirmation Modal HTML Structure\n**File:** `server/templates/client.html`\n**Location:** After the existing new-idea-modal (around line 520)\n**What to create:**\n- Add new modal div with id `script-confirmation-modal`\n- Include: modal overlay with click-to-close behavior\n- Modal content with: script title display, description area, context textarea, cancel/run buttons, error feedback area\n**Dependencies:** None\n**Approach:**\n```html\n<div class=\"modal-overlay\" id=\"script-confirmation-modal\" onclick=\"closeScriptConfirmationModal(event)\">\n    <div class=\"modal\" onclick=\"event.stopPropagation()\" style=\"max-width:500px\">\n        <h3 id=\"script-modal-title\" style=\"color:#58a6ff;font-size:1rem;margin-bottom:0.5rem\">Run Script</h3>\n        <div id=\"script-modal-description\" style=\"color:#8b949e;font-size:0.85rem;margin-bottom:1rem;display:none\"></div>\n        <div style=\"margin-bottom:1rem\">\n            <label style=\"display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.5rem\">Additional context (optional)</label>\n            <textarea id=\"script-context-input\" placeholder=\"Additional context for the agent...\" style=\"width:100%;height:80px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:0.5rem;border-radius:4px;font-family:monospace;font-size:0.8rem;resize:vertical\"></textarea>\n        </div>\n        <div id=\"script-modal-error\" style=\"color:#f85149;font-size:0.85rem;margin-bottom:0.5rem;display:none\"></div>\n        <div style=\"display:flex;gap:0.5rem;justify-content:flex-end\">\n            <button onclick=\"closeScriptConfirmationModal()\" style=\"padding:0.5rem 1rem;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer\">Cancel</button>\n            <button id=\"script-run-button\" onclick=\"confirmRunScript()\" style=\"padding:0.5rem 1rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600\">Run Script</button>\n        </div>\n    </div>\n</div>\n```\n\n## Task 2: Add Modal CSS Enhancements\n**File:** `server/templates/client.html`\n**Location:** Within existing `<style>` tag (around line 250)\n**What to create:** Additional styles for script modal elements\n**Dependencies:** Task 1\n**Approach:** Add CSS rules for:\n- `.script-modal-textarea` for consistent textarea styling\n- `.script-modal-buttons` for button container\n- Mobile responsive adjustments for script modal\n- Focus states for better accessibility\n\n## Task 3: Update Script Button Click Handler\n**File:** `server/templates/client.html`\n**Location:** In the script list generation function (around line 669)\n**What to modify:** Change the onclick attribute to call new function\n**Dependencies:** Task 5 (new functions)\n**Approach:**\n- Replace current onclick from: `runScript('clientId','scriptId',confirm)`\n- To: `showScriptConfirmationModal('clientId','scriptId','label','description',confirm)`\n- Pass script metadata (label, description, confirm flag) to modal function\n\n## Task 4: Replace runScript() Function\n**File:** `server/templates/client.html`\n**Location:** Current runScript function (around line 677)\n**What to modify:** Complete replacement of existing prompt/confirm logic\n**Dependencies:** Task 5 (modal functions)\n**Approach:**\n- Remove `prompt()` and `confirm()` calls\n- Keep the fetch API call logic but move it to `confirmRunScript()`\n- Keep error handling but adapt for modal display\n- Preserve context parameter passing to API\n\n## Task 5: Create Modal Control Functions\n**File:** `server/templates/client.html`\n**Location:** JavaScript section (around line 677, replacing runScript)\n**What to create:** Three new functions for modal management\n**Dependencies:** Task 1 (HTML structure)\n**Approach:**\n\n### 5a: showScriptConfirmationModal function\n```javascript\nfunction showScriptConfirmationModal(clientId, scriptId, scriptLabel, scriptDescription, requireConfirm) {\n    // Store current script info in global variables\n    window._currentScript = { clientId, scriptId, scriptLabel, requireConfirm };\n    \n    // Update modal content\n    document.getElementById('script-modal-title').textContent = 'Run Script: ' + scriptLabel;\n    var descEl = document.getElementById('script-modal-description');\n    if (scriptDescription) {\n        descEl.textContent = scriptDescription;\n        descEl.style.display = 'block';\n    } else {\n        descEl.style.display = 'none';\n    }\n    \n    // Clear previous context and errors\n    document.getElementById('script-context-input').value = '';\n    document.getElementById('script-modal-error').style.display = 'none';\n    \n    // Show modal and focus context input\n    document.getElementById('script-confirmation-modal').classList.add('active');\n    document.getElementById('script-context-input').focus();\n}\n```\n\n### 5b: closeScriptConfirmationModal function\n```javascript\nfunction closeScriptConfirmationModal(event) {\n    if (!event || event.target === document.getElementById('script-confirmation-modal')) {\n        document.getElementById('script-confirmation-modal').classList.remove('active');\n        window._currentScript = null;\n    }\n}\n```\n\n### 5c: confirmRunScript function\n```javascript\nfunction confirmRunScript() {\n    if (!window._currentScript) return;\n    \n    var context = document.getElementById('script-context-input').value || '';\n    var script = window._currentScript;\n    \n    // Show loading state\n    var runBtn = document.getElementById('script-run-button');\n    runBtn.textContent = 'Running...';\n    runBtn.disabled = true;\n    \n    // Make API call (preserve existing logic)\n    fetch('/api/clients/' + encodeURIComponent(script.clientId) + '/run-script?key=' + encodeURIComponent(_dashKey), {\n        method: 'POST',\n        headers: {'Content-Type': 'application/json'},\n        body: JSON.stringify({\n            script_id: script.scriptId,\n            context: context\n        })\n    }).then(function(resp) {\n        if (!resp.ok) {\n            throw new Error('Failed to run script');\n        }\n        // Success - close modal and refresh\n        closeScriptConfirmationModal();\n        refreshScripts();\n    }).catch(function(error) {\n        // Show error in modal instead of alert\n        document.getElementById('script-modal-error').textContent = error.message || 'Failed to run script';\n        document.getElementById('script-modal-error').style.display = 'block';\n    }).finally(function() {\n        // Reset button state\n        runBtn.textContent = 'Run Script';\n        runBtn.disabled = false;\n    });\n}\n```\n\n## Task 6: Add Keyboard Navigation Support\n**File:** `server/templates/client.html`\n**Location:** JavaScript section, after modal functions\n**What to create:** Event listeners for keyboard shortcuts\n**Dependencies:** Task 5 (modal functions)\n**Approach:**\n- Add keydown event listener to script-confirmation-modal\n- Support Enter key to submit (call confirmRunScript)\n- Support Escape key to cancel (call closeScriptConfirmationModal)\n- Ensure proper focus management\n\n```javascript\n// Add to modal HTML or via addEventListener\ndocument.getElementById('script-confirmation-modal').addEventListener('keydown', function(e) {\n    if (e.key === 'Escape') {\n        closeScriptConfirmationModal();\n    } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {\n        confirmRunScript();\n    }\n});\n```\n\n## Task 7: Handle Script Behavior Differences\n**File:** `server/templates/client.html`\n**Location:** Within showScriptConfirmationModal function\n**What to modify:** Adapt modal behavior based on confirm flag\n**Dependencies:** Task 5a\n**Approach:**\n- For scripts with `confirm: true`: Show normal modal with explicit confirmation\n- For scripts with `confirm: false`: Still show modal for consistency but could auto-focus Run button\n- Update modal title/messaging to reflect confirmation requirement\n- Consider visual cues (button styling) to indicate required confirmation\n\n## Task 8: Add Session Storage for Context Persistence\n**File:** `server/templates/client.html` \n**Location:** Within modal functions\n**What to create:** Context input persistence between modal opens\n**Dependencies:** Task 5\n**Approach:**\n- Save context value to sessionStorage when modal opens\n- Restore context value when modal shows\n- Clear storage when script runs successfully\n- Use key like 'mad_script_context' for storage\n\n## Task 9: Mobile Responsiveness Enhancements\n**File:** `server/templates/client.html`\n**Location:** CSS section and modal HTML\n**What to modify:** Ensure modal works well on mobile devices\n**Dependencies:** Task 1, Task 2\n**Approach:**\n- Add mobile-specific styles for modal max-width\n- Ensure textarea is properly sized on small screens\n- Test button layout on mobile\n- Consider viewport adjustments for modal positioning\n\n## Task 10: Error Handling Improvements\n**File:** `server/templates/client.html`\n**Location:** confirmRunScript function\n**What to modify:** Enhanced error display and handling\n**Dependencies:** Task 5c\n**Approach:**\n- Replace all `alert()` calls with modal error display\n- Keep modal open on errors to allow retry\n- Clear errors when modal reopens\n- Add loading states during API calls\n- Handle network timeouts gracefully\n\n## Files Modified:\n- `server/templates/client.html` (only file requiring changes)\n\n## Testing Requirements:\nAfter implementation, verify:\n1. Scripts with `confirm: true` show modal and require explicit confirmation\n2. Scripts with `confirm: false` show modal but streamlined flow\n3. Context input is properly passed to API endpoint\n4. Modal opens/closes correctly with both button and ESC/click-outside\n5. Error handling displays in modal instead of alert boxes\n6. Keyboard navigation (Enter/Escape) works as expected\n7. Mobile responsiveness is maintained\n8. Session storage persists context appropriately\n9. Loading states provide clear feedback\n10. All existing functionality is preserved",
+  "test_spec": "# Test Specification: Webui Script Modal Confirmation\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Modal Display and Structure\n- **Behavior**: When any script button is clicked, a single modal appears instead of browser native dialogs\n- **Success Criteria**: Modal contains script name/label, description (if available), context text area, Cancel and Run buttons, and feedback area\n- **Expected Output**: Modal overlay with consistent CSS styling matching existing modals\n\n### 1.2 Script Information Display\n- **Behavior**: Modal shows script-specific information (name, label, description)\n- **Success Criteria**: Script metadata is correctly populated in modal fields\n- **Expected Output**: Script name displayed prominently, description shown if available from script configuration\n\n### 1.3 Context Input Functionality\n- **Behavior**: Text area allows multi-line context input with placeholder text\n- **Success Criteria**: Text area accepts input, shows \"Additional context for the agent (optional)\" placeholder\n- **Expected Output**: Context value is properly captured and sent to API endpoint\n\n### 1.4 Confirmation Flow for confirm:true Scripts\n- **Behavior**: Scripts with confirm:true require explicit Run button click after showing confirmation message\n- **Success Criteria**: Modal displays confirmation requirement, Run button must be clicked to proceed\n- **Expected Output**: Script executes only after explicit confirmation, cancellation prevents execution\n\n### 1.5 Streamlined Flow for confirm:false Scripts\n- **Behavior**: Scripts with confirm:false still show modal but with streamlined UX\n- **Success Criteria**: Modal appears but Run button is pre-focused or auto-submit after context entry\n- **Expected Output**: Consistent modal experience but faster workflow for non-confirmation scripts\n\n### 1.6 Context Persistence\n- **Behavior**: Context input is remembered between modal opens using session storage\n- **Success Criteria**: Previously entered context appears when modal reopens in same session\n- **Expected Output**: Text area pre-populated with last entered context\n\n### 1.7 API Integration\n- **Behavior**: Modal submits context parameter to /api/clients/:clientID/run-script endpoint\n- **Success Criteria**: API receives correct clientId, scriptId, and context parameters\n- **Expected Output**: Script execution proceeds with provided context\n\n### 1.8 Error Handling\n- **Behavior**: API errors display in modal feedback area instead of alert() dialogs\n- **Success Criteria**: Error messages appear in modal, modal stays open for retry\n- **Expected Output**: Error text in feedback area, modal remains interactive\n\n### 1.9 Keyboard Navigation\n- **Behavior**: Enter key submits when Run button focused, Escape key cancels, auto-focus on context input\n- **Success Criteria**: Keyboard shortcuts work as specified\n- **Expected Output**: Modal responds to keyboard input correctly\n\n### 1.10 Modal Lifecycle\n- **Behavior**: Modal opens on script click, closes on Cancel/Run/Escape, clears errors on reopen\n- **Success Criteria**: Modal state management works correctly\n- **Expected Output**: Clean modal state transitions\n\n## 2. Edge Cases\n\n### 2.1 Empty Context Input\n- **Scenario**: User submits modal with empty context field\n- **Expected**: Script executes normally with empty context parameter\n\n### 2.2 Maximum Context Length\n- **Scenario**: User enters extremely long context text (e.g., 10MB)\n- **Expected**: System handles gracefully, either accepts or provides appropriate feedback\n\n### 2.3 Missing Script Metadata\n- **Scenario**: Script configured without label or description\n- **Expected**: Modal displays script ID or fallback text, does not break\n\n### 2.4 Special Characters in Context\n- **Scenario**: Context contains quotes, newlines, unicode, HTML tags\n- **Expected**: All characters properly escaped and transmitted to API\n\n### 2.5 Rapid Modal Operations\n- **Scenario**: User quickly opens/closes modal multiple times\n- **Expected**: No race conditions, modal state remains consistent\n\n### 2.6 Session Storage Limits\n- **Scenario**: Session storage full or unavailable\n- **Expected**: Context persistence fails gracefully, modal still functions\n\n### 2.7 Network Interruption\n- **Scenario**: API call fails due to network issues during script execution\n- **Expected**: Error displayed in modal, retry possible\n\n### 2.8 Multiple Clients/Tabs\n- **Scenario**: Multiple browser tabs open with script modals\n- **Expected**: Each tab maintains independent modal state\n\n### 2.9 Mobile/Touch Interaction\n- **Scenario**: Modal used on mobile devices with touch input\n- **Expected**: Modal responsive, buttons appropriately sized, keyboard appears for text input\n\n### 2.10 Script Configuration Changes\n- **Scenario**: Script confirm flag changed while modal open\n- **Expected**: Modal behavior consistent with initial configuration\n\n## 3. What Constitutes Failure\n\n### 3.1 Modal Not Appearing\n- **Failure**: Browser native prompt/confirm dialogs appear instead of modal\n- **Detection**: Alert/prompt/confirm dialogs visible, modal element not shown\n\n### 3.2 Context Not Transmitted\n- **Failure**: API receives empty or incorrect context parameter\n- **Detection**: Server logs show missing context, script execution lacks expected context\n\n### 3.3 Broken Keyboard Navigation\n- **Failure**: Enter/Escape keys don't work, focus not properly managed\n- **Detection**: Key presses have no effect, focus lost or incorrectly set\n\n### 3.4 Error Handling Regression\n- **Failure**: Errors show as browser alerts instead of in modal\n- **Detection**: Native alert() dialogs appear, modal feedback area empty\n\n### 3.5 Styling/CSS Issues\n- **Failure**: Modal doesn't match existing design patterns\n- **Detection**: Inconsistent spacing, colors, fonts compared to other modals\n\n### 3.6 Session Storage Corruption\n- **Failure**: Context persistence causes JavaScript errors or data corruption\n- **Detection**: Console errors, localStorage/sessionStorage exceptions\n\n### 3.7 Mobile Responsiveness\n- **Failure**: Modal unusable on mobile devices\n- **Detection**: Modal too small, buttons not touchable, layout broken\n\n### 3.8 API Parameter Errors\n- **Failure**: Wrong parameters sent to script execution endpoint\n- **Detection**: API returns 400 errors, wrong clientId/scriptId/context values\n\n### 3.9 Confirmation Logic Broken\n- **Failure**: confirm:true scripts execute without confirmation, or confirm:false scripts require unnecessary confirmation\n- **Detection**: Script execution behavior doesn't match configuration\n\n### 3.10 Modal State Corruption\n- **Failure**: Modal gets stuck open/closed, multiple modals appear simultaneously\n- **Detection**: DOM contains multiple modal overlays, modal not responding to close actions\n\n## 4. Out of Scope\n\n### 4.1 Visual Design Testing\n- **Excluded**: Pixel-perfect design matching, color contrast validation, typography details\n- **Reason**: Functional behavior is priority, visual refinement is separate concern\n\n### 4.2 Performance Benchmarks\n- **Excluded**: Modal load time measurements, memory usage profiling, animation performance\n- **Reason**: Feature correctness more important than performance optimization\n\n### 4.3 Browser Compatibility Matrix\n- **Excluded**: Testing across all browser versions, IE compatibility, vendor prefix requirements\n- **Reason**: Assumes modern browser support, not legacy compatibility project\n\n### 4.4 Script Execution Logic\n- **Excluded**: Testing what scripts actually do when executed\n- **Reason**: Modal is only responsible for triggering execution, not script behavior\n\n### 4.5 Security Penetration Testing\n- **Excluded**: XSS injection attempts, CSRF protection, authentication bypass\n- **Reason**: Security testing is separate security review process\n\n### 4.6 Internationalization\n- **Excluded**: Multi-language support, RTL layout, locale-specific formatting\n- **Reason**: Feature doesn't include i18n requirements\n\n### 4.7 Advanced Accessibility\n- **Excluded**: Screen reader compatibility, WCAG compliance, high contrast mode\n- **Reason**: Basic keyboard navigation covered, advanced a11y is separate effort\n\n### 4.8 Integration with External Systems\n- **Excluded**: How executed scripts interact with external APIs or services\n- **Reason**: Modal only responsible for script triggering, not downstream integrations\n\n### 4.9 Concurrent Script Execution\n- **Excluded**: Testing multiple scripts running simultaneously\n- **Reason**: Modal handles single script execution flow only\n\n### 4.10 Database/Backend Testing\n- **Excluded**: Script storage, configuration persistence, server-side validation\n- **Reason**: Frontend modal functionality focus, backend assumed working\n\n---\n\nThis test specification ensures the script modal confirmation feature works correctly across all planned behaviors while maintaining clear boundaries around what is and isn't being tested.",
+  "impl_notes": "Fixed all 4 review feedback issues in the Webui Script Modal Confirmation feature: (1) requireConfirm flag now used to pre-focus Run button for confirm:false scripts, (2) removed sessionStorage.removeItem call so context persists between modal opens, (3) updated placeholder text to 'Additional context for the agent (optional)', (4) added onkeydown handler to Run button for Enter key submission.",
+  "history": [
+    {
+      "ts": "2026-03-09T15:32Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-09T15:39Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-09T17:13Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-09T17:15Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-09T17:15Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-09T17:17Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-09T17:17Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-09T17:28Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-09T17:28Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-09T17:31Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-09T17:34Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-09T17:34Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T17:37Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T17:37Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T17:37Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T17:42Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-09T17:42Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T17:45Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation is functionally complete with all plan requirements met, but lacks..."
+    },
+    {
+      "ts": "2026-03-09T17:45Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T17:47Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T17:47Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T17:47Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T17:51Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-09T17:51Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T17:51Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): STS, (6) Context ..."
+    },
+    {
+      "ts": "2026-03-09T17:51Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T17:52Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T17:52Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T17:52Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T17:55Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-09T17:55Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T17:55Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars):  modal - NO TESTS..."
+    },
+    {
+      "ts": "2026-03-09T17:55Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T17:56Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T17:56Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T17:56Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T17:59Z",
+      "stage": "TESTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: cript, execute_..."
+    },
+    {
+      "ts": "2026-03-09T17:59Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T18:00Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-09T18:00Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T18:00Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): al - NO TESTS, (9..."
+    },
+    {
+      "ts": "2026-03-09T18:00Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T18:03Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T18:03Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T18:03Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T18:08Z",
+      "stage": "TESTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: cript, execute_..."
+    },
+    {
+      "ts": "2026-03-09T18:08Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T18:42Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T18:43Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-09T18:43Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T18:43Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): () - NO TESTS, (9..."
+    },
+    {
+      "ts": "2026-03-09T18:43Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T18:46Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T18:46Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T18:46Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T18:48Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-09T18:48Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T18:48Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): torage) - NO TEST..."
+    },
+    {
+      "ts": "2026-03-09T18:48Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T18:50Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T18:50Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T18:50Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T18:55Z",
+      "stage": "TESTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: Test spec behav..."
+    },
+    {
+      "ts": "2026-03-09T18:55Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T18:57Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-09T18:57Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T18:57Z",
+      "stage": "REVIEW",
+      "note": "FAILED: claude exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): mation feature. T..."
+    },
+    {
+      "ts": "2026-03-09T18:57Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T18:59Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T18:59Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T18:59Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T19:01Z",
+      "stage": "TESTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: ompt()/confirm(..."
+    },
+    {
+      "ts": "2026-03-09T19:03Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T19:06Z",
+      "stage": "TESTING",
+      "note": "FAILED: opencode authentication error \u2014 check your API key configuration.\nOutput: ompt()/confirm(..."
+    },
+    {
+      "ts": "2026-03-09T19:06Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T19:07Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-09T19:07Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T19:09Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Modal structure, CSS, error handling, and keyboard/session-storage scaffolding ar..."
+    },
+    {
+      "ts": "2026-03-09T19:09Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-09T19:12Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-09T19:12Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-09T19:12Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-09T19:14Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-09T19:14Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-09T19:16Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - The implementation correctly delivers the script confirmation modal: replacing na..."
+    },
+    {
+      "ts": "2026-03-09T19:16Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-13T20:36Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-09T17:17Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-09T17:45Z",
+      "verdict": "FAIL",
+      "summary": "Implementation is functionally complete with all plan requirements met, but lacks any automated test coverage for the 10 required WebUI modal behaviors. While the code quality is good and API integration works correctly, the testing phase already identified this as a critical gap - no tests verify modal display, keyboard navigation, context persistence, or error handling in the browser.",
+      "feedback": "The implementation correctly replaces browser native dialogs with a proper modal and meets all technical requirements from the plan. However, this feature FAILS due to complete absence of automated test coverage for the WebUI functionality. The test spec requires verification of 10 specific behaviors (modal display, script information display, context input, confirmation flows, keyboard navigation, API integration, error handling, modal lifecycle, context persistence, and edge cases), but only Python backend tests exist. To pass review, the implementation needs: 1) Browser-based tests (e.g., Selenium, Playwright, or Cypress) to verify modal appears instead of native dialogs, 2) Tests for keyboard shortcuts (Escape, Ctrl+Enter), 3) Session storage persistence testing, 4) API integration tests for the /api/clients/:clientID/run-script endpoint with context parameter, 5) Error handling verification in modal instead of alert() dialogs. The existing 40 Python tests only cover backend script functionality, not the JavaScript modal implementation that was actually built."
+    },
+    {
+      "ts": "2026-03-09T19:09Z",
+      "verdict": "FAIL",
+      "summary": "Modal structure, CSS, error handling, and keyboard/session-storage scaffolding are all present. However, the requireConfirm flag is accepted but never used (confirm:false scripts show identical UX to confirm:true), context is cleared from session storage on success (contradicting persistence spec), placeholder text mismatches spec, and Enter-when-Run-focused is not implemented.",
+      "feedback": "requireConfirm flag unused (spec 1.4/1.5): showScriptConfirmationModal receives requireConfirm and stores it in window._currentScript, but this value is never read anywhere in the function or in confirmRunScript. The plan requires confirm:false scripts to have streamlined UX (pre-focus Run button or auto-submit on context entry), but both confirm:true and confirm:false show identical modals. Fix: use requireConfirm to either auto-focus the Run button or add auto-submit on textarea Enter key for non-confirmation scripts.\n\nContext cleared after successful run (spec 1.6): Line 750 calls sessionStorage.removeItem('mad_script_context') on success, so re-opening the modal after a successful run shows an empty context field. The test spec states context should persist between modal opens in the same session. Fix: remove the removeItem call on success.\n\nPlaceholder text mismatch (spec 1.3): Textarea placeholder (line 517) reads 'Additional context for the agent...' but test spec 1.3 requires 'Additional context for the agent (optional)'. Fix: update placeholder text.\n\nKeyboard submission shortcut (spec 1.9): The keydown handler (lines 766-772) binds Ctrl+Enter for submission. Test spec 1.9 says 'Enter key submits when focused on Run button'. Fix: add a keydown handler on the Run button that submits on plain Enter, or bind Enter at the modal level when focus is on the Run button."
+    },
+    {
+      "ts": "2026-03-09T19:16Z",
+      "verdict": "PASS",
+      "summary": "The implementation correctly delivers the script confirmation modal: replacing native prompt/confirm dialogs with an integrated modal, context persistence via sessionStorage, proper requireConfirm focus behavior, error display in modal, and keyboard navigation (Escape/Enter). All 4 self-reported review fixes are verified in the code.",
+      "feedback": "Minor issues to be aware of:\n\nMissing frontend test coverage: The tests in test_scripts.py cover only the Python backend (scripts.py). There are no automated tests for the modal UI behaviors specified in the test spec (1.1-1.10, all edge cases 2.x). Since this is a frontend-only change, consider adding integration or Playwright/Selenium tests if the project has a browser test harness; otherwise, manual verification is required.\n\nAPI error message not surfaced: In confirmRunScript(), the catch handler shows a hardcoded string 'Failed to run script' rather than the actual error text from the API response body. Consider reading the response text and displaying it to give users more actionable error information.\n\nescapeHtml + inline onclick single-quote edge case: The escapeHtml function converts ' to &#039;, but HTML-attribute entity decoding restores ' before JavaScript executes, so script labels/descriptions containing single quotes would cause a JS syntax error in the onclick handler. Since scripts.json is developer-controlled this is low risk, but using data attributes + event listeners instead of inline onclick would eliminate this fragility entirely.\n\nKeyboard shortcut inconsistency: The modal-level keydown handler fires confirmRunScript on Ctrl+Enter anywhere in the modal, while the Run button fires on bare Enter when focused. The test spec mentions 'Enter key submits when Run button focused' which works correctly. The undocumented Ctrl+Enter global shortcut may confuse users expecting bare Enter to insert a newline in the textarea."
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-09T12:14:05.396730",
+    "verdict": "FAIL",
+    "results": {
+      "passed": 40,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "Test coverage GAP: All 40 backend Python tests pass (load_scripts, run_script, execute_done_script). However, the test spec requires verification of 10 FRONTEND behaviors: (1) Modal display replacing browser native dialogs, (2) Script info display in modal, (3) Context input with placeholder 'Additional context for the agent (optional)', (4) Confirmation flow for confirm:true scripts with Run button, (5) Streamlined flow for confirm:false scripts with pre-focused Run button, (6) Context persistence using sessionStorage between modal opens, (7) API integration with context parameter to /api/clients/:clientID/run-script, (8) Error display in modal feedback area instead of alert(), (9) Keyboard navigation (Enter submits, Escape cancels), (10) Modal lifecycle (open/close state management). Additionally, 10 edge cases require testing. ZERO frontend/browser-based tests exist - test_scripts.py only tests backend Python scripts, not the webui modal implementation in server/templates/client.html JavaScript."
+  }
+}

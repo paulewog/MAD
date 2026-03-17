@@ -1,0 +1,76 @@
+{
+  "id": "bde4306f",
+  "board": "mad",
+  "title": "Webui Logs Are Empty",
+  "type": "bug",
+  "created": "2026-03-14T18:39Z",
+  "description": "The web UI log section is completely empty and never seems to have any logs",
+  "done_script": "",
+  "plan": "",
+  "plan_exploration_summary": "",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "ideation_summaries": [
+    "The web UI logs are empty because the `append_pipeline_log()` method in `pipeline/state.py` (FeatureFile class) is defined but never called anywhere in the codebase. The full chain works correctly \u2014 the Python client reads `pipeline_log` from feature data, sends it via WebSocket to the Go server, and the web UI polls for it via HTMX \u2014 but the source data is always an empty array because no pipeline phase (planning, implementing, reviewing, etc.) ever invokes `append_pipeline_log()` to record age",
+    "The previous proposal correctly identifies that `append_pipeline_log()` is never called, but underestimates the design complexity of the fix. There are three key gaps: (1) **What to log is unclear** \u2014 the `_run_phase()` function in `phases.py` returns raw agent output that is often a large JSON blob (plan, spec, review verdict, etc.), not a human-readable log message. Simply dumping the full output into `pipeline_log` would produce massive, unreadable entries. The fix needs to decide whether to ",
+    "Both previous critiques are correct but miss the simplest viable fix: add a single `feature.append_pipeline_log(phase_key, output[:500])` call at line ~305 in `_run_phase()` (phases.py), right after `runner.headless()` returns successfully. This is the natural single chokepoint \u2014 every pipeline phase flows through `_run_phase()`, so one insertion covers planning, implementing, reviewing, spec-writing, and fix-feedback without touching any individual phase function. The truncation concern from cr",
+    "The previous proposal's 'single chokepoint' claim is incomplete: `run_ideating()` (phases.py:721) bypasses `_run_phase()` entirely, calling `runner.headless()` directly in a loop (lines 806, 849), so adding a log call only in `_run_phase()` would miss all ideation rounds and synthesis \u2014 a significant gap since ideation is a multi-round phase that users would especially want visibility into. Additionally, the proposal only logs after phase completion, but `runner.headless()` can run for several m"
+  ],
+  "Ideation": "The web UI logs are empty because `append_pipeline_log()` in `pipeline/state.py` is defined but never called anywhere in the codebase. The full delivery chain is functional \u2014 the Python client reads `pipeline_log` from feature data and sends it via WebSocket to the Go server, which the web UI polls via HTMX \u2014 but the source array is always empty because no pipeline phase ever populates it.\n\nThe simplest fix is to call `feature.append_pipeline_log(phase_key, summary)` at the natural chokepoints where phase output is produced. The primary chokepoint is `_run_phase()` in `phases.py`, which is called by planning, implementing, reviewing, spec-writing, and fix-feedback phases. A single log call after `runner.headless()` returns successfully covers all these phases. However, `run_ideating()` bypasses `_run_phase()` entirely and calls `runner.headless()` directly in a loop, so a separate log call is also needed there to capture ideation rounds and synthesis.\n\nThe key design question is what to log: raw agent output is often a large JSON blob unsuitable for display. The practical approach is to log a truncated summary (e.g., first 500 characters) of the output, or a structured message indicating the phase name and completion status. This provides useful visibility without producing massive unreadable entries. Logging only after phase completion (not during) is acceptable for an initial implementation, since the primary user need is to see what happened, not a live stream.\n\nThe main risk is that truncated output may omit critical information for debugging. A reasonable mitigation is to store the full output in existing fields (plan, spec, review verdict) while using `pipeline_log` only for human-readable progress summaries. This keeps the log readable while preserving full fidelity in the structured data fields.",
+  "history": [
+    {
+      "ts": "2026-03-14T18:39Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-14T18:48Z",
+      "stage": "IDEATING",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-14T18:50Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-14T18:50Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-14T18:52Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-14T18:53Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-14T18:54Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-14T18:55Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis"
+    },
+    {
+      "ts": "2026-03-14T18:55Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-14T21:14Z",
+      "stage": "DONE",
+      "note": "Moved via web UI"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [],
+  "impl_reviews": []
+}

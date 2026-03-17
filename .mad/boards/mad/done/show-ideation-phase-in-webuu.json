@@ -1,0 +1,165 @@
+{
+  "id": "4543f53e",
+  "board": "mad",
+  "title": "Show ideation phase in webuu",
+  "type": "feature",
+  "created": "2026-03-13T03:51Z",
+  "description": "The we you doesn't show the ideation phase at all",
+  "done_script": "",
+  "plan": "## What\n\nShow ideation phase content in the web UI dashboard. The ideating stage section already appears in the board view (it's in the stage order), but when users click on a feature card in the ideating stage, the modal does not display ideation-related content. Additionally, the feature cards in the dashboard board view don't carry ideation data attributes, so there's nothing to display even if the modal tried.\n\n## Why\n\nUsers managing features through the ideation/debate phase need to see ideation summaries and debate content directly in the web dashboard. Without this, they must use the TUI or inspect JSON files to understand what happened during ideation. This creates a gap in the web UI's ability to serve as a complete project management interface.\n\n## Scope\n\n**In scope:**\n- Add ideation and ideation_summaries data attributes to feature cards in the dashboard board_fragment template\n- Display ideation content in the showFeature() modal when a user clicks a feature card (matching the pattern already used in client.html)\n- Show ideation summaries (debate round outputs) as a collapsible/scrollable section in the modal\n\n**Out of scope:**\n- Adding ability to trigger or manage ideation rounds from the web UI (that's a separate feature)\n- Changes to the client.html template (it already has ideation display)\n- Changes to the Go backend/API (FeatureSummary already has the fields, and they're already serialized)\n- Adding a 'Move for Debate' button to the dashboard (separate feature request exists for this)\n\n## Impact\n\n- The dashboard board_fragment template needs two new data attributes on feature cards\n- The showFeature() JavaScript function needs a new section for rendering ideation content\n- No backend changes needed - the data is already flowing through the WebSocket state updates\n- No changes to the data model or API endpoints\n- Minimal risk of breaking existing functionality since this is purely additive HTML/JS\n\n## Risks\n\n- Ideation summaries can be lengthy (multiple debate rounds). The modal needs to handle potentially large content gracefully without breaking the layout.\n- The ideation_summaries field is an array of strings. Need to render each round distinctly so users can follow the debate progression.\n- Data attribute encoding: ideation summaries may contain special characters, quotes, or newlines that need proper HTML attribute escaping (the existing escapeAttr template function handles this).",
+  "plan_exploration_summary": "Explored the MAD web UI server code (Go + embedded HTML templates). Key files: server/api.go (routing, stageOrder, groupFeaturesByStage), server/hub.go (FeatureSummary struct with Ideation/IdeationSummaries fields), server/templates/index.html (dashboard board_fragment template and showFeature modal), server/templates/client.html (client detail view with ideation rendering). Found that 'ideating' IS in stageOrder (api.go:19), so the stage section renders in the dashboard. However, the board_fragment template in index.html does NOT include data-ideation or data-ideation-summaries attributes on feature cards, and the showFeature() JavaScript modal does NOT render ideation content. By contrast, client.html already has ideation display logic (lines 851-856) and passes data-ideation (line 1227). The .mad/boards/mad/ideating/ directory exists with 6 feature files. The FeatureSummary Go struct already has Ideation and IdeationSummaries fields (hub.go:55-56).",
+  "impl_spec": "## Implementation Spec: Show Ideation Phase in Web UI\n\n### File: server/templates/index.html\n\n#### Task 1: Add ideation data attributes to feature cards in board_fragment template\n\n**Location:** The `board_fragment` template define block (line ~799), inside the `<div class=\"feature-card\">` element, after the existing `data-active` attribute (line ~813).\n\n**Changes:** Add two new data attributes to each feature card div:\n\n```\ndata-ideation=\"{{escapeAttr .Ideation}}\"\ndata-ideation-summaries=\"{{toJSON .IdeationSummaries}}\"\n```\n\nInsert these after the `data-done-script` attribute (line 812) and before `data-active`. This follows the same pattern used for other fields like `data-description` and `data-plan-reviews`.\n\n**Dependencies:** None. The FeatureSummary struct already has `Ideation` (string) and `IdeationSummaries` ([]string) fields. The `escapeAttr` and `toJSON` template functions already exist.\n\n#### Task 2: Update cardHash() to include ideation data\n\n**Location:** The `cardHash()` function (line ~404) that generates a hash string for diffing card updates.\n\n**Changes:** Add `c.getAttribute('data-ideation')` and `c.getAttribute('data-ideation-summaries')` to the array of attributes joined for the hash. This ensures the board auto-refresh detects changes to ideation content.\n\nChange from:\n```javascript\nreturn [c.getAttribute('data-id'), c.getAttribute('data-stage'),\n        c.getAttribute('data-title'), c.getAttribute('data-description'),\n        c.getAttribute('data-history'), c.getAttribute('data-active')].join('|');\n```\n\nTo:\n```javascript\nreturn [c.getAttribute('data-id'), c.getAttribute('data-stage'),\n        c.getAttribute('data-title'), c.getAttribute('data-description'),\n        c.getAttribute('data-history'), c.getAttribute('data-active'),\n        c.getAttribute('data-ideation'), c.getAttribute('data-ideation-summaries')].join('|');\n```\n\n**Dependencies:** Task 1 (the attributes must exist on the cards).\n\n#### Task 3: Add ideation rendering to showFeature() modal\n\n**Location:** The `showFeature()` function, after the description section (line ~584) and before the history section (line ~585).\n\n**Changes:** Add an ideation section that renders when ideation content is present. This follows the same pattern used in client.html (lines 851-857).\n\nInsert this block after the description `if` block closes (after line 584):\n\n```javascript\n// Ideation section\nvar ideation = card.getAttribute('data-ideation') || '';\nif (ideation) {\n    html += '<div style=\"margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid #21262d\">' +\n        '<div style=\"color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase;margin-bottom:0.3rem\">Ideation</div>' +\n        '<div style=\"color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap\">' + escapeHtml(ideation) + '</div></div>';\n}\n// Ideation summaries (debate rounds)\ntry {\n    var ideationSummaries = JSON.parse(card.getAttribute('data-ideation-summaries') || '[]');\n    if (ideationSummaries && ideationSummaries.length > 0) {\n        html += '<div style=\"margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid #21262d\">' +\n            '<div style=\"color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase;margin-bottom:0.3rem\">Ideation Summaries (' + ideationSummaries.length + ' rounds)</div>' +\n            '<div style=\"max-height:300px;overflow-y:auto\">';\n        for (var si = 0; si < ideationSummaries.length; si++) {\n            html += '<div style=\"font-size:0.75rem;padding:0.3rem 0;border-bottom:1px solid #161b22\">' +\n                '<span style=\"color:#d2a8ff;font-weight:600\">Round ' + (si + 1) + '</span>' +\n                '<div style=\"color:#c9d1d9;white-space:pre-wrap;margin-top:0.2rem\">' + escapeHtml(ideationSummaries[si]) + '</div></div>';\n        }\n        html += '</div></div>';\n    }\n} catch(e) {}\n```\n\nKey design decisions:\n- The summaries container has `max-height:300px;overflow-y:auto` to handle potentially lengthy debate content without breaking the modal layout.\n- Each round is numbered (Round 1, Round 2, etc.) so users can follow debate progression.\n- Styling matches the existing dashboard modal patterns (same colors, font sizes, borders).\n- Uses `escapeHtml()` for XSS safety (same as other sections).\n- The ideation summaries are parsed from JSON (toJSON encodes []string) with a try/catch for robustness.\n\n**Dependencies:** Task 1 (the data attributes must be present on the cards).\n\n### Summary of Changes\n\n| Task | File | Lines | Change |\n|------|------|-------|--------|\n| 1 | server/templates/index.html | ~812 (board_fragment) | Add `data-ideation` and `data-ideation-summaries` attributes |\n| 2 | server/templates/index.html | ~404 (cardHash) | Add ideation attrs to hash |\n| 3 | server/templates/index.html | ~584 (showFeature) | Add ideation + summaries rendering |\n\nNo backend changes. No new files. No new dependencies.",
+  "test_spec": "# Test Specification: Show Ideation Phase in Web UI\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Feature cards in board_fragment carry ideation data attributes\n\n**Behavior:** When the dashboard board_fragment template renders feature cards, each card element must include `data-ideation` and `data-ideation-summaries` attributes populated from the FeatureSummary struct.\n\n**Success criteria:**\n- A feature card for an item with a non-empty `Ideation` field has a `data-ideation` attribute whose value matches the ideation content (HTML-attribute-escaped via `escapeAttr`).\n- A feature card for an item with populated `IdeationSummaries` (e.g., two debate round strings) has a `data-ideation-summaries` attribute whose value is a valid JSON array of strings (encoded via `toJSON`).\n- A feature card for an item with empty `Ideation` and nil/empty `IdeationSummaries` has `data-ideation=\"\"` and `data-ideation-summaries=\"[]\"` (or `\"null\"`).\n\n**Expected output:** The rendered HTML of the board_fragment contains the two new data attributes on every feature-card div, regardless of whether the values are populated.\n\n### 1.2 cardHash() includes ideation attributes for change detection\n\n**Behavior:** The `cardHash()` JavaScript function must include `data-ideation` and `data-ideation-summaries` in the hash string so that WebSocket state updates reflecting ideation changes trigger a board refresh.\n\n**Success criteria:**\n- Two cards that differ only in `data-ideation` produce different hash values.\n- Two cards that differ only in `data-ideation-summaries` produce different hash values.\n- Two cards with identical attributes (including ideation) produce the same hash value.\n\n**Expected output:** Hash strings that include ideation data, pipe-delimited, appended after the existing attributes.\n\n### 1.3 showFeature() modal displays ideation content\n\n**Behavior:** When a user clicks a feature card that has a non-empty `data-ideation` attribute, the modal must render an \"Ideation\" section showing the ideation text.\n\n**Success criteria:**\n- The modal HTML contains a section labeled \"Ideation\" (uppercase).\n- The ideation text is displayed with `white-space: pre-wrap` to preserve formatting.\n- The ideation text is escaped via `escapeHtml()` before insertion into the DOM (XSS safety).\n- The ideation section appears after the description section and before the history section.\n\n**Expected output:** A styled div with the ideation content, matching the existing dashboard modal styling patterns (colors #8b949e for label, #c9d1d9 for content, border-top #21262d).\n\n### 1.4 showFeature() modal displays ideation summaries (debate rounds)\n\n**Behavior:** When a user clicks a feature card that has a populated `data-ideation-summaries` attribute (JSON array of strings), the modal must render an \"Ideation Summaries\" section with each round numbered.\n\n**Success criteria:**\n- The section header reads \"Ideation Summaries (N rounds)\" where N is the array length.\n- Each debate round is displayed with a \"Round X\" label (1-indexed).\n- Each round's text content is escaped via `escapeHtml()`.\n- The summaries container has `max-height: 300px` and `overflow-y: auto` to handle lengthy content.\n- Round labels use color #d2a8ff (purple, matching existing styling for emphasis).\n\n**Expected output:** A scrollable container with numbered rounds, each showing the debate summary text.\n\n### 1.5 Ideation section hidden when no ideation data exists\n\n**Behavior:** When a feature card has empty ideation data, the modal must NOT render an ideation section or ideation summaries section.\n\n**Success criteria:**\n- If `data-ideation` is empty string, no \"Ideation\" header appears in the modal.\n- If `data-ideation-summaries` is `[]` or `null`, no \"Ideation Summaries\" header appears in the modal.\n- The modal otherwise renders normally (description, history, reviews, etc.).\n\n**Expected output:** Modal HTML with no ideation-related sections.\n\n## 2. Edge Cases\n\n### 2.1 Empty/null ideation fields\n- Feature with `Ideation: \"\"` and `IdeationSummaries: []` \u2014 no ideation sections rendered in modal.\n- Feature with `Ideation: \"\"` and `IdeationSummaries: nil` \u2014 no ideation sections rendered; JSON parse of null should not throw.\n- Feature with non-empty `Ideation` but empty `IdeationSummaries` \u2014 only the \"Ideation\" section renders, no \"Ideation Summaries\" section.\n- Feature with empty `Ideation` but non-empty `IdeationSummaries` \u2014 only the \"Ideation Summaries\" section renders, no \"Ideation\" section.\n\n### 2.2 Special characters in ideation content\n- Ideation text containing HTML special characters (`<script>alert('xss')</script>`) \u2014 must be escaped, not executed.\n- Ideation text containing double quotes, single quotes, and backticks \u2014 must not break the HTML attribute or JavaScript rendering.\n- Ideation text containing newlines (`\\n`) and tabs (`\\t`) \u2014 must be preserved in display via `white-space: pre-wrap`.\n- Ideation summaries containing JSON-special characters (backslashes, nested quotes) \u2014 the `toJSON` template function must encode them safely, and `JSON.parse` must decode them correctly.\n\n### 2.3 Large content\n- Ideation summaries with 10+ debate rounds \u2014 all rounds render, container scrolls.\n- Individual summary text exceeding 5000 characters \u2014 renders within the scrollable container without breaking modal layout.\n- Combined ideation + summaries content larger than all other modal sections \u2014 the 300px max-height on summaries prevents the modal from becoming unusably tall.\n\n### 2.4 Malformed data\n- `data-ideation-summaries` attribute containing invalid JSON \u2014 the `try/catch` around `JSON.parse` must prevent a JavaScript error; the summaries section simply doesn't render.\n- `data-ideation-summaries` attribute containing a JSON object instead of array \u2014 should not crash; the `.length` check or iteration should gracefully skip rendering.\n\n### 2.5 Feature cards across different stages\n- A feature in the \"ideating\" stage with ideation data \u2014 ideation sections render in modal.\n- A feature in a later stage (e.g., \"implementing\") that still has historical ideation data \u2014 ideation sections still render (data is preserved across stage transitions).\n- A feature in the \"ideas\" stage with no ideation data \u2014 no ideation sections rendered.\n\n## 3. What Constitutes Failure\n\n### 3.1 Missing data attributes\n- FAIL if a rendered feature card in the board_fragment does not have both `data-ideation` and `data-ideation-summaries` attributes present in the HTML.\n\n### 3.2 XSS vulnerability\n- FAIL if ideation text containing HTML tags is rendered as actual HTML rather than escaped text. Any `<script>` or `<img onerror=...>` content must appear as visible text, not executed markup.\n\n### 3.3 JavaScript errors\n- FAIL if clicking a feature card with ideation data causes a JavaScript console error.\n- FAIL if clicking a feature card with malformed `data-ideation-summaries` (invalid JSON) causes an unhandled JavaScript error.\n\n### 3.4 Modal rendering failures\n- FAIL if the ideation section appears when ideation data is empty.\n- FAIL if the ideation summaries section appears when summaries array is empty.\n- FAIL if ideation summaries are not numbered (missing \"Round N\" labels).\n- FAIL if the summaries container does not have scroll capability (missing overflow-y:auto and max-height).\n\n### 3.5 Change detection failures\n- FAIL if updating a feature's ideation content via WebSocket does not trigger a board fragment refresh (cardHash must detect the change).\n\n### 3.6 Rendering order\n- FAIL if the ideation section appears after the history section (it should appear between description and history).\n\n## 4. Out of Scope\n\n- **Visual/CSS assertions:** Exact pixel positioning, color rendering, font rendering, or responsive layout testing.\n- **Performance benchmarks:** Load time with large ideation content, render performance with many features.\n- **Browser compatibility:** Testing across different browsers or browser versions.\n- **Backend/API testing:** The Go FeatureSummary struct, WebSocket serialization, or API endpoints (confirmed already working).\n- **client.html changes:** The client detail view already has ideation display; no changes are being made there.\n- **Triggering ideation:** The ability to start, manage, or interact with ideation/debate rounds from the web UI.\n- **Move-to-phase buttons:** Dashboard buttons for moving features between stages.\n- **Accessibility testing:** Screen reader behavior, ARIA attributes, keyboard navigation within ideation sections.\n- **Integration with the TUI:** The terminal UI is a separate interface and not affected by these changes.",
+  "impl_notes": "Implemented showing ideation phase content in the web UI dashboard. Added data-ideation and data-ideation-summaries attributes to feature cards in the board_fragment template. Updated cardHash() to include these attributes for change detection. Added rendering logic in showFeature() modal to display ideation content and debate rounds (ideation summaries) with proper styling and XSS protection.",
+  "ideation_summaries": [],
+  "Ideation": "",
+  "history": [
+    {
+      "ts": "2026-03-13T03:51Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T03:52Z",
+      "stage": "PLAN-INBOX",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-13T03:52Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T03:52Z",
+      "stage": "PLANNING",
+      "note": "FAILED: You're out of extra usage \u00b7 resets 10pm (America/Los_Angeles)"
+    },
+    {
+      "ts": "2026-03-13T05:10Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T05:14Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-13T05:14Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-13T05:14Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible. It correctly identifies the nec..."
+    },
+    {
+      "ts": "2026-03-13T05:14Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-13T05:15Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-13T05:15Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-13T05:17Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-13T05:17Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-13T05:18Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T05:20Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T05:20Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T05:22Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T05:22Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T05:22Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T05:25Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-13T05:25Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T05:26Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation is complete and correct. All three tasks (data attributes on featu..."
+    },
+    {
+      "ts": "2026-03-13T05:26Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-13T16:07Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-13T05:14Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible. It correctly identifies the necessary template changes (data attributes in board_fragment), JavaScript changes (showFeature modal), and confirms no backend changes are needed. Edge cases around content length and encoding are addressed.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-13T05:26Z",
+      "verdict": "PASS",
+      "summary": "Implementation is complete and correct. All three tasks (data attributes on feature cards, cardHash update, showFeature modal rendering) match the plan and test spec. XSS protection, edge case handling (empty/null/malformed data), proper ordering (description \u2192 ideation \u2192 history), and styling requirements are all satisfied.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-12T22:25:31.667610",
+    "verdict": "PASS",
+    "results": {
+      "passed": 0,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All Go tests pass (server/ package). The feature implementation was verified via code review. The implementation in server/templates/index.html includes: (1) data-ideation and data-ideation-summaries attributes on feature cards (lines 834-835); (2) cardHash() includes ideation attributes for change detection (line 408); (3) showFeature() modal displays ideation content with escapeHtml and white-space:pre-wrap (lines 586-591); (4) showFeature() displays ideation summaries with numbered rounds, escapeHtml, max-height:300px, overflow-y:auto (lines 592-605); (5) Sections properly hidden when data is empty (if checks in place). No JavaScript/browser tests exist in this project to test frontend behaviors - this is a test coverage gap but the implementation is complete and correct."
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "id": "17e1ae76",
+  "board": "testboard",
+  "title": "Test Feature",
+  "type": "feature",
+  "created": "2026-03-17T18:15Z",
+  "description": "Description",
+  "done_script": "",
+  "requires_human_approval": false,
+  "plan": "Test plan",
+  "plan_exploration_summary": "",
+  "impl_spec": "Test impl spec",
+  "test_spec": "Test test spec",
+  "impl_notes": "Test implementation notes",
+  "ideation_summaries": [],
+  "ideation": "",
+  "ideation_prompt": "",
+  "history": [
+    {
+      "ts": "2026-03-17T18:15Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-17T18:15Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - All good"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-17T18:15Z",
+      "verdict": "PASS",
+      "summary": "All good",
+      "feedback": null
+    }
+  ]
+}

@@ -14,9 +14,154 @@
       "ts": "2026-03-08T05:30Z",
       "stage": "IDEAS",
       "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T00:37Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-13T00:48Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-13T00:48Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T05:42Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-13T05:42Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T05:43Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-13T05:44Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T05:44Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-13T05:45Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis"
+    },
+    {
+      "ts": "2026-03-13T05:46Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-13T21:25Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-13T21:26Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-13T21:26Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T21:27Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-13T21:28Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T21:29Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-13T21:29Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis"
+    },
+    {
+      "ts": "2026-03-13T21:30Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-17T05:18Z",
+      "stage": "IDEATING",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-17T05:19Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-17T05:19Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-17T05:19Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-17T05:20Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-17T05:21Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-17T05:22Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis"
+    },
+    {
+      "ts": "2026-03-17T05:23Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
     }
   ],
   "pipeline_log": [],
   "plan_reviews": [],
-  "impl_reviews": []
+  "impl_reviews": [],
+  "ideation_summaries": [
+    "Board-specific phase configuration is a strong idea that would significantly increase MAD's flexibility. The current system has 13 filesystem stages hardcoded in pipeline/config.py (STAGES list) and 7 agent execution phases in PHASE_CONFIG (pipeline/phases.py), with a single linear flow: ideas \u2192 ideating \u2192 plan-inbox \u2192 reviewing-plan \u2192 approved \u2192 spec-writing \u2192 implementing \u2192 testing \u2192 review \u2192 done. For boards where you only want planning (no implementation), or where you want to skip ideation ",
+    "The previous proposal for explicit phase sequences (approach 2) has several significant gaps that need addressing before implementation. First, the proposal underestimates the coupling between phases \u2014 phases aren't independent steps you can freely omit. The planning phase produces the plan field, spec_writing produces impl_spec and test_spec, and implementing consumes those specs. If you skip spec_writing but keep implementing, the implementing phase will receive empty specs and produce garbage",
+    "The predefined profiles approach from round 2 is the right instinct but too rigid \u2014 instead, model this as 'pipeline recipes' that declare both which phases run AND their data contracts. Looking at the actual code, run_pipeline in phases.py (line 1388) has three distinct sub-pipelines already emerging: (1) the planning loop (plan-inbox/requested-input cycle with plan review retries), (2) spec writing (run_spec_writing), and (3) the impl/test/review loop (_run_impl_test_review_loop). These are na",
+    "The 'pipeline recipes' / composable blocks approach from round 3 is the strongest proposal so far, but it has a critical blind spot: it assumes the three blocks (plan, spec, impl) are cleanly separable, when in reality the code reveals tight coupling between them that block-level composition doesn't fully address. Specifically: (1) The planning block's exit conditions are entangled with downstream assumptions \u2014 _run_pipeline_impl moves items to 'approved' after plan review passes (line 1437-1440",
+    "Building on the previous ideation rounds, I propose a pragmatic incremental approach that avoids the risky 'big refactor first' path. The three sub-pipelines (planning loop, spec writing, impl/test/review loop) are already structurally separated in _run_pipeline_impl as sequential blocks gated by stage checks (lines 1485-1612 in phases.py). Rather than refactoring them into formally independent units with data contracts before adding configuration, we can exploit this existing structure by intro",
+    "The previous pragmatic incremental approach of gating existing sequential blocks in _run_pipeline_impl has three critical weaknesses. First, it doesn't solve the data contract problem it claims to sidestep: the impl/test/review block consumes impl_spec and test_spec produced by spec_writing (phases.py line 1574-1609), so skipping spec writing without providing an alternative data source means the implementing phase receives empty specs and produces low-quality output -- the 'gate check' approach",
+    "Both the 'refactor first' and 'pragmatic gating' camps miss a simpler framing: the real unit of composition isn't the sub-pipeline block \u2014 it's the *terminal stage*. Looking at the actual code, _run_pipeline_impl (phases.py:1473) is essentially a waterfall where each block checks the current stage and runs if applicable. The data contract problem (spec_writing produces impl_spec/test_spec consumed by implementing) is real but overcomplicates the design when you realize most practical use cases a",
+    "The 'terminal_stage' proposal from round 7 is the most pragmatic suggestion yet, but it has two significant blind spots that undermine its claimed simplicity. First, it conflates 'stopping the pipeline' with 'completing the item' \u2014 the proposal says 'move to done and return' when terminal_stage is reached, but this skips final-human-approval entirely, which is the user's last checkpoint before work is considered finished. A plan-only board where plans auto-complete to 'done' without human sign-o",
+    "The `terminal_stage` approach from prior rounds is the right call, but I'd refine the implementation strategy after reading the actual code. In `_run_pipeline_impl` (phases.py:1473), the pipeline is already structured as three sequential blocks gated by stage checks: (1) planning loop at line 1485, (2) spec writing + review at line 1578, and (3) impl/test/review at line 1615. A `terminal_stage` field in board config (loaded via `_get_per_board_config` in config.py:351) would require exactly one ",
+    "The terminal_stage proposal has three underexplored weaknesses. First, it only handles truncation (stopping early) but not the equally common need to skip early phases \u2014 a board that wants to skip ideation and start directly at planning cannot express this with terminal_stage alone, requiring a separate skip_phases or start_stage mechanism that fragments the configuration model. Second, the proposal assumes the pipeline entry point always begins at plan-inbox (line 1485), but _run_pipeline_impl'",
+    "The terminal_stage proposal is sound for truncation use cases, but the previous critique about skipping early phases reveals a real configuration gap that deserves a unified solution rather than a second config knob. Instead of fragmenting the model with both terminal_stage and skip_phases/start_stage, I propose a single 'active_phases' list in board config that declares which of the three natural pipeline blocks run: ['plan', 'spec', 'impl']. This is not arbitrary phase composition \u2014 it's a bou",
+    "The active_phases proposal from round 11 improves on terminal_stage but introduces its own problems. First, it conflates block selection with entry-point routing: declaring active_phases: ['impl'] means skipping planning and spec entirely, but the impl block (lines 1615-1616) calls run_implementing which consumes impl_spec and test_spec \u2014 with no spec-writing block having run, these fields are empty, producing garbage implementations. The proposal hand-waves this by saying items would be 'placed"
+  ],
+  "Ideation": "Board-specific phases would let individual boards opt out of pipeline stages they don't need \u2014 a planning-only board stops after plan review, a board without ideation skips straight to planning. The debate across multiple rounds has converged around two competing framings: (1) `terminal_stage`, a board config field that halts the pipeline waterfall after a named stage, routing items to `final-human-approval` instead of continuing downstream; and (2) `active_phases`, a unified list (e.g., `['plan', 'spec', 'impl']`) that declares which of the three natural sub-pipelines run. Both approaches aim to avoid a risky up-front refactor by exploiting the existing sequential block structure in `_run_pipeline_impl` (phases.py:1473), where three blocks are already gated by stage checks: the planning loop (~line 1485), spec writing (~line 1578), and impl/test/review (~line 1615).\n\nThe `terminal_stage` approach is the most pragmatic for truncation use cases. It requires exactly one config field and one check per block boundary, leaves the data contract between phases intact (because stopping before a consumer phase means no consumer runs with empty inputs), and routes items to `final-human-approval` rather than auto-closing them, preserving the human checkpoint. Its critical weakness is that it only models stopping early \u2014 a board that wants to skip ideation and jump straight to planning cannot express this with `terminal_stage` alone. Adding a separate `start_stage` or `skip_phases` mechanism to cover this use case fragments the configuration model and introduces two orthogonal knobs with complex interactions.\n\nThe `active_phases` proposal attempts a unified solution by letting boards declare which blocks are active, covering both truncation and skipping simultaneously. However, this conflates block selection with entry-point routing in a way that reintroduces the data contract problem. Declaring `active_phases: ['impl']` means skipping both planning and spec writing, but the impl block consumes `impl_spec` and `test_spec` produced by spec writing \u2014 with those fields empty, the implementing phase produces garbage output. The proposal relies on items being pre-populated with the required data before entering the pipeline, which is a workflow assumption that is not currently enforced or well-supported.\n\nThe most defensible path forward is `terminal_stage` with `final-human-approval` routing for the truncation case, accepting that skipping early phases is out of scope for the initial implementation. The skip-early-phases use case requires either pre-populating data fields (a UI/workflow concern) or formalizing sub-pipeline data contracts first \u2014 both are non-trivial follow-on efforts. Implementing `terminal_stage` now delivers the highest-value use case (plan-only boards) with minimal code risk, while the broader phase coupling problem (planning exit logic entangled with downstream assumptions, spec writing as gatekeeper for impl) is left as a known limitation to be addressed before any recipe-based composition is attempted."
 }

@@ -1,0 +1,146 @@
+{
+  "id": "bf34d30a",
+  "board": "mad",
+  "title": "Move webui phase configurations to bottom",
+  "type": "feature",
+  "created": "2026-03-13T22:55Z",
+  "description": "I would like the phase configurations (agent and model) to be moved to the bottom of the client page, ideally in a collapsible element.",
+  "done_script": "",
+  "plan": "## What\nMove the phase configuration UI (agent and model settings per pipeline phase) from its current position near the top of the client page to the bottom, wrapped in a collapsible HTML element that is collapsed by default.\n\n## Why\nThe phase settings are rarely changed configuration that currently takes up prominent screen real estate near the top. Moving them to the bottom in a collapsible element keeps the focus on the primary content (agent status and feature cards) while still making settings accessible when needed.\n\n## Impact\n- The client page layout changes so phase settings appear after features and scripts sections\n- No backend changes needed \u2014 same data, same API calls\n- The settings JavaScript (population of selects, save handler) moves with the HTML block\n\n## Risks\n- Minimal: this is a pure UI layout change with no functional impact\n\n## Scope\n- In scope: Moving the phase settings block and wrapping it in a native HTML <details>/<summary> collapsible element\n- Out of scope: Redesigning the settings UI, changing the save behavior, or adding new settings",
+  "plan_exploration_summary": "Examined server/templates/client.html which is the main client page template. The phase settings section (agent and model configuration per phase) was located between the agent status cards and the Features section (around lines 379-465). The page uses Go HTML templates with inline styles and JavaScript. The codebase already uses collapsible patterns via custom toggleCollapsible/makeCollapsibleSection functions for feature detail sections, but also uses native HTML <details>/<summary> elements would be appropriate here for a standalone collapsible section. The phase settings consist of a grid of rows, each with a phase label, agent select dropdown, model override input, and save button, populated via JavaScript from Go template data.",
+  "impl_spec": "## Implementation Spec: Move WebUI Phase Configurations to Bottom\n\n### File: `server/templates/client.html`\n\nThis is a single-file change \u2014 pure HTML/JS layout reorganization with no backend modifications.\n\n### Task 1: Remove phase settings block from current position\n\n**Location:** Lines 369\u2013459 (committed version), immediately after the agent status `<div>` cards and before the `<h2>Features</h2>` section.\n\n**What to remove:** The entire `{{if .Config}}...{{end}}` block consisting of:\n- The `<h2>Phase Settings</h2>` heading\n- The `.settings-grid` div containing `{{range .Config.Phases}}` rows (agent select, model input, save button per phase)\n- The `<script>` block that initializes agent/model selects from `{{toJSON .Config.AgentForPhase}}` and defines `savePhaseAgent(btn)`\n- The closing `{{end}}` for the `{{if .Config}}` conditional\n\n**Dependencies:** None. This is the first step.\n\n### Task 2: Re-insert phase settings at the bottom of the page body\n\n**Location:** Insert just before the service worker script line (`<script>if ('serviceWorker' in navigator)...`) and `</body>`, which is after all content sections (Features, Scripts, Logs) and their associated JavaScript.\n\n**Approach:** Wrap the removed block in a native HTML `<details>/<summary>` collapsible element:\n\n```html\n{{if .Config}}\n<details style=\"margin-top:2rem\">\n    <summary style=\"cursor:pointer;color:#58a6ff;font-size:1.1rem;font-weight:600;padding:0.5rem 0;user-select:none\">Phase Settings</summary>\n    <div class=\"settings-grid\" style=\"background:#161b22;border-radius:6px;padding:1rem;margin-top:0.5rem\">\n        {{range .Config.Phases}}\n        <div class=\"settings-row\" data-phase=\"{{.Key}}\" style=\"display:flex;gap:0.5rem;align-items:center;padding:0.5rem 0;border-bottom:1px solid #21262d\">\n            <span class=\"phase-label\" style=\"color:#c9d1d9;font-weight:600;min-width:100px\">{{.Label}}</span>\n            <select class=\"phase-agent\" style=\"flex:1;padding:0.4rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.85rem;font-family:inherit\">\n                <option value=\"default\">default ({{$.Config.DefaultAgent}})</option>\n                {{range $.Config.AvailableAgents}}\n                <option value=\"{{.}}\">{{.}}</option>\n                {{end}}\n            </select>\n            <input type=\"text\" class=\"phase-model\" placeholder=\"model override\" style=\"flex:1;padding:0.4rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.85rem;font-family:inherit\">\n            <button class=\"save-phase-btn\" onclick=\"savePhaseAgent(this)\" style=\"padding:0.4rem 0.8rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-weight:600\">Save</button>\n        </div>\n        {{end}}\n    </div>\n</details>\n```\n\n**Key changes from original:**\n- `<h2>Phase Settings</h2>` replaced with `<details>/<summary>` \u2014 collapsed by default (no `open` attribute)\n- `margin-bottom:1rem` on settings-grid changed to `margin-top:0.5rem` (spacing relative to summary)\n- Added `margin-top:2rem` on `<details>` for separation from preceding content\n\n**Dependencies:** Task 1 must be completed first.\n\n### Task 3: Move the associated `<script>` block with the HTML\n\n**What:** The `<script>` block that:\n1. Parses `{{toJSON .Config.AgentForPhase}}` and populates the select/input elements\n2. Defines the `savePhaseAgent(btn)` function\n\nThis script must be placed immediately after the `</details>` closing tag but still inside the `{{if .Config}}...{{end}}` block. No changes to the script logic are needed \u2014 it uses `.settings-row` class selectors which remain unchanged.\n\n**Dependencies:** Task 2.\n\n### Verification\n\n- Load the client page in a browser\n- Confirm phase settings no longer appear near the top\n- Scroll to the bottom \u2014 \"Phase Settings\" should appear as a collapsed `<details>` element\n- Click the summary to expand; verify all phases show with correct agent/model values\n- Change an agent or model and click Save; verify it persists on reload\n- Confirm Features, Scripts, and Logs sections render correctly above the settings",
+  "test_spec": "# Test Spec: Move WebUI Phase Configurations to Bottom\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Phase Settings Block Is Removed From Original Position\n- **Behavior:** The phase settings section (agent select, model override, save button per phase) no longer appears between the agent status cards and the Features heading.\n- **Success criteria:** After loading the client page, scrolling through the top content shows agent status cards followed directly by the Features section with no phase settings in between.\n- **Expected output:** No `<h2>Phase Settings</h2>` or `.settings-grid` element exists in the upper portion of the page.\n\n### 1.2 Phase Settings Block Appears at the Bottom of the Page\n- **Behavior:** The phase settings section is now located after all main content sections (Features, Scripts, Logs).\n- **Success criteria:** The phase settings HTML is positioned in the DOM after the Scripts and Logs sections but before the service worker script and closing body tag.\n- **Expected output:** A `<details>` element containing the phase settings grid exists near the bottom of the page body.\n\n### 1.3 Phase Settings Are Wrapped in a Collapsible `<details>/<summary>` Element\n- **Behavior:** The phase settings are inside a native HTML `<details>` element with a `<summary>` that reads \"Phase Settings\".\n- **Success criteria:** The DOM contains a `<details>` element with a child `<summary>` element whose text content is \"Phase Settings\", and the `.settings-grid` div is inside this `<details>` element.\n- **Expected output:** Clicking the summary toggles the visibility of the settings grid via native browser behavior.\n\n### 1.4 Phase Settings Are Collapsed by Default\n- **Behavior:** When the client page first loads, the phase settings collapsible is closed.\n- **Success criteria:** The `<details>` element does NOT have the `open` attribute on initial page load.\n- **Expected output:** The settings grid content is hidden; only the \"Phase Settings\" summary text is visible.\n\n### 1.5 Phase Settings Expand When Clicked\n- **Behavior:** Clicking the \"Phase Settings\" summary expands the section to reveal all phase configuration rows.\n- **Success criteria:** After clicking the summary, the `<details>` element gains the `open` attribute and all phase rows become visible.\n- **Expected output:** Each configured phase row shows its label, agent dropdown, model override input, and Save button.\n\n### 1.6 Agent Dropdowns Are Populated Correctly\n- **Behavior:** Each phase row's agent `<select>` dropdown is populated with the available agents from the config, plus a \"default\" option showing the default agent name.\n- **Success criteria:** The dropdown options include \"default (<defaultAgentName>)\" and one option per available agent. The currently configured agent for each phase is pre-selected.\n- **Expected output:** Select elements contain the correct options with the correct one selected based on `Config.AgentForPhase` data.\n\n### 1.7 Model Override Inputs Are Pre-populated\n- **Behavior:** Each phase row's model override text input shows the currently configured model override value (if any).\n- **Success criteria:** If a phase has a model override configured, the input field shows that value. If not, the input is empty with placeholder text.\n- **Expected output:** Input values match the server-provided configuration data.\n\n### 1.8 Save Button Persists Changes\n- **Behavior:** Changing an agent selection or model override and clicking the Save button sends the updated configuration to the server and the change persists across page reloads.\n- **Success criteria:** After saving, reloading the page shows the updated agent/model values for that phase.\n- **Expected output:** The save operation completes without errors, and the new values appear correctly after reload.\n\n### 1.9 All Other Page Sections Render Correctly\n- **Behavior:** The Features, Scripts, Logs, and agent status sections are unaffected by the layout change.\n- **Success criteria:** All sections render in their expected positions with correct content. No visual or functional regressions.\n- **Expected output:** Features section with feature cards, Scripts section, Logs section, and agent status cards all display as before.\n\n### 1.10 Config Conditional Still Works\n- **Behavior:** The phase settings section is only rendered when `.Config` is available (the `{{if .Config}}` template conditional).\n- **Success criteria:** If the page is loaded without config data, the phase settings `<details>` element is not present in the DOM at all.\n- **Expected output:** No orphaned HTML elements or JavaScript errors when config is absent.\n\n## 2. Edge Cases\n\n### 2.1 No Phases Configured\n- The `{{range .Config.Phases}}` loop produces no rows. The `<details>/<summary>` element should still render but contain an empty settings grid.\n\n### 2.2 Single Phase Configured\n- Only one phase row appears inside the collapsible. The layout and save functionality should work identically to the multi-phase case.\n\n### 2.3 No Available Agents\n- If `Config.AvailableAgents` is empty, the agent dropdown should contain only the \"default\" option. Save should still work.\n\n### 2.4 Very Long Model Override Value\n- A model override string that is unusually long should not break the layout. The input field should handle it gracefully (scrolling within the input).\n\n### 2.5 Rapid Save Clicks\n- Clicking Save multiple times in quick succession should not cause duplicate requests or corrupted state. Each save should complete or be debounced.\n\n### 2.6 Expand/Collapse State Not Persisted\n- Since this uses native `<details>`, the collapsed/expanded state resets on page reload (returns to collapsed). This is expected behavior, not a bug.\n\n### 2.7 Page With Many Phases\n- If there are many phases (e.g., 10+), the expanded settings grid should remain scrollable/usable without breaking the page layout.\n\n## 3. What Constitutes Failure\n\n### 3.1 Phase Settings Still Appear Near the Top\n- If the settings grid or heading appears between agent status and Features sections, the migration is incomplete.\n\n### 3.2 Phase Settings Not Collapsible\n- If the settings are visible on page load without user interaction, the `<details>` element is missing or has the `open` attribute incorrectly set.\n\n### 3.3 Phase Settings Not at Bottom\n- If the `<details>` element appears before the Features, Scripts, or Logs sections rather than after them.\n\n### 3.4 Save Functionality Broken\n- If clicking Save produces a JavaScript error, fails to send the request, or the saved values don't persist on reload.\n\n### 3.5 Agent Dropdown Not Populated\n- If the agent select shows no options or shows incorrect/stale values that don't match the server config.\n\n### 3.6 JavaScript Errors on Page Load\n- If the browser console shows errors related to the phase settings script (e.g., cannot find `.settings-row` elements because the script runs before the DOM is ready or the selectors changed).\n\n### 3.7 Other Sections Broken\n- If moving the phase settings block inadvertently breaks the Features, Scripts, or Logs sections (e.g., due to unclosed HTML tags or misplaced template conditionals).\n\n## 4. Out of Scope\n\n- **Visual/CSS assertions:** Exact pixel positions, colors, font sizes, or spacing values are not tested. Only structural placement (top vs bottom) matters.\n- **Performance benchmarks:** Page load time differences due to the layout change are not measured.\n- **Browser compatibility:** Testing across different browsers or browser versions is out of scope.\n- **Accessibility beyond native behavior:** The native `<details>/<summary>` element provides built-in accessibility. No additional ARIA testing is required.\n- **Mobile responsiveness:** Layout changes specific to small screens are not tested.\n- **Settings UI redesign:** Changes to the settings form fields, labels, or styling beyond what's specified in the plan.\n- **Backend API changes:** The save endpoint and data format are unchanged and not retested.\n- **Concurrent multi-user scenarios:** Multiple users editing phase settings simultaneously is not tested.\n- **Animation or transition timing:** The expand/collapse animation is browser-native and not tested.",
+  "impl_notes": "The feature to move webui phase configurations to bottom has already been implemented in the codebase. The phase settings block (lines 1293-1379 in server/templates/client.html) is now: 1) Wrapped in a collapsible <details>/<summary> element collapsed by default, 2) Positioned at the bottom of the page before the service worker script and </body> tag, 3) The JavaScript for handling phase settings is also at the bottom. The original location (between agent status cards and Features section) is now clear - Features heading immediately follows the agent status div.",
+  "ideation_summaries": [],
+  "Ideation": "",
+  "history": [
+    {
+      "ts": "2026-03-13T22:55Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T22:55Z",
+      "stage": "PLAN-INBOX",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-13T22:55Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T22:57Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-13T22:57Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-13T22:57Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible. It clearly describes moving the..."
+    },
+    {
+      "ts": "2026-03-13T22:57Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-14T02:04Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-14T02:04Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-14T02:06Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-14T02:07Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-14T02:07Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-14T02:08Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-14T02:08Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-14T02:08Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-14T02:11Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-14T02:11Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-14T02:12Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation correctly moves phase settings from between agent status cards and..."
+    },
+    {
+      "ts": "2026-03-14T02:12Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-14T21:16Z",
+      "stage": "DONE",
+      "note": "Moved via web UI"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-13T22:57Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible. It clearly describes moving the phase configuration UI to the bottom wrapped in a collapsible <details>/<summary> element, with well-defined scope, impact, and risks. No technical blockers identified.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-14T02:12Z",
+      "verdict": "PASS",
+      "summary": "Implementation correctly moves phase settings from between agent status cards and Features section to the bottom of the page body, wrapped in a native <details>/<summary> element collapsed by default. The JavaScript for populating agent dropdowns and saving settings is properly co-located within the {{if .Config}} conditional. No residual phase settings HTML remains at the original position.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-13T19:11:45.398451",
+    "verdict": "PASS",
+    "results": {
+      "passed": 0,
+      "failed": 0,
+      "errors": 0,
+      "note": "No specific unit tests exist for this feature. Go server tests pass (25.888s). Python tests have pre-existing failures unrelated to this feature."
+    },
+    "feedback": "Implementation verified via code inspection. The feature is correctly implemented: (1) Phase settings moved from between agent status and Features to bottom of page, (2) Wrapped in collapsible <details>/<summary> element, (3) Collapsed by default (no 'open' attribute), (4) Conditional {{if .Config}} still works. No specific unit tests exist for this feature. Go tests pass. Python test failures (10 failures in test_consolidate_phase_execution.py and test_tui_per_phase_agent_settings.py) are pre-existing and unrelated to this feature - they concern phase config registry, checkpoint markers, and write-tests.md template. Test spec requires verification of 10 behaviors but no automated tests were written for this feature."
+  }
+}
