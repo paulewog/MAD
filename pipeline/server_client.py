@@ -48,14 +48,16 @@ class ServerClient:
                  on_answers_received=None,
                  on_set_auto_mode: Optional[Callable[[str, bool], None]] = None,
                  on_start_agent: Optional[Callable[[str, str], Awaitable[None]]] = None,
-                 on_idea_created: Optional[Callable[[str, str, str, str, str], Awaitable[None]]] = None,
+                 on_idea_created: Optional[Callable[[str, str, str, str, str, bool], Awaitable[None]]] = None,
                  on_move_requested: Optional[Callable[[str, str, str, str], Awaitable[None]]] = None,
                  on_edit_description: Optional[Callable[[str, str], Awaitable[None]]] = None,
                  on_edit_done_script: Optional[Callable[[str, str], Awaitable[None]]] = None,
                  on_edit_title: Optional[Callable[[str, str], Awaitable[None]]] = None,
                  on_edit_item_type: Optional[Callable[[str, str], Awaitable[None]]] = None,
+                 on_edit_ideation_prompt: Optional[Callable[[str, str], Awaitable[None]]] = None,
                  on_run_script: Optional[Callable[[str, str], Awaitable[None]]] = None,
-                 on_set_agent_for_phase: Optional[Callable[[str, str, str], Awaitable[None]]] = None):
+                 on_set_agent_for_phase: Optional[Callable[[str, str, str], Awaitable[None]]] = None,
+                 on_restart: Optional[Callable[[], Awaitable[None]]] = None):
         self._url = url
         self._api_key = api_key
         self._client_id = client_id
@@ -73,8 +75,10 @@ class ServerClient:
         self._on_edit_done_script = on_edit_done_script
         self._on_edit_title = on_edit_title
         self._on_edit_item_type = on_edit_item_type
+        self._on_edit_ideation_prompt = on_edit_ideation_prompt
         self._on_run_script = on_run_script
         self._on_set_agent_for_phase = on_set_agent_for_phase
+        self._on_restart = on_restart
 
     @property
     def connected(self) -> bool:
@@ -173,7 +177,9 @@ class ServerClient:
                     "done_script": f.done_script or "",
                     "item_type": f.item_type,
                     "ideation": f.Ideation or "",
+                    "ideation_prompt": f.ideation_prompt,
                     "ideation_summaries": f.ideation_summaries,
+                    "requires_human_approval": f.requires_human_approval,
                 })
                 # Collect log entries from the feature
                 raw_logs = f._data.get("pipeline_log", [])
@@ -319,9 +325,10 @@ class ServerClient:
             description = data.get("description", "")
             item_type = data.get("item_type", "feature")
             done_script = data.get("done_script", "")
+            requires_human_approval = data.get("requires_human_approval", False)
             if self._on_idea_created and title and board:
                 try:
-                    await self._on_idea_created(title, board, description, item_type, done_script)
+                    await self._on_idea_created(title, board, description, item_type, done_script, requires_human_approval)
                 except Exception as e:
                     logger.warning(f"Error handling create_idea: {e}")
         elif msg_type == "move_feature":
@@ -368,6 +375,14 @@ class ServerClient:
                     await self._on_edit_item_type(feature_id, item_type)
                 except Exception as e:
                     logger.warning(f"Error handling edit_item_type: {e}")
+        elif msg_type == "edit_ideation_prompt":
+            feature_id = data.get("feature_id", "")
+            ideation_prompt = data.get("ideation_prompt", "")
+            if self._on_edit_ideation_prompt and feature_id:
+                try:
+                    await self._on_edit_ideation_prompt(feature_id, ideation_prompt)
+                except Exception as e:
+                    logger.warning(f"Error handling edit_ideation_prompt: {e}")
         elif msg_type == "run_script":
             script_id = data.get("script_id", "")
             context = data.get("context", "")
@@ -385,6 +400,13 @@ class ServerClient:
                     await self._on_set_agent_for_phase(phase, agent, model)
                 except Exception as e:
                     logger.warning(f"Error handling set_agent_for_phase: {e}")
+        elif msg_type == "restart_tui":
+            logger.info("Received restart command from server")
+            if self._on_restart:
+                try:
+                    await self._on_restart()
+                except Exception as e:
+                    logger.warning(f"Error handling restart_tui: {e}")
         # Other message types silently ignored
 
     async def reconnect_loop(self) -> None:

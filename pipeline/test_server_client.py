@@ -38,10 +38,11 @@ def tmp_config(tmp_path):
 
 
 def _make_feature(title="Test Feature", stage="ideas", board="default",
-                  created="2025-01-01", fid="f1", logs=None):
+                  created="2025-01-01", fid="f1", logs=None, slug="test-feature"):
     """Create a mock feature object matching FeatureFile interface."""
     f = SimpleNamespace()
     f.title = title
+    f.slug = slug
     f.current_stage = stage
     f.board = board
     f.created = created
@@ -49,9 +50,19 @@ def _make_feature(title="Test Feature", stage="ideas", board="default",
     f.description = ""
     f.questions = []
     f.plan = ""
+    f.plan_exploration_summary = ""
     f.impl_spec = ""
     f.test_spec = ""
     f.impl_notes = ""
+    f.plan_reviews = []
+    f.impl_reviews = []
+    f.test_results = None
+    f.done_script = ""
+    f.item_type = "feature"
+    f.Ideation = ""
+    f.ideation_summaries = []
+    f.requires_human_approval = False
+    f.ideation_prompt = ""
     f._data = {"pipeline_log": logs or [], "history": []}
     return f
 
@@ -1045,7 +1056,7 @@ class TestPushStateAvailableActions:
         await sc.push_state([feature])
 
         payload = json.loads(fake_ws._sent[0])
-        assert payload["features"][0]["available_actions"] == []
+        assert payload["features"][0]["available_actions"] == ["ideate"]
 
     @pytest.mark.asyncio
     async def test_feature_in_spec_writing_has_implement_only(self):
@@ -1527,7 +1538,7 @@ class TestPushStateNewFields:
         await sc.push_state([feature])
 
         payload = json.loads(fake_ws._sent[0])
-        assert len(payload["features"][0]["plan"]) == 1000
+        assert len(payload["features"][0]["plan"]) == 2000
 
     @pytest.mark.asyncio
     async def test_push_state_special_characters_preserved(self):

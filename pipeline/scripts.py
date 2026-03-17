@@ -1,8 +1,10 @@
 """Script configuration and execution for MAD pipeline."""
 
+import atexit
 import json
 import logging
 import re
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +15,26 @@ from runner import AgentRunner
 from agent_status import AgentStatus
 
 log = logging.getLogger(__name__)
+
+_pending_scripts: list[threading.Thread] = []
+_pending_scripts_lock = threading.Lock()
+_SCRIPT_WAIT_TIMEOUT = 600  # 10 minutes
+
+
+def _wait_for_pending_scripts():
+    """atexit handler: join all pending script threads so they complete before process exit."""
+    with _pending_scripts_lock:
+        threads = list(_pending_scripts)
+    if not threads:
+        return
+    log.info(f"Waiting for {len(threads)} pending done script(s) to finish (timeout: {_SCRIPT_WAIT_TIMEOUT}s)...")
+    for t in threads:
+        t.join(timeout=_SCRIPT_WAIT_TIMEOUT)
+        if t.is_alive():
+            log.warning(f"Script thread {t.name} did not finish within timeout")
+
+
+atexit.register(_wait_for_pending_scripts)
 
 
 @dataclass
@@ -104,6 +126,32 @@ def load_scripts(mad_dir: Path) -> list[ScriptConfig]:
     return scripts
 
 
+def save_scripts(mad_dir: Path, scripts: list[ScriptConfig]) -> bool:
+    """Save scripts list to scripts.json."""
+    scripts_path = mad_dir / "scripts.json"
+    try:
+        data = []
+        for script in scripts:
+            entry = {
+                "id": script.id,
+                "label": script.label,
+                "command": script.command,
+                "description": script.description,
+                "confirm": script.confirm,
+            }
+            if script.model:
+                entry["model"] = script.model
+            if script.agent:
+                entry["agent"] = script.agent
+            data.append(entry)
+        
+        scripts_path.write_text(json.dumps(data, indent=2))
+        return True
+    except Exception as e:
+        log.error(f"Failed to save scripts.json: {e}")
+        return False
+
+
 def run_script(script: ScriptConfig, config: Config, status: ScriptStatus, context: str = "") -> int:
     agent_name = script.agent or config._data.get('default_agent', 'claude')
     agent_config = config.agents.get(agent_name, config.current_agent)
@@ -188,17 +236,39 @@ def execute_done_script(feature, config: Config) -> None:
         log.warning(f"Done script '{feature.done_script}' not found in scripts.json")
         return
 
-    status = ScriptStatus(script_id=script.id)
+    feature.add_history("DONE", f"Done script '{script.id}' triggered")
 
-    import threading
+    status = ScriptStatus(script_id=script.id)
 
     def run_in_background():
         context = f"Triggered by completion of {feature.item_type}: {feature.title}"
         try:
             run_script(script, config, status, context)
             log.info(f"Done script '{script.id}' completed for feature {feature.id}")
+            try:
+                from state import FeatureFile as FF
+                updated = FF(feature.path)
+                updated.add_history("DONE", f"Done script '{script.id}' completed (exit 0)")
+            except Exception as he:
+                log.warning(f"Failed to write completion history: {he}")
         except Exception as e:
             log.error(f"Done script '{script.id}' failed for feature {feature.id}: {e}")
+            try:
+                from state import FeatureFile as FF
+                updated = FF(feature.path)
+                updated.add_history("DONE", f"Done script '{script.id}' failed: {e}")
+            except Exception as he:
+                log.warning(f"Failed to write failure history: {he}")
+        finally:
+            with _pending_scripts_lock:
+                if thread in _pending_scripts:
+                    _pending_scripts.remove(thread)
 
-    thread = threading.Thread(target=run_in_background, daemon=True)
+    thread = threading.Thread(
+        target=run_in_background,
+        daemon=True,
+        name=f"done-script-{script.id}-{feature.id}"
+    )
+    with _pending_scripts_lock:
+        _pending_scripts.append(thread)
     thread.start()

@@ -292,6 +292,10 @@
                 <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Done Script</label>
                 <input type="text" id="edit-done-script" placeholder="Optional script to run when done" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
             </div>
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Ideation Prompt (User Direction)</label>
+                <textarea id="edit-ideation-prompt" rows="3" placeholder="Optional: provide direction for ideation debates" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit;resize:vertical"></textarea>
+            </div>
             <div style="display:flex;gap:0.5rem;justify-content:flex-end">
                 <button onclick="closeEditModal()" style="padding:0.5rem 1rem;background:#30363d;color:#c9d1d9;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-family:inherit">Cancel</button>
                 <button onclick="saveEdits()" id="save-edit-btn" style="padding:0.5rem 1rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-family:inherit">Save</button>
@@ -356,7 +360,8 @@
                                 card.getAttribute('data-questions') || '',
                                 card.getAttribute('data-available-actions') || '',
                                 card.getAttribute('data-type') || '',
-                                card.getAttribute('data-done-script') || ''].join('|');
+                                card.getAttribute('data-done-script') || '',
+                                card.getAttribute('data-ideation-prompt') || ''].join('|');
                     }
                     // Quick check: same number of cards with same hashes?
                     var same = curStageCards.length === newCards.length;
@@ -463,20 +468,20 @@
             var detail = document.createElement('div');
             detail.className = 'feature-detail';
             var doneScript = card.getAttribute('data-done-script') || '';
+            var ideationPrompt = card.getAttribute('data-ideation-prompt') || '';
             var html =
                 '<div class="detail-row"><span class="detail-label">Title</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-title')) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Stage</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-stage')) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Board</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-board')) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-created')) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">ID</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-id')) + '</span></div>' +
-                (doneScript ? '<div class="detail-row"><span class="detail-label">Done Script</span><span class="detail-value" style="color:#d2a8ff">' + escapeHtml(doneScript) + '</span></div>' : '');
+                (doneScript ? '<div class="detail-row"><span class="detail-label">Done Script</span><span class="detail-value" style="color:#d2a8ff">' + escapeHtml(doneScript) + '</span></div>' : '') +
+                (ideationPrompt ? '<div class="detail-row"><span class="detail-label">User Direction</span><span class="detail-value" style="color:#58a6ff">' + escapeHtml(ideationPrompt) + '</span></div>' : '');
             var description = card.getAttribute('data-description') || '';
-            // Decode any residual HTML entities that may have been baked into the stored data
-            var descriptionDecoded = decodeHtmlEntities(description);
-            if (descriptionDecoded) {
+            if (description) {
                 html += '<div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d">' +
                     '<div style="color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem">Description</div>' +
-                    '<div style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap">' + escapeHtml(descriptionDecoded) + '</div></div>';
+                    '<div style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap">' + escapeHtml(description) + '</div></div>';
             }
             try {
                 var history = JSON.parse(card.getAttribute('data-history') || '[]');
@@ -683,27 +688,24 @@
                 btn.textContent = 'Create Idea';
             });
         }
-        function decodeHtmlEntities(text) {
-            var ta = document.createElement('textarea');
-            ta.innerHTML = text;
-            return ta.value;
-        }
         var _editOriginals = {};
         function showEditModal(card) {
             var modal = document.getElementById('edit-modal');
             document.getElementById('edit-feature-id').value = card.getAttribute('data-id');
             var title = card.getAttribute('data-title') || '';
             var type = card.getAttribute('data-type') || 'feature';
-            var description = decodeHtmlEntities(card.getAttribute('data-description') || '');
+            var description = card.getAttribute('data-description') || '';
             var doneScript = card.getAttribute('data-done-script') || '';
+            var ideationPrompt = card.getAttribute('data-ideation-prompt') || '';
             document.getElementById('edit-title').value = title;
             document.getElementById('edit-description').value = description;
             document.getElementById('edit-done-script').value = doneScript;
+            document.getElementById('edit-ideation-prompt').value = ideationPrompt;
             var radios = document.querySelectorAll('input[name="edit-type"]');
             for (var i = 0; i < radios.length; i++) {
                 radios[i].checked = (radios[i].value === type);
             }
-            _editOriginals = {title: title, type: type, description: description, doneScript: doneScript};
+            _editOriginals = {title: title, type: type, description: description, doneScript: doneScript, ideationPrompt: ideationPrompt};
             document.getElementById('edit-feedback').textContent = '';
             var btn = document.getElementById('save-edit-btn');
             btn.disabled = false;
@@ -758,6 +760,13 @@
                 promises.push(fetch(baseURL + '/edit-done-script' + keyParam, {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({done_script: doneScript})
+                }));
+            }
+            var ideationPrompt = document.getElementById('edit-ideation-prompt').value;
+            if (ideationPrompt !== _editOriginals.ideationPrompt) {
+                promises.push(fetch(baseURL + '/edit-ideation-prompt' + keyParam, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ideation_prompt: ideationPrompt})
                 }));
             }
             if (promises.length === 0) {
@@ -817,12 +826,13 @@
             data-board="{{.Board}}"
             data-created="{{.Created}}"
             data-id="{{.ID}}"
-            data-description="{{escapeAttr .Description}}"
+            data-description="{{.Description}}"
             data-history="{{toJSON .History}}"
             data-questions="{{toJSON .Questions}}"
             data-available-actions="{{toJSON .AvailableActions}}"
             data-done-script="{{.DoneScript}}"
-            data-type="{{.ItemType}}">
+            data-type="{{.ItemType}}"
+            data-ideation-prompt="{{.IdeationPrompt}}">
             <div class="title">{{.Title}}{{if and .ItemType (ne .ItemType "feature")}} <span class="item-type-badge item-type-{{.ItemType}}" aria-label="Item type: {{.ItemType}}">{{.ItemType}}</span>{{end}}{{if .DoneScript}} <span class="done-script-badge" style="background:#a855f7;color:white;padding:0 4px;border-radius:3px;font-size:0.7rem">Script</span>{{end}}</div>
             <div class="meta"><span>{{.Board}}</span><span>{{.Created}}</span></div>
         </div>{{end}}{{else}}<div class="empty-stage">No features in this stage</div>{{end}}

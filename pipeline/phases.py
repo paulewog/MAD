@@ -92,6 +92,17 @@ PHASE_CONFIG = {
             "test_spec": "string",
         },
     },
+    "reviewing_spec": {
+        "runner_phase": "reviewing_spec",
+        "history_tag": "SPECREVIEW",
+        "status_label": "reviewing-spec",
+        "template": "review-spec.md",
+        "output_schema": {
+            "verdict": "string",
+            "summary": "string",
+            "feedback": "string | null",
+        },
+    },
     "implementing": {
         "runner_phase": "implementing",
         "history_tag": "IMPLEMENTING",
@@ -186,6 +197,15 @@ PHASE_SCHEMAS = {
         "required": ["test_spec"],
         "properties": {
             "test_spec": {"type": "string"},
+        },
+    },
+    "reviewing_spec": {
+        "type": "object",
+        "required": ["verdict"],
+        "properties": {
+            "verdict": {"type": "string"},
+            "summary": {"type": "string"},
+            "feedback": {"type": ["string", "null"]},
         },
     },
     "implementing": {
@@ -705,7 +725,8 @@ def run_ideating(
 ) -> None:
     """Run the ideation debate process for the feature.
     
-    Executes multiple rounds of debate based on config, then synthesizes into final Ideation.
+    Executes multiple rounds in cycles (one pass through rounds list = one cycle),
+    then runs synthesis with verdict evaluation to decide whether to continue.
     """
     config = Config()
     rounds = config.ideating_rounds
@@ -714,8 +735,12 @@ def run_ideating(
         logger.warning("[ideating] No ideating rounds configured, skipping")
         return
     
+    max_rounds = feature.ideation_max_rounds or config.ideating_max_rounds
+    rounds_per_cycle = len(rounds)
+    
     logger.info(f"[ideating] Starting ideation for: {feature.title}")
     feature.add_history("IDEATING", "Starting ideation debate")
+    feature.clear_ideation_cycle_verdicts()
     feature.save()
     
     conversations_dir = config.boards_dir / feature.board / ".conversations"
@@ -733,121 +758,195 @@ def run_ideating(
         if nums:
             next_num = max(nums) + 1
     
-    current_round = 1
+    total_rounds_completed = 0
+    cycle_number = 0
     summaries = []
     full_outputs = []
+    termination_reason = None
+    final_ideation = ""
     
-    for round_config in rounds:
-        round_cli = round_config.cli
-        round_model = round_config.model
+    while total_rounds_completed < max_rounds:
+        cycle_number += 1
+        cycle_start_round = total_rounds_completed
         
-        round_runner = runner.for_cli_model(round_cli, round_model)
-        
-        is_proposer = (current_round == 1)
-        if is_proposer:
-            role_instruction = "Generate initial ideas and approach for this feature. Be thorough and explore different angles."
-            previous_discussion = ""
-        else:
-            if current_round % 2 == 1:
-                role_instruction = "Refine and improve upon the previous critique. Address the points raised and provide a better approach."
-            else:
-                role_instruction = "Critique the previous proposal. Find weaknesses, gaps, and areas that need more thought."
+        for round_config in rounds:
+            if total_rounds_completed >= max_rounds:
+                break
             
-            previous_discussion = "\n\n".join([
-                f"Round {i+1}: {s}" for i, s in enumerate(summaries)
-            ])
+            current_round = total_rounds_completed + 1
+            round_cli = round_config.cli
+            round_model = round_config.model
+            
+            round_runner = runner.for_cli_model(round_cli, round_model)
+            
+            is_proposer = (current_round == 1)
+            if is_proposer:
+                role_instruction = "Generate initial ideas and approach for this feature. Be thorough and explore different angles."
+                previous_discussion = ""
+            else:
+                if current_round % 2 == 1:
+                    role_instruction = "Refine and improve upon the previous critique. Address the points raised and provide a better approach."
+                else:
+                    role_instruction = "Critique the previous proposal. Find weaknesses, gaps, and areas that need more thought."
+                
+                previous_discussion = "\n\n".join([
+                    f"Round {i+1}: {s}" for i, s in enumerate(summaries)
+                ])
+            
+            summaries_text = f"Previous contributions:\n" + "\n".join([f"- {s}" for s in summaries]) if summaries else "This is the first round - no previous discussion."
+            
+            transcript_paths_text = "\n".join([
+                f"- Full transcript: {conversations_dir / f'{feature.slug}.ideating.{i+1}'}"
+                for i in range(len(full_outputs))
+            ]) if full_outputs else "No full transcripts yet."
+            
+            previous_ideation = f"\n\n## Existing Ideation\n{feature.Ideation}" if feature.Ideation else ""
+            
+            ideation_prompt_section = ""
+            if feature.ideation_prompt:
+                ideation_prompt_section = (
+                    "\n\n## User Direction\n"
+                    f"{feature.ideation_prompt}\n\n"
+                    "The above user direction should guide your ideation — "
+                    "prioritize it over default assumptions, but still fulfill your assigned role below."
+                )
+            
+            prompt = _build_prompt("ideating.md", {
+                "{title}": feature.title,
+                "{description}": feature.description,
+                "{previous_ideation}": previous_ideation,
+                "{ideation_prompt_section}": ideation_prompt_section,
+                "{role_instruction}": role_instruction,
+                "{discussion_summary}": summaries_text,
+                "{full_transcripts}": transcript_paths_text,
+                "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
+            })
+            
+            feature.add_history("IDEATING", f"Starting round {current_round} ({round_cli}/{round_model or 'default'})")
+            feature.save()
+            
+            if status is not None:
+                status.phase = f"ideating round {current_round} (cycle {cycle_number})"
+                status.agent = round_cli
+            
+            output = runner.headless(
+                prompt,
+                status=status,
+                phase_key="ideating",
+                output_schema={"summary": "string"},
+            )
+            
+            if not output or not output.strip():
+                logger.error(f"[ideating] Empty output for round {current_round}")
+                feature.add_history("IDEATING", f"Round {current_round} failed: empty output")
+                feature.save()
+                raise RuntimeError(f"Ideation round {current_round} produced empty output")
+            
+            full_output_path = conversations_dir / f"{feature.slug}.ideating.{next_num}"
+            full_output_path.write_text(output)
+            full_outputs.append(output)
+            next_num += 1
+            
+            try:
+                result = json.loads(output)
+                summary = result.get("summary", "")[:500]
+            except json.JSONDecodeError:
+                summary = output[:500]
+            
+            feature.add_ideation_summary(summary)
+            summaries.append(summary)
+            
+            total_rounds_completed += 1
         
-        summaries_text = f"Previous contributions:\n" + "\n".join([f"- {s}" for s in summaries]) if summaries else "This is the first round - no previous discussion."
+        previous_verdicts_text = ""
+        if feature.ideation_cycle_verdicts:
+            lines = []
+            for v in feature.ideation_cycle_verdicts:
+                lines.append(f"- Cycle {v['cycle']}: {v['verdict']} - {v['reason']}")
+            previous_verdicts_text = "Previous cycle verdicts:\n" + "\n".join(lines)
         
-        transcript_paths_text = "\n".join([
-            f"- Full transcript: {conversations_dir / f'{feature.slug}.ideating.{i+1}'}"
-            for i in range(len(full_outputs))
-        ]) if full_outputs else "No full transcripts yet."
-        
-        previous_ideation = f"\n\n## Existing Ideation\n{feature.Ideation}" if feature.Ideation else ""
-        
-        prompt = _build_prompt("ideating.md", {
-            "{title}": feature.title,
-            "{description}": feature.description,
-            "{previous_ideation}": previous_ideation,
-            "{role_instruction}": role_instruction,
-            "{discussion_summary}": summaries_text,
-            "{full_transcripts}": transcript_paths_text,
+        compact_prompt = _build_prompt("compact.md", {
+            "{summaries}": "\n\n".join([f"## Round {i+1}\n{s}" for i, s in enumerate(summaries)]),
             "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
+            "{cycle_number}": str(cycle_number),
+            "{total_rounds_completed}": str(total_rounds_completed),
+            "{previous_verdicts_section}": previous_verdicts_text,
         })
         
-        feature.add_history("IDEATING", f"Starting round {current_round} ({round_cli}/{round_model or 'default'})")
+        feature.add_history("IDEATING", f"Running synthesis (cycle {cycle_number})")
         feature.save()
         
         if status is not None:
-            status.phase = f"ideating round {current_round}"
-            status.agent = round_cli
+            status.phase = f"ideating synthesis (cycle {cycle_number})"
         
-        output = runner.headless(
-            prompt,
+        synthesis_runner = runner.for_cli_model(rounds[-1].cli, rounds[-1].model)
+        synthesis_output = synthesis_runner.headless(
+            compact_prompt,
             status=status,
             phase_key="ideating",
-            output_schema={"summary": "string"},
+            output_schema={"Ideation": "string", "verdict": "string", "verdict_reason": "string"},
         )
         
-        if not output or not output.strip():
-            logger.error(f"[ideating] Empty output for round {current_round}")
-            feature.add_history("IDEATING", f"Round {current_round} failed: empty output")
-            feature.save()
-            raise RuntimeError(f"Ideation round {current_round} produced empty output")
+        verdict = "progress"
+        verdict_reason = "Could not parse verdict"
         
-        full_output_path = conversations_dir / f"{feature.slug}.ideating.{next_num}"
-        full_output_path.write_text(output)
-        full_outputs.append(output)
-        next_num += 1
+        if synthesis_output and synthesis_output.strip():
+            try:
+                result = json.loads(synthesis_output)
+                final_ideation = result.get("Ideation", "")
+                verdict_raw = result.get("verdict", "progress")
+                verdict = "progress"
+                if isinstance(verdict_raw, str):
+                    verdict = verdict_raw.lower().strip()
+                verdict_reason_raw = result.get("verdict_reason")
+                verdict_reason = "No reason given"
+                if isinstance(verdict_reason_raw, str):
+                    verdict_reason = verdict_reason_raw
+            except json.JSONDecodeError:
+                final_ideation = synthesis_output
+                verdict = "progress"
+                verdict_reason = "Synthesis output was not valid JSON"
         
-        try:
-            result = json.loads(output)
-            summary = result.get("summary", "")[:500]
-        except json.JSONDecodeError:
-            summary = output[:500]
+        if verdict not in ("consensus", "stall", "progress"):
+            verdict = "progress"
         
-        feature.add_ideation_summary(summary)
-        summaries.append(summary)
+        feature.add_ideation_cycle_verdict(cycle_number, verdict, verdict_reason, total_rounds_completed)
         
-        current_round += 1
-    
-    compact_prompt = _build_prompt("compact.md", {
-        "{summaries}": "\n\n".join([f"## Round {i+1}\n{s}" for i, s in enumerate(summaries)]),
-        "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
-    })
-    
-    logger.info(f"[ideating] Running synthesis for: {feature.title}")
-    feature.add_history("IDEATING", "Running synthesis")
-    feature.save()
-    
-    if status is not None:
-        status.phase = "ideating synthesis"
-    
-    synthesis_runner = runner.for_cli_model(rounds[-1].cli, rounds[-1].model)
-    
-    synthesis_output = synthesis_runner.headless(
-        compact_prompt,
-        status=status,
-        phase_key="ideating",
-        output_schema={"Ideation": "string"},
-    )
-    
-    if synthesis_output and synthesis_output.strip():
-        try:
-            result = json.loads(synthesis_output)
-            ideation = result.get("Ideation", "")
-        except json.JSONDecodeError:
-            ideation = synthesis_output
+        if termination_reason == "hard_cap":
+            break
         
-        feature.set_Ideation(ideation)
+        if total_rounds_completed >= max_rounds:
+            termination_reason = "hard_cap"
+            feature.add_history("IDEATING", f"Hard cap reached ({max_rounds} rounds)")
+            break
+        
+        if verdict == "consensus":
+            termination_reason = "consensus"
+            feature.add_history("IDEATING", f"Consensus reached after {total_rounds_completed} rounds")
+            break
+        
+        if verdict == "stall":
+            termination_reason = "stall"
+            feature.add_history("IDEATING", f"Stall detected after {total_rounds_completed} rounds")
+            break
+        
+        feature.add_history("IDEATING", f"Cycle {cycle_number}: progress, continuing")
+    
+    if termination_reason and final_ideation:
+        termination_note = {
+            "consensus": f"\n\n[Ideation concluded by consensus after {total_rounds_completed} rounds, {cycle_number} cycles.]",
+            "stall": f"\n\n[Ideation concluded by stall detection after {total_rounds_completed} rounds, {cycle_number} cycles. Full convergence was not achieved.]",
+            "hard_cap": f"\n\n[Ideation concluded by hard cap ({max_rounds} rounds, {cycle_number} cycles).]",
+        }.get(termination_reason, "")
+        final_ideation += termination_note
+    
+    if final_ideation:
+        feature.set_Ideation(final_ideation)
     
     feature.add_history("IDEATING", "Ideation complete")
     feature.save()
-    
     feature.move_to_stage("ideas")
-    
-    logger.info(f"[ideating] Completed: {feature.title}")
+    logger.info(f"[ideating] Completed: {feature.title} ({termination_reason}, {total_rounds_completed} rounds, {cycle_number} cycles)")
 
 
 def run_planning(
@@ -1125,6 +1224,10 @@ def run_spec_writing(
         "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
     }, "spec_impl")
 
+    latest_spec_review = feature.get_latest_spec_review()
+    if latest_spec_review and latest_spec_review.get("verdict") == "FAIL" and latest_spec_review.get("feedback"):
+        impl_prompt += f"\n\n## Previous Spec Review Feedback (you MUST address these issues):\n{latest_spec_review['feedback']}\n"
+
     output = _run_phase("spec_impl", feature, runner, impl_prompt, status=status)
     
     # Parse JSON output
@@ -1144,6 +1247,10 @@ def run_spec_writing(
         "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
     }, "spec_test")
 
+    latest_spec_review = feature.get_latest_spec_review()
+    if latest_spec_review and latest_spec_review.get("verdict") == "FAIL" and latest_spec_review.get("feedback"):
+        test_prompt += f"\n\n## Previous Spec Review Feedback (you MUST address these issues):\n{latest_spec_review['feedback']}\n"
+
     output = _run_phase("spec_test", feature, runner, test_prompt, status=status, skip_history_start=True)
     
     # Parse JSON output
@@ -1154,10 +1261,60 @@ def run_spec_writing(
     feature.add_history("SPEC_WRITING", f"Test spec generated via {runner.agent.name}")
     feature.save()
 
-    feature.move_to_stage("implementing")
     _git_commit(feature, "spec writing complete")
     _delete_checkpoint(feature)
-    console.print("[green]Specs generated. Feature moved to implementing.[/green]")
+    console.print("[green]Specs generated.[/green]")
+
+
+def run_spec_review(
+    feature: FeatureFile,
+    runner: AgentRunner,
+    feedback: str = "",
+    status: Optional[AgentStatus] = None,
+) -> tuple[str, str]:
+    """Review the specs and return (verdict, feedback).
+
+    If feedback is provided from a previous failed review, use it to improve the review.
+    """
+    runner = runner.for_phase("reviewing_spec")
+
+    feedback_section = f"## Previous Spec Review Feedback (must address):\n{feedback}" if feedback else ""
+
+    prompt = _build_prompt("review-spec.md", {
+        "{title}": feature.title,
+        "{plan}": feature.plan or "(no plan)",
+        "{impl_spec}": _spec_to_string(feature.impl_spec) or "(no impl spec)",
+        "{test_spec}": _spec_to_string(feature.test_spec) or "(no test spec)",
+        "{feedback_section}": feedback_section,
+        "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
+    }, "reviewing_spec")
+
+    try:
+        output = _run_phase("reviewing_spec", feature, runner, prompt, status=status,
+                            start_message="Starting spec review")
+    except (RateLimitError, RuntimeError) as e:
+        error_msg = str(e)
+        if 'authentication error' in error_msg.lower() or 'api key' in error_msg.lower():
+            system_feedback = f"SYSTEM ERROR: Authentication failure - {error_msg}. This is not a spec issue. Review should be retried after fixing API configuration."
+        elif isinstance(e, RateLimitError):
+            system_feedback = f"SYSTEM ERROR: Rate limit exceeded - {error_msg}. This is not a spec issue. Review should be retried after rate limit clears."
+        else:
+            system_feedback = f"SYSTEM ERROR: Agent execution failed - {error_msg}. This is not a spec issue. Review should be retried."
+
+        feature.add_spec_review("FAIL", "System error during review", system_feedback)
+        feature.add_history("SPECREVIEW", f"System error: {error_msg}")
+        feature.save()
+        return "FAIL", system_feedback
+
+    verdict, summary, review_feedback = _parse_verdict(output)
+
+    feature.add_spec_review(verdict, summary, review_feedback)
+    feature.add_history("SPECREVIEW", f"Verdict: {verdict} - {summary}")
+    feature.save()
+    _git_commit(feature, "spec review complete")
+    _delete_checkpoint(feature)
+
+    return verdict, review_feedback
 
 
 def run_implementing(
@@ -1170,6 +1327,9 @@ def run_implementing(
     console.print(f"\n[bold blue]Implementing:[/bold blue] {feature.title}")
     logger.info(f"[implementing] Starting: {feature.title}")
 
+    latest_feedback = _get_latest_feedback(feature)
+    feedback_section = f"{latest_feedback}\n" if latest_feedback and latest_feedback != "No previous feedback available." else "(No previous feedback)"
+
     prompt = _build_prompt("implement.md", {
         "{title}": feature.title,
         "{plan}": feature.plan or "(no plan)",
@@ -1179,11 +1339,8 @@ def run_implementing(
         "{feature_id}": feature.id,
         "{phase}": "implementing",
         "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
+        "{feedback_section}": feedback_section,
     }, "implementing")
-
-    latest_feedback = _get_latest_feedback(feature)
-    if latest_feedback and latest_feedback != "No previous feedback available.":
-        prompt += f"\n\n## Previous Review Feedback (you MUST address these issues):\n{latest_feedback}\n"
     
     output = _run_phase("implementing", feature, runner, prompt, status=status,
                         start_message="Starting implementation")
@@ -1334,12 +1491,19 @@ def run_review_impl(
     """Run the review phase. Returns (verdict, feedback)."""
     runner = runner.for_phase("review")
 
+    latest_feedback = _get_latest_feedback(feature)
+    if latest_feedback and latest_feedback != "No previous feedback available.":
+        feedback_section = f"\n\n## Previous Review Feedback (you MUST address these issues):\n{latest_feedback}\n"
+    else:
+        feedback_section = ""
+
     prompt = _build_prompt("review-impl.md", {
         "{title}": feature.title,
         "{plan}": feature.plan or "(no plan)",
         "{test_spec}": _spec_to_string(feature.test_spec) or "(no test spec)",
         "{impl_notes}": _spec_to_string(feature.impl_notes) or "(no impl notes)",
         "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
+        "{feedback_section}": feedback_section,
     }, "review_impl")
 
     output = _run_phase("review_impl", feature, runner, prompt, status=status,
@@ -1434,8 +1598,12 @@ def _run_pipeline_impl(
             )
             
             if verdict == "PASS":
-                feature.move_to_stage("approved")
-                feature.add_history("PROMOTED", "Plan approved, moving to spec-writing")
+                if feature.requires_human_approval:
+                    feature.move_to_stage("awaiting-human-approval")
+                    feature.add_history("AWAITING_HUMAN_APPROVAL", "Plan approved by AI, awaiting human approval")
+                else:
+                    feature.move_to_stage("approved")
+                    feature.add_history("PROMOTED", "Plan approved, moving to spec-writing")
                 feature.save()
                 _git_commit(feature, "plan approved")
                 break
@@ -1486,9 +1654,44 @@ def _run_pipeline_impl(
             feature.save()
             return
     
-    # Phase 1: Spec writing (only runs if in approved or later)
-    run_spec_writing(feature, runner, status=status)
+    # Phase 1: Spec writing + spec review loop
+    max_spec_review_attempts = 3
+    for spec_attempt in range(1, max_spec_review_attempts + 1):
+        # Write specs (or re-write on retry)
+        run_spec_writing(feature, runner, status=status)
+        
+        # Review specs
+        latest_spec_review = feature.get_latest_spec_review()
+        spec_feedback = latest_spec_review.get("feedback", "") if latest_spec_review else ""
+        
+        verdict, spec_feedback = run_spec_review(
+            feature, runner, feedback=spec_feedback, status=status
+        )
+        
+        if verdict == "PASS":
+            feature.move_to_stage("implementing")
+            feature.add_history("SPECREVIEW", "Specs approved, moving to implementing")
+            feature.save()
+            _git_commit(feature, "spec review passed")
+            break
+        else:
+            if spec_attempt < max_spec_review_attempts:
+                console.print(
+                    f"[yellow]Spec review attempt {spec_attempt}/{max_spec_review_attempts} failed. "
+                    f"Re-running spec writing with feedback...[/yellow]"
+                )
+            else:
+                # Exhausted retries — proceed to implementing anyway (graceful degradation)
+                console.print(
+                    f"[yellow]Spec review failed after {max_spec_review_attempts} attempts. "
+                    f"Proceeding to implementing anyway.[/yellow]"
+                )
+                feature.move_to_stage("implementing")
+                feature.add_history("SPECREVIEW", f"Spec review exhausted {max_spec_review_attempts} attempts, proceeding anyway")
+                feature.save()
+                _git_commit(feature, "spec review exhausted retries")
 
+    # Phase 2: Implement, test, review loop
     _run_impl_test_review_loop(feature, runner, status)
 
 

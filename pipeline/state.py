@@ -18,7 +18,8 @@ MAX_HISTORY_NOTE_LENGTH = 100
 
 
 STAGES = [
-    "ideas", "ideating", "plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing",
+    "ideas", "ideating", "plan-inbox", "reviewing-plan", "requested-input",
+    "awaiting-human-approval", "approved", "spec-writing",
     "implementing", "testing", "review", "final-human-approval", "done", "rejected",
 ]
 
@@ -124,6 +125,15 @@ class FeatureFile:
         self._data["done_script"] = script_id or ""
         self._save()
 
+    @property
+    def requires_human_approval(self) -> bool:
+        val = self._data.get("requires_human_approval", False)
+        return val is True
+
+    def set_requires_human_approval(self, value: bool) -> None:
+        self._data["requires_human_approval"] = bool(value)
+        self._save()
+
     # --- Field accessors ---
 
     @property
@@ -207,6 +217,49 @@ class FeatureFile:
         self._save()
 
     @property
+    def ideation_prompt(self) -> str:
+        return self._data.get("ideation_prompt", "")
+
+    def set_ideation_prompt(self, value: str) -> None:
+        self._data["ideation_prompt"] = value
+        self._save()
+
+    @property
+    def ideation_cycle_verdicts(self) -> list:
+        """Returns list of cycle verdict records [{cycle, verdict, reason, rounds_completed}]."""
+        return self._data.get("ideation_cycle_verdicts", [])
+
+    def add_ideation_cycle_verdict(self, cycle: int, verdict: str, reason: str, rounds_completed: int) -> None:
+        """Record a cycle's verdict (consensus/stall/progress/hard_cap)."""
+        if "ideation_cycle_verdicts" not in self._data:
+            self._data["ideation_cycle_verdicts"] = []
+        self._data["ideation_cycle_verdicts"].append({
+            "cycle": cycle,
+            "verdict": verdict,
+            "reason": reason,
+            "rounds_completed": rounds_completed,
+        })
+        self._save()
+
+    def clear_ideation_cycle_verdicts(self) -> None:
+        """Clear cycle verdicts (for fresh ideation runs)."""
+        self._data["ideation_cycle_verdicts"] = []
+        self._save()
+
+    @property
+    def ideation_max_rounds(self) -> Optional[int]:
+        """Per-item override for max ideation rounds. None means use config default."""
+        val = self._data.get("ideation_max_rounds")
+        return int(val) if val is not None else None
+
+    def set_ideation_max_rounds(self, value: Optional[int]) -> None:
+        if value is None:
+            self._data.pop("ideation_max_rounds", None)
+        else:
+            self._data["ideation_max_rounds"] = value
+        self._save()
+
+    @property
     def test_results(self) -> dict:
         return self._data.get("test_results", {})
 
@@ -252,6 +305,26 @@ class FeatureFile:
 
     def get_latest_impl_review(self) -> dict | None:
         reviews = self._data.get("impl_reviews", [])
+        return reviews[-1] if reviews else None
+
+    @property
+    def spec_reviews(self) -> list:
+        return self._data.get("spec_reviews", [])
+
+    def add_spec_review(self, verdict: str, summary: str, feedback: str | None) -> None:
+        normalized = "PASS" if verdict and verdict.upper() == "PASS" else "FAIL"
+        if "spec_reviews" not in self._data:
+            self._data["spec_reviews"] = []
+        self._data["spec_reviews"].append({
+            "ts": _now_iso(),
+            "verdict": normalized,
+            "summary": summary,
+            "feedback": feedback if feedback else None,
+        })
+        self._save()
+
+    def get_latest_spec_review(self) -> dict | None:
+        reviews = self._data.get("spec_reviews", [])
         return reviews[-1] if reviews else None
 
     @property
@@ -355,6 +428,7 @@ class FeatureFile:
             "Implementation Notes": "impl_notes",
             "History": "history",
             "Pipeline Log": "pipeline_log",
+            "Ideation Prompt": "ideation_prompt",
         }
         key = mapping.get(name, name.lower().replace(" ", "_"))
         if key in ("history", "pipeline_log"):
@@ -372,6 +446,7 @@ class FeatureFile:
             "Implementation Spec": "impl_spec",
             "Test Spec": "test_spec",
             "Implementation Notes": "impl_notes",
+            "Ideation Prompt": "ideation_prompt",
         }
         key = mapping.get(name, name.lower().replace(" ", "_"))
         self._data[key] = content
@@ -399,7 +474,7 @@ class FeatureFile:
     # --- Static finders ---
 
     @staticmethod
-    def create(board: str, title: str, description: str = "", item_type: str = "feature", done_script: str = "") -> "FeatureFile":
+    def create(board: str, title: str, description: str = "", item_type: str = "feature", done_script: str = "", requires_human_approval: bool = False) -> "FeatureFile":
         """Create a new feature file in the board's ideas stage.
 
         Args:
@@ -421,13 +496,15 @@ class FeatureFile:
             "created": _now_iso(),
             "description": description or "No description provided.",
             "done_script": done_script,
+            "requires_human_approval": requires_human_approval,
             "plan": "",
             "plan_exploration_summary": "",
             "impl_spec": "",
             "test_spec": "",
             "impl_notes": "",
             "ideation_summaries": [],
-            "Ideation": "",
+            "ideation": "",
+            "ideation_prompt": "",
             "history": [
                 {"ts": _now_iso(), "stage": "IDEAS", "note": "Idea created"}
             ],

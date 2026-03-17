@@ -245,6 +245,102 @@ class TestPipelineLock(unittest.TestCase):
         self.assertTrue(result)
         self.lock.release('plan')
 
+    def test_parse_lock_with_colons_in_timestamp(self):
+        """ISO timestamp contains colons, parsed correctly."""
+        lock_path = self.temp_dir / ".pipeline-lock.plan"
+        timestamp = "2026-01-15T10:30:45"
+        lock_path.write_text(f"{os.getpid()}:hostname:{timestamp}:user")
+        
+        info = self.lock._parse_lock(lock_path)
+        
+        self.assertIsNotNone(info)
+        self.assertEqual(info.timestamp, timestamp)
+
+    def test_permission_error_means_alive(self):
+        """PermissionError from os.kill → not stale."""
+        lock_path = self.temp_dir / ".pipeline-lock.plan"
+        fake_pid = 999994
+        recent_timestamp = datetime.now().isoformat()
+        lock_path.write_text(f"{fake_pid}:hostname:{recent_timestamp}:user")
+        
+        # PermissionError means the process exists but we can't signal it - still considered alive
+        with patch('lock.os.kill', side_effect=PermissionError()):
+            result = self.lock.is_stale('plan')
+            self.assertFalse(result)
+        
+        # Should not be able to acquire
+        with patch('lock.os.kill', side_effect=PermissionError()):
+            result = self.lock.acquire('plan')
+            self.assertFalse(result)
+        
+        # Clean up
+        lock_path.unlink()
+
+    def test_invalid_timestamp_format(self):
+        """Non-ISO timestamp → treated as stale."""
+        lock_path = self.temp_dir / ".pipeline-lock.plan"
+        lock_path.write_text(f"{os.getpid()}:hostname:not-a-valid-timestamp:user")
+        
+        result = self.lock.is_stale('plan')
+        self.assertTrue(result)
+        
+        # Should be able to acquire (auto-cleanup of stale lock)
+        result = self.lock.acquire('plan')
+        self.assertTrue(result)
+        self.lock.release('plan')
+
+    def test_lock_file_with_extra_colons(self):
+        """Lock parser has limited support for colons in username.
+        
+        The parser splits on last colon, so only the last segment after
+        the final colon becomes the username. This is a known limitation
+        due to ISO timestamps also containing colons.
+        """
+        lock_path = self.temp_dir / ".pipeline-lock.plan"
+        timestamp = datetime.now().isoformat()
+        lock_path.write_text(f"{os.getpid()}:hostname:{timestamp}:user:name:with:colons")
+        
+        info = self.lock._parse_lock(lock_path)
+        
+        self.assertIsNotNone(info)
+        # Parser limitation: only gets the last colon-separated segment
+        self.assertEqual(info.username, "colons")
+
+    def test_concurrent_acquire_release(self):
+        """Rapid acquire/release cycles don't corrupt."""
+        for _ in range(10):
+            result = self.lock.acquire('plan')
+            self.assertTrue(result)
+            self.lock.release('plan')
+        
+        # Final state should be clean
+        lock_path = self.temp_dir / ".pipeline-lock.plan"
+        self.assertFalse(lock_path.exists())
+
+    def test_release_missing_file(self):
+        """No crash when lock file already deleted."""
+        # Should not raise
+        self.lock.release('plan')
+        
+        # Should also work when we own the lock but file was deleted
+        self.lock.acquire('plan')
+        lock_path = self.temp_dir / ".pipeline-lock.plan"
+        lock_path.unlink()
+        
+        # Should not raise
+        self.lock.release('plan')
+
+    def test_acquire_creates_mad_dir(self):
+        """mad_dir created if missing."""
+        # Delete the temp dir to test creation
+        import shutil
+        shutil.rmtree(self.temp_dir)
+        
+        result = self.lock.acquire('plan')
+        
+        self.assertTrue(result)
+        self.assertTrue(self.temp_dir.exists())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -6,6 +6,8 @@
 
 {previous_ideation}
 
+{ideation_prompt_section}
+
 ---
 
 ## Task

@@ -16,7 +16,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 def _make_mock_feature(title="Test Feature", description="",
                        history="", plan="", impl_spec="",
-                       test_spec="", impl_notes="", questions=None):
+                       test_spec="", impl_notes="", questions=None,
+                       ideation_prompt=""):
     """Create a mock feature object with the required interface."""
     f = SimpleNamespace()
     f.title = title
@@ -27,6 +28,20 @@ def _make_mock_feature(title="Test Feature", description="",
     f.test_spec = test_spec
     f.impl_notes = impl_notes
     f.questions = questions or []
+    f.ideation_prompt = ideation_prompt
+    f.Ideation = ""
+    f.ideation_summaries = []
+    f.done_script = ""
+    f.plan_exploration_summary = ""
+    f.test_results = None
+    f.plan_reviews = []
+    f.impl_reviews = []
+    f.design_ref = ""
+    f.pipeline_log = ""
+    f.board = "default"
+    f.current_stage = "ideas"
+    f.slug = "test-feature"
+    f.id = "f1"
 
     def get_section(section_name):
         if section_name == "Description":

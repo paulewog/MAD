@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from scripts import ScriptConfig, ScriptStatus, load_scripts, run_script
+from scripts import ScriptConfig, ScriptStatus, load_scripts, run_script, save_scripts
 
 
 class TestLoadScripts:
@@ -980,3 +980,665 @@ class TestExecuteDoneScript:
         time.sleep(0.1)  # Wait for background thread to execute
         
         mock_run_script.assert_called_once()
+
+    @patch('scripts.load_scripts')
+    def test_execute_done_script_thread_added_to_pending_before_start(self, mock_load_scripts, tmp_path):
+        """Test that thread is added to _pending_scripts BEFORE start() is called."""
+        import sys
+        import time
+        import threading
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent))
+        
+        from scripts import execute_done_script, ScriptConfig, _pending_scripts, _pending_scripts_lock
+        
+        mock_script = ScriptConfig(id="test-script", label="Test", command="echo test")
+        mock_load_scripts.return_value = [mock_script]
+        
+        mock_feature = MagicMock()
+        mock_feature.done_script = "test-script"
+        mock_feature.id = "feat123"
+        mock_feature.item_type = "feature"
+        mock_feature.title = "Test Feature"
+        
+        mock_config = MagicMock()
+        mock_config.mad_dir = tmp_path
+        
+        execute_done_script(mock_feature, mock_config)
+        
+        with _pending_scripts_lock:
+            thread_names = [t.name for t in _pending_scripts]
+        
+        assert any("done-script-test-script-feat123" in name for name in thread_names)
+
+    @patch('scripts.load_scripts')
+    def test_execute_done_script_thread_removed_on_completion(self, mock_load_scripts, tmp_path):
+        """Test that thread is removed from _pending_scripts after completion."""
+        import sys
+        import time
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent))
+        
+        from scripts import execute_done_script, ScriptConfig, _pending_scripts, _pending_scripts_lock
+        
+        mock_script = ScriptConfig(id="test-script", label="Test", command="echo test")
+        mock_load_scripts.return_value = [mock_script]
+        
+        mock_feature = MagicMock()
+        mock_feature.done_script = "test-script"
+        mock_feature.id = "feat123"
+        mock_feature.item_type = "feature"
+        mock_feature.title = "Test Feature"
+        
+        mock_config = MagicMock()
+        mock_config.mad_dir = tmp_path
+        
+        execute_done_script(mock_feature, mock_config)
+        time.sleep(0.2)
+        
+        with _pending_scripts_lock:
+            thread_names = [t.name for t in _pending_scripts]
+        
+        assert not any("done-script-test-script-feat123" in name for name in thread_names)
+
+    @patch('scripts.run_script')
+    @patch('scripts.load_scripts')
+    def test_execute_done_script_atexit_handler_waits_for_threads(self, mock_load_scripts, mock_run_script, tmp_path, caplog):
+        """Test that atexit handler logs waiting message and joins threads."""
+        import sys
+        import time
+        import threading
+        import atexit
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent))
+        
+        from scripts import execute_done_script, ScriptConfig, _pending_scripts, _pending_scripts_lock, _wait_for_pending_scripts, _SCRIPT_WAIT_TIMEOUT
+        
+        def slow_script(*args, **kwargs):
+            time.sleep(2)
+            return 0
+        
+        mock_run_script.side_effect = slow_script
+        
+        mock_script = ScriptConfig(id="test-script", label="Test", command="echo test")
+        mock_load_scripts.return_value = [mock_script]
+        
+        mock_feature = MagicMock()
+        mock_feature.done_script = "test-script"
+        mock_feature.id = "feat123"
+        mock_feature.item_type = "feature"
+        mock_feature.title = "Test Feature"
+        
+        mock_config = MagicMock()
+        mock_config.mad_dir = tmp_path
+        
+        execute_done_script(mock_feature, mock_config)
+        
+        time.sleep(0.1)
+        
+        with _pending_scripts_lock:
+            thread_count = len(_pending_scripts)
+        
+        assert thread_count == 1, f"Expected 1 pending thread, got {thread_count}"
+        
+        with caplog.at_level(logging.INFO):
+            _wait_for_pending_scripts()
+        
+        assert "Waiting for 1 pending done script(s) to finish" in caplog.text
+
+    @patch('scripts.load_scripts')
+    def test_execute_done_script_atexit_handler_empty_list_no_log(self, mock_load_scripts, tmp_path, caplog):
+        """Test that atexit handler returns immediately when no scripts are pending."""
+        import sys
+        import logging
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent))
+        
+        from scripts import _wait_for_pending_scripts
+        
+        with caplog.at_level(logging.INFO):
+            _wait_for_pending_scripts()
+        
+        assert "Waiting" not in caplog.text
+
+    @patch('scripts.run_script')
+    @patch('scripts.load_scripts')
+    def test_execute_done_script_atexit_handler_timeout_warning(self, mock_load_scripts, mock_run_script, tmp_path, caplog):
+        """Test that atexit handler logs warning when thread doesn't finish within timeout."""
+        import sys
+        import time
+        import logging
+        import threading
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent))
+        
+        from scripts import execute_done_script, ScriptConfig, _pending_scripts, _pending_scripts_lock, _wait_for_pending_scripts, _SCRIPT_WAIT_TIMEOUT
+        import scripts as scripts_module
+        
+        def very_slow_script(*args, **kwargs):
+            time.sleep(10)
+            return 0
+        
+        mock_run_script.side_effect = very_slow_script
+        
+        mock_script = ScriptConfig(id="slow-script", label="Slow", command="sleep 60")
+        mock_load_scripts.return_value = [mock_script]
+        
+        mock_feature = MagicMock()
+        mock_feature.done_script = "slow-script"
+        mock_feature.id = "feat123"
+        mock_feature.item_type = "feature"
+        mock_feature.title = "Test Feature"
+        
+        mock_config = MagicMock()
+        mock_config.mad_dir = tmp_path
+        
+        execute_done_script(mock_feature, mock_config)
+        time.sleep(0.1)
+        
+        original_timeout = _SCRIPT_WAIT_TIMEOUT
+        try:
+            scripts_module._SCRIPT_WAIT_TIMEOUT = 0.1
+            
+            with caplog.at_level(logging.WARNING):
+                _wait_for_pending_scripts()
+            
+            assert "did not finish within timeout" in caplog.text
+        finally:
+            scripts_module._SCRIPT_WAIT_TIMEOUT = original_timeout
+
+    @patch('scripts.load_scripts')
+    def test_execute_done_script_synchronous_triggered_history(self, mock_load_scripts, tmp_path):
+        """Test that 'triggered' history entry is written synchronously before thread spawns."""
+        import sys
+        import time
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent))
+        
+        from scripts import execute_done_script, ScriptConfig
+        
+        mock_script = ScriptConfig(id="deploy-prod", label="Deploy", command="echo deploy")
+        mock_load_scripts.return_value = [mock_script]
+        
+        mock_feature = MagicMock()
+        mock_feature.done_script = "deploy-prod"
+        mock_feature.id = "feat123"
+        mock_feature.item_type = "feature"
+        mock_feature.title = "Test Feature"
+        
+        mock_config = MagicMock()
+        mock_config.mad_dir = tmp_path
+        
+        execute_done_script(mock_feature, mock_config)
+        
+        mock_feature.add_history.assert_called()
+        call_args = mock_feature.add_history.call_args
+        assert call_args[0][0] == "DONE"
+        assert "deploy-prod" in call_args[0][1]
+        assert "triggered" in call_args[0][1]
+
+    @patch('scripts.run_script')
+    @patch('scripts.load_scripts')
+    def test_execute_done_script_completion_history_written_by_thread(self, mock_load_scripts, mock_run_script, tmp_path):
+        """Test that 'completed (exit 0)' history entry is written by thread on success."""
+        import sys
+        import time
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent))
+        
+        from state import FeatureFile
+        from scripts import execute_done_script, ScriptConfig
+        
+        mad_dir = tmp_path / ".mad"
+        mad_dir.mkdir(parents=True)
+        config_dir = mad_dir / "boards" / "test" / "done"
+        config_dir.mkdir(parents=True)
+        
+        feature_path = config_dir / "test-feature.json"
+        feature_path.write_text(json.dumps({
+            "id": "feat123",
+            "board": "test",
+            "title": "Test Feature",
+            "type": "feature",
+            "created": "2024-01-01T00:00:00Z",
+            "description": "Test description",
+            "done_script": "deploy-prod",
+        }))
+        
+        feature = FeatureFile(feature_path)
+        
+        mock_script = ScriptConfig(id="deploy-prod", label="Deploy", command="echo deploy")
+        mock_load_scripts.return_value = [mock_script]
+        mock_run_script.return_value = 0
+        
+        mock_config = MagicMock()
+        mock_config.mad_dir = mad_dir
+        
+        execute_done_script(feature, mock_config)
+        time.sleep(0.2)
+        
+        updated_feature = FeatureFile(feature_path)
+        
+        history = updated_feature._data.get("history", [])
+        history_notes = [h.get('note', '') for h in history]
+        
+        assert any("deploy-prod" in note and "triggered" in note for note in history_notes), f"Triggered not found in {history_notes}"
+        assert any("deploy-prod" in note and "completed" in note for note in history_notes), f"Completed not found in {history_notes}"
+
+    @patch('scripts.run_script')
+    @patch('scripts.load_scripts')
+    def test_execute_done_script_failure_history_written_by_thread(self, mock_load_scripts, mock_run_script, tmp_path):
+        """Test that 'failed' history entry is written by thread on failure."""
+        import sys
+        import time
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent))
+        
+        from state import FeatureFile
+        from scripts import execute_done_script, ScriptConfig
+        
+        mad_dir = tmp_path / ".mad"
+        mad_dir.mkdir(parents=True)
+        config_dir = mad_dir / "boards" / "test" / "done"
+        config_dir.mkdir(parents=True)
+        
+        feature_path = config_dir / "test-feature.json"
+        feature_path.write_text(json.dumps({
+            "id": "feat123",
+            "board": "test",
+            "title": "Test Feature",
+            "type": "feature",
+            "created": "2024-01-01T00:00:00Z",
+            "description": "Test description",
+            "done_script": "deploy-prod",
+        }))
+        
+        feature = FeatureFile(feature_path)
+        
+        mock_script = ScriptConfig(id="deploy-prod", label="Deploy", command="echo deploy")
+        mock_load_scripts.return_value = [mock_script]
+        mock_run_script.side_effect = Exception("Deployment failed!")
+        
+        mock_config = MagicMock()
+        mock_config.mad_dir = mad_dir
+        
+        execute_done_script(feature, mock_config)
+        time.sleep(0.2)
+        
+        updated_feature = FeatureFile(feature_path)
+        
+        history = updated_feature._data.get("history", [])
+        history_notes = [h.get('note', '') for h in history]
+        
+        assert any("deploy-prod" in note and "triggered" in note for note in history_notes), f"Triggered not found in {history_notes}"
+        assert any("deploy-prod" in note and "failed" in note for note in history_notes), f"Failed not found in {history_notes}"
+
+    @patch('scripts.load_scripts')
+    def test_execute_done_script_thread_name_format(self, mock_load_scripts, tmp_path):
+        """Test that thread name matches 'done-script-<script_id>-<feature_id>'."""
+        import sys
+        import time
+        import threading
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent))
+        
+        from scripts import execute_done_script, ScriptConfig
+        
+        mock_script = ScriptConfig(id="my-script", label="Test", command="echo test")
+        mock_load_scripts.return_value = [mock_script]
+        
+        created_threads = []
+        original_thread_init = threading.Thread.__init__
+        
+        def patched_init(self, *args, **kwargs):
+            original_thread_init(self, *args, **kwargs)
+            created_threads.append(self)
+        
+        mock_feature = MagicMock()
+        mock_feature.done_script = "my-script"
+        mock_feature.id = "feature-abc"
+        mock_feature.item_type = "feature"
+        mock_feature.title = "Test Feature"
+        
+        mock_config = MagicMock()
+        mock_config.mad_dir = tmp_path
+        
+        with patch.object(threading.Thread, '__init__', patched_init):
+            execute_done_script(mock_feature, mock_config)
+        
+        assert len(created_threads) > 0
+        thread = created_threads[0]
+        assert thread.name == "done-script-my-script-feature-abc"
+
+    @patch('scripts.load_scripts')
+    def test_execute_done_script_thread_is_daemon(self, mock_load_scripts, tmp_path):
+        """Test that thread.daemon is True."""
+        import sys
+        import time
+        import threading
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent))
+        
+        from scripts import execute_done_script, ScriptConfig
+        
+        mock_script = ScriptConfig(id="test-script", label="Test", command="echo test")
+        mock_load_scripts.return_value = [mock_script]
+        
+        created_threads = []
+        original_thread_init = threading.Thread.__init__
+        
+        def patched_init(self, *args, **kwargs):
+            original_thread_init(self, *args, **kwargs)
+            created_threads.append(self)
+        
+        mock_feature = MagicMock()
+        mock_feature.done_script = "test-script"
+        mock_feature.id = "feat123"
+        mock_feature.item_type = "feature"
+        mock_feature.title = "Test Feature"
+        
+        mock_config = MagicMock()
+        mock_config.mad_dir = tmp_path
+        
+        with patch.object(threading.Thread, '__init__', patched_init):
+            execute_done_script(mock_feature, mock_config)
+        
+        assert len(created_threads) > 0
+        assert created_threads[0].daemon is True
+
+
+class TestSaveScripts:
+    """Tests for save_scripts() function."""
+
+    def test_save_scripts_round_trip(self, tmp_path):
+        """Test that save_scripts followed by load_scripts returns the same data."""
+        mad_dir = tmp_path / ".mad"
+        mad_dir.mkdir(parents=True, exist_ok=True)
+        
+        scripts = [
+            ScriptConfig(
+                id="build",
+                label="Build Server",
+                command="go build .",
+                description="Build the Go server",
+                confirm=True,
+                model="claude-sonnet",
+                agent="claude"
+            ),
+            ScriptConfig(
+                id="test",
+                label="Run Tests",
+                command="go test ./...",
+                description="Run all tests",
+                confirm=False,
+            ),
+        ]
+        
+        result = save_scripts(mad_dir, scripts)
+        
+        assert result is True
+        
+        loaded = load_scripts(mad_dir)
+        
+        assert len(loaded) == 2
+        assert loaded[0].id == "build"
+        assert loaded[0].label == "Build Server"
+        assert loaded[0].command == "go build ."
+        assert loaded[0].description == "Build the Go server"
+        assert loaded[0].confirm is True
+        assert loaded[0].model == "claude-sonnet"
+        assert loaded[0].agent == "claude"
+        assert loaded[1].id == "test"
+        assert loaded[1].confirm is False
+        assert loaded[1].model is None
+        assert loaded[1].agent is None
+
+    def test_save_scripts_empty_list(self, tmp_path):
+        """Test that saving an empty list creates an empty array in the file."""
+        mad_dir = tmp_path / ".mad"
+        mad_dir.mkdir(parents=True, exist_ok=True)
+        
+        scripts = []
+        
+        result = save_scripts(mad_dir, scripts)
+        
+        assert result is True
+        
+        scripts_file = mad_dir / "scripts.json"
+        content = scripts_file.read_text()
+        
+        assert content == "[]"
+
+    def test_save_scripts_creates_file_if_missing(self, tmp_path):
+        """Test that save_scripts creates the file if it doesn't exist."""
+        mad_dir = tmp_path / ".mad"
+        mad_dir.mkdir(parents=True, exist_ok=True)
+        
+        scripts_file = mad_dir / "scripts.json"
+        assert not scripts_file.exists()
+        
+        scripts = [
+            ScriptConfig(id="test", label="Test", command="echo test")
+        ]
+        
+        result = save_scripts(mad_dir, scripts)
+        
+        assert result is True
+        assert scripts_file.exists()
+        
+        loaded = load_scripts(mad_dir)
+        assert len(loaded) == 1
+        assert loaded[0].id == "test"
+
+    def test_save_scripts_handles_optional_fields(self, tmp_path):
+        """Test that optional fields (model, agent) are only written when set."""
+        mad_dir = tmp_path / ".mad"
+        mad_dir.mkdir(parents=True, exist_ok=True)
+        
+        scripts = [
+            ScriptConfig(id="with-model", label="With Model", command="echo test", model="claude-opus"),
+            ScriptConfig(id="with-agent", label="With Agent", command="echo test", agent="opencode"),
+            ScriptConfig(id="with-both", label="With Both", command="echo test", model="claude-sonnet", agent="claude"),
+            ScriptConfig(id="with-none", label="With None", command="echo test"),
+        ]
+        
+        result = save_scripts(mad_dir, scripts)
+        
+        assert result is True
+        
+        import json
+        scripts_file = mad_dir / "scripts.json"
+        data = json.loads(scripts_file.read_text())
+        
+        assert "model" in data[0]
+        assert data[0]["model"] == "claude-opus"
+        assert "agent" not in data[0]
+        
+        assert "model" not in data[1]
+        assert "agent" in data[1]
+        assert data[1]["agent"] == "opencode"
+        
+        assert "model" in data[2]
+        assert "agent" in data[2]
+        
+        assert "model" not in data[3]
+        assert "agent" not in data[3]
+
+    def test_save_scripts_overwrites_existing(self, tmp_path):
+        """Test that save_scripts overwrites existing file content."""
+        mad_dir = tmp_path / ".mad"
+        mad_dir.mkdir(parents=True, exist_ok=True)
+        
+        scripts_file = mad_dir / "scripts.json"
+        scripts_file.write_text('{"id": "old", "label": "Old", "command": "old cmd"}')
+        
+        scripts = [
+            ScriptConfig(id="new", label="New", command="new cmd")
+        ]
+        
+        result = save_scripts(mad_dir, scripts)
+        
+        assert result is True
+        
+        loaded = load_scripts(mad_dir)
+        assert len(loaded) == 1
+        assert loaded[0].id == "new"
+        assert loaded[0].label == "New"
+
+
+class TestCreateScriptModalValidation:
+    """Tests for CreateScriptModal validation logic using the validate_script_input static method."""
+
+    def test_validation_empty_id(self):
+        """Test that empty ID returns error."""
+        from tui import CreateScriptModal
+        
+        result = CreateScriptModal.validate_script_input("", "Test Label", "echo test", set())
+        assert result is not None
+        assert "required" in result.lower()
+
+    def test_validation_invalid_characters(self):
+        """Test that invalid characters in ID returns error."""
+        from tui import CreateScriptModal
+        
+        result = CreateScriptModal.validate_script_input("invalid id!", "Test Label", "echo test", set())
+        assert result is not None
+        assert "lowercase" in result.lower() or "invalid" in result.lower()
+
+    def test_validation_invalid_starting_character(self):
+        """Test that ID starting with hyphen returns error."""
+        from tui import CreateScriptModal
+        
+        result = CreateScriptModal.validate_script_input("-starts-with-hyphen", "Test Label", "echo test", set())
+        assert result is not None
+
+    def test_validation_duplicate_id(self):
+        """Test that duplicate ID returns error."""
+        from tui import CreateScriptModal
+        
+        existing_ids = {"existing-script"}
+        result = CreateScriptModal.validate_script_input("existing-script", "Test Label", "echo test", existing_ids)
+        assert result is not None
+        assert "already exists" in result.lower()
+
+    def test_validation_missing_label(self):
+        """Test that missing label returns error."""
+        from tui import CreateScriptModal
+        
+        result = CreateScriptModal.validate_script_input("valid-id", "", "echo test", set())
+        assert result is not None
+        assert "label" in result.lower()
+
+    def test_validation_missing_command(self):
+        """Test that missing command returns error."""
+        from tui import CreateScriptModal
+        
+        result = CreateScriptModal.validate_script_input("valid-id", "Test Label", "", set())
+        assert result is not None
+        assert "command" in result.lower()
+
+    def test_validation_successful_returns_none(self):
+        """Test that valid input returns None (no error)."""
+        from tui import CreateScriptModal
+        
+        result = CreateScriptModal.validate_script_input("my-new-script", "My New Script", "echo hello", set())
+        assert result is None
+
+    def test_validation_all_fields_valid(self):
+        """Test that all valid fields pass validation."""
+        from tui import CreateScriptModal
+        
+        result = CreateScriptModal.validate_script_input("test-script-123", "Test Script 123", "go test ./...", set())
+        assert result is None
+
+    def test_validation_id_with_numbers(self):
+        """Test that ID with numbers is valid."""
+        from tui import CreateScriptModal
+        
+        result = CreateScriptModal.validate_script_input("script123", "Script 123", "echo test", set())
+        assert result is None
+
+    def test_validation_id_with_hyphens(self):
+        """Test that ID with hyphens is valid."""
+        from tui import CreateScriptModal
+        
+        result = CreateScriptModal.validate_script_input("my-script-456", "My Script", "echo test", set())
+        assert result is None
+
+    def test_validation_id_not_starting_with_hyphen(self):
+        """Test that ID cannot start with hyphen."""
+        from tui import CreateScriptModal
+        
+        result = CreateScriptModal.validate_script_input("-script", "Script", "echo test", set())
+        assert result is not None
+
+    def test_validation_empty_existing_ids_set(self):
+        """Test with empty existing IDs set."""
+        from tui import CreateScriptModal
+        
+        result = CreateScriptModal.validate_script_input("new-script", "New", "echo new", set())
+        assert result is None
+
+
+class TestScriptsPaneHandleCreateScript:
+    """Tests for ScriptsPane._handle_create_script integration with save_scripts."""
+
+    def test_handle_create_script_with_none_result(self):
+        """Test that _handle_create_script handles None result (cancel)."""
+        from tui import ScriptsPane
+        
+        mock_script = MagicMock()
+        mock_script.id = "existing-script"
+        
+        mock_status = None
+        
+        pane = ScriptsPane([mock_script], mock_status)
+        pane._scripts = [mock_script]
+        
+        pane._handle_create_script(None)
+        
+        assert len(pane._scripts) == 1
+
+    def test_handle_create_script_method_exists(self):
+        """Test that _handle_create_script method exists on ScriptsPane."""
+        from tui import ScriptsPane
+        
+        mock_script = MagicMock()
+        mock_status = None
+        
+        pane = ScriptsPane([mock_script], mock_status)
+        
+        assert hasattr(pane, '_handle_create_script')
+        assert callable(pane._handle_create_script)
+
+    def test_handle_create_script_updates_internal_list(self):
+        """Test that _handle_create_script can update internal script list."""
+        from tui import ScriptsPane
+        
+        mock_script = MagicMock()
+        mock_script.id = "existing-script"
+        
+        mock_status = None
+        
+        pane = ScriptsPane([mock_script], mock_status)
+        
+        new_script = MagicMock()
+        new_script.id = "new-script"
+        
+        pane._scripts = [mock_script, new_script]
+        
+        assert len(pane._scripts) == 2
+        assert pane._scripts[0].id == "existing-script"
+        assert pane._scripts[1].id == "new-script"
+
+    def test_refresh_script_list_method_exists(self):
+        """Test that _refresh_script_list method exists."""
+        from tui import ScriptsPane
+        
+        mock_script = MagicMock()
+        mock_status = None
+        
+        pane = ScriptsPane([mock_script], mock_status)
+        
+        assert hasattr(pane, '_refresh_script_list')
+        assert callable(pane._refresh_script_list)

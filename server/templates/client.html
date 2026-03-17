@@ -12,6 +12,19 @@
     <link rel="apple-touch-icon" href="/static/icon-192.png">
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>    <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        [data-active="true"] .title::before {
+            content: '';
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border: 2px solid #58a6ff;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            vertical-align: middle;
+            margin-right: 5px;
+        }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
             background: #0d1117;
@@ -85,6 +98,8 @@
             background: #1f6feb;
             color: #fff;
         }
+        .stage-section.needs-action { border-left: 3px solid #d29922; }
+        .stage-section.needs-action .stage-toggle { background: #1c2128; border-left: 3px solid #d29922; }
         .stage-body {
             padding: 0.5rem 0.75rem;
         }
@@ -268,6 +283,20 @@
     </style>
 </head>
 <body>
+<script>
+function getKey() {
+    try {
+        var urlKey = new URLSearchParams(window.location.search).get('key');
+        if (urlKey) {
+            try { localStorage.setItem('mad_key', urlKey); } catch(e) {}
+            return urlKey;
+        }
+        return localStorage.getItem('mad_key') || '';
+    } catch(e) {
+        return new URLSearchParams(window.location.search).get('key') || '';
+    }
+}
+</script>
     {{if .ShowKeyModal}}
     <div class="modal-overlay" id="key-modal">
         <div class="modal" style="max-width:400px">
@@ -279,18 +308,6 @@
         </div>
     </div>
     <script>
-    function getKey() {
-        try {
-            var urlKey = new URLSearchParams(window.location.search).get('key');
-            if (urlKey) {
-                try { localStorage.setItem('mad_key', urlKey); } catch(e) {}
-                return urlKey;
-            }
-            return localStorage.getItem('mad_key') || '';
-        } catch(e) {
-            return new URLSearchParams(window.location.search).get('key') || '';
-        }
-    }
     function saveKey() {
         var input = document.getElementById('key-input');
         var k = input.value.trim();
@@ -337,6 +354,14 @@
     <div class="client-status">
         {{if .Connected}}<span class="status-dot status-active"></span>Connected{{else}}<span class="status-dot status-stale"></span>Disconnected{{end}}
         &mdash; Last seen: {{.LastSeen.Format "2006-01-02 15:04:05"}}
+        {{if .Connected}}
+        <button class="btn btn-warning" 
+                onclick="restartClient('{{.ClientID}}')"
+                title="Restart this TUI instance"
+                style="margin-left:1rem;padding:0.2rem 0.6rem;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem;font-weight:600;background:#d29922;color:#fff">
+            Restart TUI
+        </button>
+        {{end}}
     </div>
     <div id="agent-status" style="display:flex;gap:1rem;margin:1rem 0">
         <div id="plan-agent-card" style="flex:1;background:#161b22;border-radius:6px;padding:0.75rem">
@@ -366,93 +391,6 @@
             {{else}}<span style="color:#484f58">idle</span>{{end}}</span>
         </div>
     </div>
-    {{if .Config}}
-    <h2>Phase Settings</h2>
-    <div class="settings-grid" style="background:#161b22;border-radius:6px;padding:1rem;margin-bottom:1rem">
-        {{range .Config.Phases}}
-        <div class="settings-row" data-phase="{{.Key}}" style="display:flex;gap:0.5rem;align-items:center;padding:0.5rem 0;border-bottom:1px solid #21262d">
-            <span class="phase-label" style="color:#c9d1d9;font-weight:600;min-width:100px">{{.Label}}</span>
-            <select class="phase-agent" style="flex:1;padding:0.4rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.85rem;font-family:inherit">
-                <option value="default">default ({{$.Config.DefaultAgent}})</option>
-                {{range $.Config.AvailableAgents}}
-                <option value="{{.}}">{{.}}</option>
-                {{end}}
-            </select>
-            <input type="text" class="phase-model" placeholder="model override" style="flex:1;padding:0.4rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.85rem;font-family:inherit">
-            <button class="save-phase-btn" onclick="savePhaseAgent(this)" style="padding:0.4rem 0.8rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-weight:600">Save</button>
-        </div>
-        {{end}}
-    </div>
-    <script>
-    (function() {
-        var agentForPhaseRaw = '{{toJSON .Config.AgentForPhase}}';
-        var agentForPhase = {};
-        try { agentForPhase = JSON.parse(agentForPhaseRaw); } catch(e) {}
-        var rows = document.querySelectorAll('.settings-row');
-        rows.forEach(function(row) {
-            var phase = row.getAttribute('data-phase');
-            var cfg = agentForPhase[phase] || {};
-            var agentSelect = row.querySelector('.phase-agent');
-            var modelInput = row.querySelector('.phase-model');
-            var agent = cfg.agent || 'default';
-            var model = cfg.model || '';
-            // Find option with matching value or default to 'default'
-            var found = false;
-            Array.from(agentSelect.options).forEach(function(opt) {
-                if (opt.value === agent) {
-                    opt.selected = true;
-                    found = true;
-                }
-            });
-            if (!found) {
-                agentSelect.value = 'default';
-            }
-            modelInput.value = model;
-        });
-    })();
-    function savePhaseAgent(btn) {
-        var row = btn.closest('.settings-row');
-        var phase = row.getAttribute('data-phase');
-        var agent = row.querySelector('.phase-agent').value;
-        var model = row.querySelector('.phase-model').value;
-        btn.disabled = true;
-        btn.textContent = 'Saving...';
-        fetch('/api/clients/' + encodeURIComponent(_clientID) + '/set-agent-for-phase?key=' + encodeURIComponent(_dashKey), {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({phase: phase, agent: agent, model: model})
-        }).then(function(resp) {
-            if (resp.ok) {
-                btn.textContent = 'Saved!';
-                btn.style.background = '#3fb950';
-                setTimeout(function() {
-                    btn.textContent = 'Save';
-                    btn.style.background = '';
-                    btn.disabled = false;
-                }, 2000);
-            } else {
-                resp.json().then(function(data) {
-                    btn.textContent = data.error || 'Error';
-                    btn.style.background = '#f85149';
-                    setTimeout(function() {
-                        btn.textContent = 'Save';
-                        btn.style.background = '';
-                        btn.disabled = false;
-                    }, 2000);
-                });
-            }
-        }).catch(function() {
-            btn.textContent = 'Error';
-            btn.style.background = '#f85149';
-            setTimeout(function() {
-                btn.textContent = 'Save';
-                btn.style.background = '';
-                btn.disabled = false;
-            }, 2000);
-        });
-    }
-    </script>
-    {{end}}
     <div>
     <h2>Features <button onclick="showNewIdeaModal()" style="margin-left:0.5rem;padding:0.2rem 0.6rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem;font-family:inherit;font-weight:600">+ New Idea</button></h2>
     <div id="features-container">
@@ -500,6 +438,12 @@
                 <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Description</label>
                 <textarea id="new-idea-description" placeholder="Optional description" rows="3" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit;resize:vertical"></textarea>
             </div>
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">Done Script (optional)</label>
+                <select id="new-idea-done-script" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
+                    <option value="">(none)</option>
+                </select>
+            </div>
             <div style="display:flex;gap:0.5rem;justify-content:flex-end">
                 <button onclick="closeNewIdeaModal()" style="padding:0.5rem 1rem;background:#30363d;color:#c9d1d9;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-family:inherit">Cancel</button>
                 <button onclick="submitNewIdea()" id="submit-idea-btn" style="padding:0.5rem 1rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-family:inherit">Create Idea</button>
@@ -523,6 +467,29 @@
             </div>
         </div>
     </div>
+    <!-- Rejection Reason Modal -->
+    <div class="modal-overlay" id="reject-reason-modal" onclick="closeRejectReasonModal(event)">
+        <div class="modal" onclick="event.stopPropagation()" style="max-width:450px">
+            <h3 style="color:#f85149">Reject Item</h3>
+            <p style="color:#8b949e;margin:0 0 1rem;font-size:0.85rem">Provide a reason for rejection (optional):</p>
+            <textarea id="reject-reason-input" placeholder="Rejection reason (optional)" style="width:100%;height:80px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:0.5rem;border-radius:4px;font-family:inherit;font-size:0.85rem;resize:vertical;margin-bottom:1rem"></textarea>
+            <div style="display:flex;gap:0.5rem;justify-content:flex-end">
+                <button onclick="closeRejectReasonModal()" style="padding:0.5rem 1rem;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer">Cancel</button>
+                <button onclick="confirmReject()" style="padding:0.5rem 1rem;background:#da3633;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">Reject</button>
+            </div>
+        </div>
+    </div>
+    <!-- Move Confirmation Modal -->
+    <div class="modal-overlay" id="move-confirm-modal" onclick="closeMoveConfirmModal(event)">
+        <div class="modal" onclick="event.stopPropagation()" style="max-width:400px">
+            <h3>Confirm Move</h3>
+            <p id="move-confirm-message" style="color:#c9d1d9;margin:0 0 1rem;font-size:0.9rem"></p>
+            <div style="display:flex;gap:0.5rem;justify-content:flex-end">
+                <button onclick="closeMoveConfirmModal()" style="padding:0.5rem 1rem;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer">Cancel</button>
+                <button onclick="confirmMoveFeature()" style="padding:0.5rem 1rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">Confirm</button>
+            </div>
+        </div>
+    </div>
     <h2>Logs</h2>
     <div class="log-list" hx-get="/clients/{{.ClientID}}/logs?key={{.Key}}" hx-trigger="every 5s" hx-swap="innerHTML">
         {{template "log_entries" .Logs}}
@@ -530,6 +497,13 @@
     <script>
         var _clientID = "{{.ClientID}}";
         var _dashKey = "{{.Key}}";
+        var ALL_STAGES = ['ideas','ideating','plan-inbox','reviewing-plan','requested-input','awaiting-human-approval','approved','spec-writing','implementing','testing','review','final-human-approval','done','rejected'];
+        var _detailFeatureId = null;
+        var _modalStage = null;
+        var _modalOriginalTitle = null;
+        var _modalOriginalType = null;
+        var _modalOriginalDescription = null;
+        var _modalOriginalDoneScript = null;
         // Smart polling: fetch features HTML, only update cards that actually changed.
         // Preserves collapsed stages, expanded details, and form state.
         var _featuresURL = '/clients/' + _clientID + '/features?key=' + encodeURIComponent(_dashKey);
@@ -577,6 +551,7 @@
                                 card.getAttribute('data-title'),
                                 card.getAttribute('data-description'),
                                 card.getAttribute('data-history'),
+                                card.getAttribute('data-active'),
                                 card.getAttribute('data-questions') || '',
                                 card.getAttribute('data-available-actions') || ''].join('|');
                     }
@@ -653,6 +628,24 @@
                 }
                 btn.disabled = false;
             }).catch(function() { btn.disabled = false; });
+        }
+        function restartClient(clientID) {
+            if (!confirm('Restart TUI instance ' + clientID + '? Running agents will be killed.')) {
+                return;
+            }
+            fetch('/api/clients/' + encodeURIComponent(clientID) + '/restart?key=' + encodeURIComponent(_dashKey), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'}
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) {
+                    alert('Restart failed: ' + data.error);
+                } else {
+                    alert('Restart signal sent to ' + clientID);
+                }
+            })
+            .catch(err => alert('Error: ' + err));
         }
         // Initialize data-enabled attributes
         document.getElementById('auto-plan-btn').setAttribute('data-enabled', '{{if .AutoPlan}}true{{else}}false{{end}}');
@@ -834,19 +827,62 @@
             var detail = document.createElement('div');
             detail.className = 'feature-detail';
             var stage = card.getAttribute('data-stage');
+            _modalStage = stage;
+            var featureID = card.getAttribute('data-id');
+            _detailFeatureId = featureID;
+            var title = card.getAttribute('data-title');
+            var itemType = card.getAttribute('data-type') || 'feature';
+            var description = card.getAttribute('data-description') || '';
             var doneScript = card.getAttribute('data-done-script') || '';
+            var requiresHumanApproval = card.getAttribute('data-requires-human-approval') === 'true';
+            _modalOriginalTitle = title;
+            _modalOriginalType = itemType;
+            _modalOriginalDescription = description;
+            _modalOriginalDoneScript = doneScript;
             var html =
-                '<div class="detail-row"><span class="detail-label">Title</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-title')) + '</span></div>' +
+                '<div class="detail-row"><span class="detail-label">Title</span><span class="detail-value" id="detail-field-title">' + escapeHtml(title) + (stage === 'ideas' ? ' <button onclick="clientStartEditTitle()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit title">&#9998;</button>' : '') + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Stage</span><span class="detail-value">' + escapeHtml(stage) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Board</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-board')) + '</span></div>' +
+                '<div class="detail-row"><span class="detail-label">Type</span><span class="detail-value" id="detail-field-type">' + escapeHtml(itemType) + (stage === 'ideas' ? ' <button onclick="clientStartEditType()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit type">&#9998;</button>' : '') + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-created')) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">ID</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-id')) + '</span></div>' +
-                (doneScript ? '<div class="detail-row"><span class="detail-label">Done Script</span><span class="detail-value" style="color:#d2a8ff">' + escapeHtml(doneScript) + '</span></div>' : '');
+                (requiresHumanApproval ? '<div class="detail-row"><span class="detail-label" style="color:#d29922">Requires Human Approval</span><span class="detail-value" style="color:#d29922">Yes</span></div>' : '') +
+                '<div class="detail-row"><span class="detail-label">Done Script</span><span class="detail-value" id="detail-field-done-script" style="color:#d2a8ff">' +
+                (doneScript ? escapeHtml(doneScript) : '<span style="color:#484f58;font-style:italic">(none)</span>') +
+                ' <button onclick="clientStartEditDoneScript()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit done script">&#9998;</button></span></div>' +
+                '<div style="margin-top:0.5rem;padding:0.4rem 0;border-top:1px solid #21262d;border-bottom:1px solid #21262d">' +
+                '<div style="color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.3rem">Move to Stage</div>' +
+                '<div style="display:flex;gap:0.4rem;align-items:center">' +
+                '<select id="move-stage-select" style="flex:1;padding:0.3rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.75rem;font-family:inherit">';
+            for (var msi = 0; msi < ALL_STAGES.length; msi++) {
+                if (ALL_STAGES[msi] !== stage) {
+                    html += '<option value="' + ALL_STAGES[msi] + '">' + escapeHtml(ALL_STAGES[msi]) + '</option>';
+                }
+            }
+            html += '</select>' +
+                '<button id="btn-move" onclick="moveFeatureDropdown()" style="padding:0.3rem 0.6rem;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem;font-weight:600;color:#fff;background:#1f6feb">Move</button>' +
+                '</div>' +
+                '<span id="move-feedback" style="font-size:0.75rem;margin-top:0.25rem;display:block"></span>' +
+                '</div>' +
+                (stage === 'final-human-approval' || stage === 'awaiting-human-approval' ?
+                '<div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;padding:0.5rem 0;border-bottom:1px solid #21262d">' +
+                '<button id="btn-approve" onclick="approveFeature(\'' + (stage === 'awaiting-human-approval' ? 'approved' : 'done') + '\')" style="padding:0.4rem 0.8rem;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-weight:600;color:#fff;background:#238636">Approve</button>' +
+                '<button id="btn-reject" onclick="showRejectModal()" style="padding:0.4rem 0.8rem;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-weight:600;color:#fff;background:#da3633">Reject</button>' +
+                '<span id="approval-feedback" style="margin-left:0.5rem;font-size:0.8rem"></span>' +
+                '</div>' : '');
             var description = card.getAttribute('data-description') || '';
             if (description) {
                 html += '<div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d">' +
-                    '<div style="color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem">Description</div>' +
-                    '<div style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap">' + escapeHtml(description) + '</div></div>';
+                    '<div style="color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem">Description' +
+                    (stage === 'ideas' ? ' <button onclick="clientStartEditDescription()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.65rem" title="Edit description">&#9998;</button>' : '') +
+                    '</div>' +
+                    '<div id="detail-field-description" style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap">' + escapeHtml(description) + '</div></div>';
+            } else if (stage === 'ideas') {
+                html += '<div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d">' +
+                    '<div style="color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem">Description' +
+                    ' <button onclick="clientStartEditDescription()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.65rem" title="Add description">&#9998;</button>' +
+                    '</div>' +
+                    '<div id="detail-field-description" style="color:#484f58;font-size:0.8rem;font-style:italic">(none)</div></div>';
             }
             // Ideation section
             var ideation = card.getAttribute('data-ideation') || '';
@@ -855,6 +891,21 @@
                     '<div style="color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem">Ideation</div>' +
                     '<div style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap">' + escapeHtml(ideation) + '</div></div>';
             }
+            // Ideation Summaries section
+            try {
+                var ideationSummaries = JSON.parse(card.getAttribute('data-ideation-summaries') || '[]');
+                if (ideationSummaries && ideationSummaries.length > 0) {
+                    html += '<div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d">' +
+                        '<div style="color:#8b949e;font-size:0.7rem;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem">Ideation Summaries (' + ideationSummaries.length + ' rounds)</div>' +
+                        '<div style="max-height:300px;overflow-y:auto">';
+                    for (var si = 0; si < ideationSummaries.length; si++) {
+                        html += '<div style="font-size:0.75rem;padding:0.3rem 0;border-bottom:1px solid #161b22">' +
+                            '<span style="color:#d2a8ff;font-weight:600">Round ' + (si + 1) + '</span>' +
+                            '<div style="color:#c9d1d9;white-space:pre-wrap;margin-top:0.2rem">' + escapeHtml(ideationSummaries[si]) + '</div></div>';
+                    }
+                    html += '</div></div>';
+                }
+            } catch(e) {}
             // History section (expanded by default)
             var historyContent = '';
             try {
@@ -1004,8 +1055,17 @@
                     html += '<div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d">' +
                         '<button onclick="moveFeature(this,\'' + escapeHtml(featureID) + '\',\'plan-inbox\')" ' +
                         'style="padding:0.35rem 0.8rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-family:inherit">Approve Idea</button>' +
-                        '<button onclick="moveFeature(this,\'' + escapeHtml(featureID) + '\',\'ideating\')" ' +
-                        'style="padding:0.35rem 0.8rem;background:#9e6a03;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-family:inherit;margin-left:0.4rem">Move for Debate</button>' +
+                        '<span class="move-feedback" style="margin-left:0.5rem;font-size:0.8rem"></span>' +
+                        '</div>';
+                }
+            } catch(e) {}
+            // Move to Ideating button (visible only in ideas stage)
+            try {
+                if (stage === 'ideas') {
+                    var featureIDForIdeating = card.getAttribute('data-id');
+                    html += '<div style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid #21262d">' +
+                        '<button onclick="moveFeature(this,\'' + escapeHtml(featureIDForIdeating) + '\',\'ideating\')" ' +
+                        'style="padding:0.35rem 0.8rem;background:#9e6a03;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-family:inherit">Move to Ideating</button>' +
                         '<span class="move-feedback" style="margin-left:0.5rem;font-size:0.8rem"></span>' +
                         '</div>';
                 }
@@ -1029,6 +1089,201 @@
             } catch(e) {}
             detail.innerHTML = html;
             card.after(detail);
+        }
+        function clientStartEditTitle() {
+            var titleInput = document.createElement('input');
+            titleInput.id = 'edit-title-input';
+            titleInput.type = 'text';
+            titleInput.value = _modalOriginalTitle || '';
+            titleInput.style.cssText = 'background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:0.3rem;font-family:inherit;font-size:0.8rem;width:60%';
+            var fieldTitle = document.getElementById('detail-field-title');
+            fieldTitle.innerHTML = '';
+            fieldTitle.appendChild(titleInput);
+            var saveBtn = document.createElement('button');
+            saveBtn.textContent = 'Save';
+            saveBtn.onclick = clientSaveEditTitle;
+            saveBtn.style.cssText = 'margin-left:0.3rem;padding:0.2rem 0.5rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.7rem;font-weight:600';
+            fieldTitle.appendChild(saveBtn);
+            var cancelBtn = document.createElement('button');
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.onclick = clientCancelEditTitle;
+            cancelBtn.style.cssText = 'margin-left:0.2rem;padding:0.2rem 0.5rem;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;font-size:0.7rem';
+            fieldTitle.appendChild(cancelBtn);
+            var feedbackSpan = document.createElement('span');
+            feedbackSpan.id = 'edit-title-feedback';
+            feedbackSpan.style.cssText = 'margin-left:0.3rem;font-size:0.7rem';
+            fieldTitle.appendChild(feedbackSpan);
+            titleInput.focus();
+        }
+        function clientSaveEditTitle() {
+            var key = getKey();
+            var newValue = document.getElementById('edit-title-input').value;
+            var feedbackEl = document.getElementById('edit-title-feedback');
+            feedbackEl.textContent = 'Saving...';
+            feedbackEl.style.color = '#8b949e';
+            fetch('/api/clients/' + encodeURIComponent(_clientID) + '/features/' + encodeURIComponent(_detailFeatureId) + '/edit-title?key=' + encodeURIComponent(key), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({title: newValue})
+            }).then(function(r) {
+                return r.json().then(function(data) {
+                    if (r.ok) {
+                        feedbackEl.style.color = '#3fb950';
+                        feedbackEl.textContent = 'Saved!';
+                        _modalOriginalTitle = newValue;
+                        document.getElementById('detail-field-title').innerHTML = escapeHtml(newValue) + ' <button onclick="clientStartEditTitle()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit title">&#9998;</button>';
+                        setTimeout(function() { smartPollFeatures(); }, 500);
+                    } else {
+                        feedbackEl.style.color = '#f85149';
+                        feedbackEl.textContent = data.error || 'Save failed';
+                    }
+                });
+            }).catch(function() {
+                feedbackEl.style.color = '#f85149';
+                feedbackEl.textContent = 'Network error';
+            });
+        }
+        function clientCancelEditTitle() {
+            document.getElementById('detail-field-title').innerHTML = escapeHtml(_modalOriginalTitle) + ' <button onclick="clientStartEditTitle()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit title">&#9998;</button>';
+        }
+        function clientStartEditType() {
+            var currentType = _modalOriginalType || 'feature';
+            document.getElementById('detail-field-type').innerHTML = '<select id="edit-type-select" style="background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:0.2rem;font-family:inherit;font-size:0.75rem">' +
+                '<option value="feature"' + (currentType === 'feature' ? ' selected' : '') + '>feature</option>' +
+                '<option value="bug"' + (currentType === 'bug' ? ' selected' : '') + '>bug</option>' +
+                '</select>' +
+                '<button onclick="clientSaveEditType()" style="margin-left:0.3rem;padding:0.2rem 0.5rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.7rem;font-weight:600">Save</button>' +
+                '<button onclick="clientCancelEditType()" style="margin-left:0.2rem;padding:0.2rem 0.5rem;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;font-size:0.7rem">Cancel</button>' +
+                '<span id="edit-type-feedback" style="margin-left:0.3rem;font-size:0.7rem"></span>';
+        }
+        function clientSaveEditType() {
+            var key = getKey();
+            var newValue = document.getElementById('edit-type-select').value;
+            var feedbackEl = document.getElementById('edit-type-feedback');
+            feedbackEl.textContent = 'Saving...';
+            feedbackEl.style.color = '#8b949e';
+            fetch('/api/clients/' + encodeURIComponent(_clientID) + '/features/' + encodeURIComponent(_detailFeatureId) + '/edit-type?key=' + encodeURIComponent(key), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({type: newValue})
+            }).then(function(r) {
+                return r.json().then(function(data) {
+                    if (r.ok) {
+                        feedbackEl.style.color = '#3fb950';
+                        feedbackEl.textContent = 'Saved!';
+                        _modalOriginalType = newValue;
+                        document.getElementById('detail-field-type').innerHTML = escapeHtml(newValue) + ' <button onclick="clientStartEditType()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit type">&#9998;</button>';
+                        setTimeout(function() { smartPollFeatures(); }, 500);
+                    } else {
+                        feedbackEl.style.color = '#f85149';
+                        feedbackEl.textContent = data.error || 'Save failed';
+                    }
+                });
+            }).catch(function() {
+                feedbackEl.style.color = '#f85149';
+                feedbackEl.textContent = 'Network error';
+            });
+        }
+        function clientCancelEditType() {
+            document.getElementById('detail-field-type').innerHTML = escapeHtml(_modalOriginalType) + ' <button onclick="clientStartEditType()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit type">&#9998;</button>';
+        }
+        function clientStartEditDescription() {
+            document.getElementById('detail-field-description').innerHTML = '<textarea id="edit-description-input" style="background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:0.3rem;font-family:inherit;font-size:0.75rem;width:100%;min-height:80px;resize:vertical">' + escapeHtml(_modalOriginalDescription || '') + '</textarea>' +
+                '<div style="margin-top:0.3rem">' +
+                '<button onclick="clientSaveEditDescription()" style="padding:0.2rem 0.5rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.7rem;font-weight:600">Save</button>' +
+                '<button onclick="clientCancelEditDescription()" style="margin-left:0.2rem;padding:0.2rem 0.5rem;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;font-size:0.7rem">Cancel</button>' +
+                '<span id="edit-description-feedback" style="margin-left:0.3rem;font-size:0.7rem"></span></div>';
+        }
+        function clientSaveEditDescription() {
+            var key = getKey();
+            var newValue = document.getElementById('edit-description-input').value;
+            var feedbackEl = document.getElementById('edit-description-feedback');
+            feedbackEl.textContent = 'Saving...';
+            feedbackEl.style.color = '#8b949e';
+            fetch('/api/clients/' + encodeURIComponent(_clientID) + '/features/' + encodeURIComponent(_detailFeatureId) + '/edit-description?key=' + encodeURIComponent(key), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({description: newValue})
+            }).then(function(r) {
+                return r.json().then(function(data) {
+                    if (r.ok) {
+                        feedbackEl.style.color = '#3fb950';
+                        feedbackEl.textContent = 'Saved!';
+                        _modalOriginalDescription = newValue;
+                        var displayValue = newValue ? escapeHtml(newValue) : '<span style="color:#484f58;font-style:italic">(none)</span>';
+                        document.getElementById('detail-field-description').innerHTML = displayValue + ' <button onclick="clientStartEditDescription()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.65rem" title="Edit description">&#9998;</button>';
+                        setTimeout(function() { smartPollFeatures(); }, 500);
+                    } else {
+                        feedbackEl.style.color = '#f85149';
+                        feedbackEl.textContent = data.error || 'Save failed';
+                    }
+                });
+            }).catch(function() {
+                feedbackEl.style.color = '#f85149';
+                feedbackEl.textContent = 'Network error';
+            });
+        }
+        function clientCancelEditDescription() {
+            var displayValue = _modalOriginalDescription ? escapeHtml(_modalOriginalDescription) : '<span style="color:#484f58;font-style:italic">(none)</span>';
+            document.getElementById('detail-field-description').innerHTML = displayValue + ' <button onclick="clientStartEditDescription()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.65rem" title="Edit description">&#9998;</button>';
+        }
+        function clientStartEditDoneScript() {
+            var doneScriptInput = document.createElement('input');
+            doneScriptInput.id = 'edit-done-script-input';
+            doneScriptInput.type = 'text';
+            doneScriptInput.value = _modalOriginalDoneScript || '';
+            doneScriptInput.style.cssText = 'background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:0.2rem;font-family:inherit;font-size:0.75rem;width:50%';
+            var fieldDoneScript = document.getElementById('detail-field-done-script');
+            fieldDoneScript.innerHTML = '';
+            fieldDoneScript.appendChild(doneScriptInput);
+            var saveBtn = document.createElement('button');
+            saveBtn.textContent = 'Save';
+            saveBtn.onclick = clientSaveEditDoneScript;
+            saveBtn.style.cssText = 'margin-left:0.3rem;padding:0.2rem 0.5rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.7rem;font-weight:600';
+            fieldDoneScript.appendChild(saveBtn);
+            var cancelBtn = document.createElement('button');
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.onclick = clientCancelEditDoneScript;
+            cancelBtn.style.cssText = 'margin-left:0.2rem;padding:0.2rem 0.5rem;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;font-size:0.7rem';
+            fieldDoneScript.appendChild(cancelBtn);
+            var feedbackSpan = document.createElement('span');
+            feedbackSpan.id = 'edit-done-script-feedback';
+            feedbackSpan.style.cssText = 'margin-left:0.3rem;font-size:0.7rem';
+            fieldDoneScript.appendChild(feedbackSpan);
+            doneScriptInput.focus();
+        }
+        function clientSaveEditDoneScript() {
+            var key = getKey();
+            var newValue = document.getElementById('edit-done-script-input').value;
+            var feedbackEl = document.getElementById('edit-done-script-feedback');
+            feedbackEl.textContent = 'Saving...';
+            feedbackEl.style.color = '#8b949e';
+            fetch('/api/clients/' + encodeURIComponent(_clientID) + '/features/' + encodeURIComponent(_detailFeatureId) + '/edit-done-script?key=' + encodeURIComponent(key), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({done_script: newValue})
+            }).then(function(r) {
+                return r.json().then(function(data) {
+                    if (r.ok) {
+                        feedbackEl.style.color = '#3fb950';
+                        feedbackEl.textContent = 'Saved!';
+                        _modalOriginalDoneScript = newValue;
+                        var displayValue = newValue ? escapeHtml(newValue) : '<span style="color:#484f58;font-style:italic">(none)</span>';
+                        document.getElementById('detail-field-done-script').innerHTML = displayValue + ' <button onclick="clientStartEditDoneScript()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit done script">&#9998;</button>';
+                        setTimeout(function() { smartPollFeatures(); }, 500);
+                    } else {
+                        feedbackEl.style.color = '#f85149';
+                        feedbackEl.textContent = data.error || 'Save failed';
+                    }
+                });
+            }).catch(function() {
+                feedbackEl.style.color = '#f85149';
+                feedbackEl.textContent = 'Network error';
+            });
+        }
+        function clientCancelEditDoneScript() {
+            var displayValue = _modalOriginalDoneScript ? escapeHtml(_modalOriginalDoneScript) : '<span style="color:#484f58;font-style:italic">(none)</span>';
+            document.getElementById('detail-field-done-script').innerHTML = displayValue + ' <button onclick="clientStartEditDoneScript()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit done script">&#9998;</button>';
         }
         function submitAnswers(btn, featureID) {
             var detail = btn.closest('.feature-detail');
@@ -1127,17 +1382,133 @@
                 btn.textContent = origText;
             });
         }
+        function showRejectModal() {
+            document.getElementById('reject-reason-input').value = '';
+            document.getElementById('reject-reason-modal').classList.add('active');
+        }
+        function closeRejectReasonModal(event) {
+            if (!event || event.target === document.getElementById('reject-reason-modal')) {
+                document.getElementById('reject-reason-modal').classList.remove('active');
+            }
+        }
+        function confirmReject() {
+            var reason = document.getElementById('reject-reason-input').value.trim();
+            var targetStage = _modalStage === 'final-human-approval' ? 'implementing' : (_modalStage === 'awaiting-human-approval' ? 'ideas' : 'rejected');
+            closeRejectReasonModal();
+            approveFeature(targetStage, reason || 'No reason given');
+        }
+        function approveFeature(action, reason) {
+            var feedbackEl = document.getElementById('approval-feedback');
+            if (!feedbackEl) return;
+            feedbackEl.textContent = action === 'done' ? 'Approving...' : (action === 'implementing' ? 'Sending back for rework...' : 'Rejecting...');
+            feedbackEl.style.color = '#8b949e';
+            var btnApprove = document.getElementById('btn-approve');
+            var btnReject = document.getElementById('btn-reject');
+            if (btnApprove) btnApprove.disabled = true;
+            if (btnReject) btnReject.disabled = true;
+            var featureID = _detailFeatureId;
+            fetch('/api/clients/' + encodeURIComponent(_clientID) + '/features/' + encodeURIComponent(featureID) + '/move?key=' + encodeURIComponent(_dashKey), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(reason !== undefined ? {target_stage: action, reason: reason} : {target_stage: action})
+            }).then(function(r) {
+                return r.json().then(function(data) {
+                    if (r.ok) {
+                        feedbackEl.style.color = '#3fb950';
+                        feedbackEl.textContent = action === 'done' ? 'Approved!' : (action === 'implementing' ? 'Sent back for rework!' : 'Rejected!');
+                        setTimeout(function() {
+                            var detail = document.querySelector('.feature-detail');
+                            if (detail) detail.remove();
+                            smartPollFeatures();
+                        }, 1000);
+                    } else {
+                        feedbackEl.style.color = '#f85149';
+                        feedbackEl.textContent = data.error || 'Failed';
+                        if (btnApprove) btnApprove.disabled = false;
+                        if (btnReject) btnReject.disabled = false;
+                    }
+                });
+            }).catch(function() {
+                feedbackEl.style.color = '#f85149';
+                feedbackEl.textContent = 'Network error';
+                if (btnApprove) btnApprove.disabled = false;
+                if (btnReject) btnReject.disabled = false;
+            });
+        }
+        var _pendingMoveStage = null;
+        function moveFeatureDropdown() {
+            var select = document.getElementById('move-stage-select');
+            var targetStage = select.value;
+            if (!targetStage) return;
+            _pendingMoveStage = targetStage;
+            document.getElementById('move-confirm-message').textContent = 'Move this item to "' + targetStage + '"?';
+            document.getElementById('move-confirm-modal').classList.add('active');
+        }
+        function closeMoveConfirmModal(event) {
+            if (!event || event.target === document.getElementById('move-confirm-modal')) {
+                document.getElementById('move-confirm-modal').classList.remove('active');
+                _pendingMoveStage = null;
+            }
+        }
+        function confirmMoveFeature() {
+            var targetStage = _pendingMoveStage;
+            closeMoveConfirmModal();
+            if (!targetStage) return;
+            var featureID = _detailFeatureId;
+            var feedback = document.getElementById('move-feedback');
+            var btn = document.getElementById('btn-move');
+            feedback.textContent = 'Moving...';
+            feedback.style.color = '#8b949e';
+            btn.disabled = true;
+            fetch('/api/clients/' + encodeURIComponent(_clientID) + '/features/' + encodeURIComponent(featureID) + '/move?key=' + encodeURIComponent(_dashKey), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({target_stage: targetStage})
+            }).then(function(resp) {
+                return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
+            }).then(function(result) {
+                if (result.ok) {
+                    feedback.style.color = '#3fb950';
+                    feedback.textContent = 'Moved to ' + targetStage + '!';
+                    setTimeout(function() {
+                        smartPollFeatures();
+                    }, 1000);
+                } else {
+                    feedback.style.color = '#f85149';
+                    feedback.textContent = result.data.error || 'Move failed';
+                    btn.disabled = false;
+                }
+            }).catch(function() {
+                feedback.style.color = '#f85149';
+                feedback.textContent = 'Network error';
+                btn.disabled = false;
+            });
+        }
         function showNewIdeaModal() {
             document.getElementById('new-idea-modal').classList.add('active');
             document.getElementById('new-idea-title').value = '';
             document.getElementById('new-idea-board').value = '';
             document.getElementById('new-idea-description').value = '';
             document.getElementById('new-idea-type').value = 'feature';
+            document.getElementById('new-idea-done-script').value = '';
             document.getElementById('new-idea-feedback').textContent = '';
             var btn = document.getElementById('submit-idea-btn');
             btn.disabled = false;
             btn.textContent = 'Create Idea';
             document.getElementById('new-idea-title').focus();
+            fetchScriptsForNewIdea();
+        }
+        function fetchScriptsForNewIdea() {
+            var scriptSelect = document.getElementById('new-idea-done-script');
+            scriptSelect.innerHTML = '<option value="">(none)</option>';
+            fetch('/api/clients/' + encodeURIComponent(_clientID) + '/scripts?key=' + encodeURIComponent(_dashKey)).then(function(r) { return r.json(); }).then(function(scripts) {
+                scripts.forEach(function(s) {
+                    var opt = document.createElement('option');
+                    opt.value = s.id;
+                    opt.textContent = s.label;
+                    scriptSelect.appendChild(opt);
+                });
+            }).catch(function() {});
         }
         function closeNewIdeaModal(event) {
             if (!event || event.target === document.getElementById('new-idea-modal')) {
@@ -1149,6 +1520,7 @@
             var board = document.getElementById('new-idea-board').value.trim();
             var description = document.getElementById('new-idea-description').value.trim();
             var itemType = document.getElementById('new-idea-type').value;
+            var doneScript = document.getElementById('new-idea-done-script').value;
             var feedback = document.getElementById('new-idea-feedback');
             var btn = document.getElementById('submit-idea-btn');
             if (!title) {
@@ -1166,7 +1538,7 @@
             fetch('/api/clients/' + encodeURIComponent(_clientID) + '/ideas?key=' + encodeURIComponent(_dashKey), {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({title: title, board: board, description: description, type: itemType})
+                body: JSON.stringify({title: title, board: board, description: description, type: itemType, done_script: doneScript})
             }).then(function(resp) {
                 return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
             }).then(function(result) {
@@ -1197,6 +1569,94 @@
             return div.innerHTML;
         }
     </script>
+    {{if .Config}}
+    <details style="margin-top:2rem">
+        <summary style="cursor:pointer;color:#58a6ff;font-size:1.1rem;font-weight:600;padding:0.5rem 0;user-select:none">Phase Settings</summary>
+        <div class="settings-grid" style="background:#161b22;border-radius:6px;padding:1rem;margin-top:0.5rem">
+            {{range .Config.Phases}}
+            <div class="settings-row" data-phase="{{.Key}}" style="display:flex;gap:0.5rem;align-items:center;padding:0.5rem 0;border-bottom:1px solid #21262d">
+                <span class="phase-label" style="color:#c9d1d9;font-weight:600;min-width:100px">{{.Label}}</span>
+                <select class="phase-agent" style="flex:1;padding:0.4rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.85rem;font-family:inherit">
+                    <option value="default">default ({{$.Config.DefaultAgent}})</option>
+                    {{range $.Config.AvailableAgents}}
+                    <option value="{{.}}">{{.}}</option>
+                    {{end}}
+                </select>
+                <input type="text" class="phase-model" placeholder="model override" style="flex:1;padding:0.4rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.85rem;font-family:inherit">
+                <button class="save-phase-btn" onclick="savePhaseAgent(this)" style="padding:0.4rem 0.8rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-weight:600">Save</button>
+            </div>
+            {{end}}
+        </div>
+    </details>
+    <script>
+    (function() {
+        var agentForPhaseRaw = '{{toJSON .Config.AgentForPhase}}';
+        var agentForPhase = {};
+        try { agentForPhase = JSON.parse(agentForPhaseRaw); } catch(e) {}
+        var rows = document.querySelectorAll('.settings-row');
+        rows.forEach(function(row) {
+            var phase = row.getAttribute('data-phase');
+            var cfg = agentForPhase[phase] || {};
+            var agentSelect = row.querySelector('.phase-agent');
+            var modelInput = row.querySelector('.phase-model');
+            var agent = cfg.agent || 'default';
+            var model = cfg.model || '';
+            var found = false;
+            Array.from(agentSelect.options).forEach(function(opt) {
+                if (opt.value === agent) {
+                    opt.selected = true;
+                    found = true;
+                }
+            });
+            if (!found) {
+                agentSelect.value = 'default';
+            }
+            modelInput.value = model;
+        });
+    })();
+    function savePhaseAgent(btn) {
+        var row = btn.closest('.settings-row');
+        var phase = row.getAttribute('data-phase');
+        var agent = row.querySelector('.phase-agent').value;
+        var model = row.querySelector('.phase-model').value;
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
+        fetch('/api/clients/' + encodeURIComponent(_clientID) + '/set-agent-for-phase?key=' + encodeURIComponent(_dashKey), {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({phase: phase, agent: agent, model: model})
+        }).then(function(resp) {
+            if (resp.ok) {
+                btn.textContent = 'Saved!';
+                btn.style.background = '#3fb950';
+                setTimeout(function() {
+                    btn.textContent = 'Save';
+                    btn.style.background = '';
+                    btn.disabled = false;
+                }, 2000);
+            } else {
+                resp.json().then(function(data) {
+                    btn.textContent = data.error || 'Error';
+                    btn.style.background = '#f85149';
+                    setTimeout(function() {
+                        btn.textContent = 'Save';
+                        btn.style.background = '';
+                        btn.disabled = false;
+                    }, 2000);
+                });
+            }
+        }).catch(function() {
+            btn.textContent = 'Error';
+            btn.style.background = '#f85149';
+            setTimeout(function() {
+                btn.textContent = 'Save';
+                btn.style.background = '';
+                btn.disabled = false;
+            }, 2000);
+        });
+    }
+    </script>
+    {{end}}
     <script>if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js'); }</script>
 </body>
 </html>
@@ -1207,7 +1667,7 @@
     <span class="log-output">{{.Output}}</span>
 </div>{{end}}{{else}}<div class="empty-state">No log entries</div>{{end}}{{end}}
 
-{{define "feature_stages"}}{{range .StageGroups}}<div class="stage-section">
+{{define "feature_stages"}}{{range .StageGroups}}<div class="stage-section{{if eq .Stage "final-human-approval"}} needs-action{{end}}">
     <button class="stage-toggle{{if not .Features}} collapsed{{end}}" onclick="toggleStage(this)">
         <span>{{.Stage}} <span class="stage-count{{if .Features}} has-items{{end}}">{{len .Features}}</span></span>
         <span class="arrow">&#9660;</span>
@@ -1219,21 +1679,24 @@
             data-stage="{{.Stage}}"
             data-board="{{.Board}}"
             data-created="{{.Created}}"
-            data-description="{{escapeAttr .Description}}"
+            data-description="{{.Description}}"
             data-history="{{toJSON .History}}"
-            data-plan="{{escapeAttr .Plan}}"
-            data-plan-exploration-summary="{{escapeAttr .PlanExplorationSummary}}"
-            data-impl-spec="{{escapeAttr .ImplSpec}}"
-            data-ideation="{{escapeAttr .Ideation}}"
-            data-test-spec="{{escapeAttr .TestSpec}}"
-            data-impl-notes="{{escapeAttr .ImplNotes}}"
+            data-plan="{{.Plan}}"
+            data-plan-exploration-summary="{{.PlanExplorationSummary}}"
+            data-impl-spec="{{.ImplSpec}}"
+            data-ideation="{{.Ideation}}"
+            data-ideation-summaries="{{toJSON .IdeationSummaries}}"
+            data-test-spec="{{.TestSpec}}"
+            data-impl-notes="{{.ImplNotes}}"
             data-test-results="{{toJSON .TestResults}}"
             data-checkpoint="{{.Checkpoint}}"
             data-plan-reviews="{{toJSON .PlanReviews}}"
             data-impl-reviews="{{toJSON .ImplReviews}}"
             data-questions="{{toJSON .Questions}}"
             data-available-actions="{{toJSON .AvailableActions}}"
-            data-done-script="{{.DoneScript}}">
+            data-done-script="{{.DoneScript}}"
+            data-requires-human-approval="{{.RequiresHumanApproval}}"
+            data-active="{{if index $.ActiveSlugs .Slug}}true{{end}}">
             <div class="title">{{.Title}}{{if and .ItemType (ne .ItemType "feature")}} <span class="item-type-badge item-type-{{.ItemType}}" aria-label="Item type: {{.ItemType}}">{{.ItemType}}</span>{{end}}{{if .Checkpoint}}{{if .Checkpoint.exists}} <span style="color:#d29922;font-size:0.7rem">● checkpoint</span>{{end}}{{end}}</div>
             <div class="meta"><span>{{.Board}}</span><span>{{.Created}}</span>{{if .Checkpoint}}{{if .Checkpoint.exists}}<span style="color:#d29922">{{.Checkpoint.last_checkpoint}}</span>{{end}}{{end}}{{if .DoneScript}}<span class="done-script-badge" style="background:#a855f7;color:white;padding:0 4px;border-radius:3px;font-size:0.7rem">Script</span>{{end}}</div>
         </div>{{end}}{{else}}<div class="empty-stage">No features in this stage</div>{{end}}

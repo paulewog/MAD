@@ -5,12 +5,16 @@ Run with:
     pytest test_scripts_pane.py -v
 """
 
+import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from textual.app import App, ComposeResult
 from textual.widgets import Button, Input, Select, TextArea
+from textual.pilot import Pilot
+from textual.css.query import NoMatches
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -136,6 +140,197 @@ class TestUnifiedEditModal:
         for stage in late_stages:
             modal = UnifiedEditModal(feature_data, stage, scripts)
             assert modal.current_stage not in ("ideas", "ideating", "plan-inbox"), f"Stage {stage} should not be early stage"
+
+    @pytest.mark.asyncio
+    async def test_compose_renders_title_for_all_stages(self):
+        """Test that title input is rendered for all stages."""
+        from tui import UnifiedEditModal
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Button("Open", id="open")
+            
+            async def on_button_pressed(self, event: Button.Pressed) -> None:
+                if event.button.id == "open":
+                    feature_data = {"title": "Test", "description": "", "item_type": "feature", "done_script": ""}
+                    modal = UnifiedEditModal(feature_data, "implementing", [])
+                    self.push_screen(modal)
+
+        app = TestApp()
+        async with app.run_test() as pilot:
+            await pilot.click("#open")
+            await pilot.pause()
+            
+            title_input = app.screen.query_one("#title-input", Input)
+            assert title_input.value == "Test"
+
+    @pytest.mark.asyncio
+    async def test_compose_renders_description_for_all_stages(self):
+        """Test that description textarea is rendered for all stages."""
+        from tui import UnifiedEditModal
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Button("Open", id="open")
+            
+            async def on_button_pressed(self, event: Button.Pressed) -> None:
+                if event.button.id == "open":
+                    feature_data = {"title": "Test", "description": "Test description", "item_type": "feature", "done_script": ""}
+                    modal = UnifiedEditModal(feature_data, "implementing", [])
+                    self.push_screen(modal)
+
+        app = TestApp()
+        async with app.run_test() as pilot:
+            await pilot.click("#open")
+            await pilot.pause()
+            
+            desc_area = app.screen.query_one("#description-area", TextArea)
+            assert desc_area.text == "Test description"
+
+    @pytest.mark.asyncio
+    async def test_compose_renders_type_for_early_stages_only(self):
+        """Test that type select is only rendered for early stages."""
+        from tui import UnifiedEditModal
+        
+        class TestApp(App):
+            def __init__(self, stage: str):
+                super().__init__()
+                self.stage = stage
+            
+            def compose(self) -> ComposeResult:
+                yield Button("Open", id="open")
+            
+            async def on_button_pressed(self, event: Button.Pressed) -> None:
+                if event.button.id == "open":
+                    feature_data = {"title": "Test", "description": "", "item_type": "feature", "done_script": ""}
+                    modal = UnifiedEditModal(feature_data, self.stage, [])
+                    self.push_screen(modal)
+
+        for stage in ("ideas", "ideating", "plan-inbox"):
+            app = TestApp(stage)
+            async with app.run_test() as pilot:
+                await pilot.click("#open")
+                await pilot.pause()
+                
+                type_select = app.screen.query_one("#type-select", Select)
+                assert type_select.value == "feature"
+
+        for stage in ("implementing", "review", "done"):
+            app = TestApp(stage)
+            async with app.run_test() as pilot:
+                await pilot.click("#open")
+                await pilot.pause()
+                
+                with pytest.raises(NoMatches):
+                    app.screen.query_one("#type-select", Select)
+
+    @pytest.mark.asyncio
+    async def test_compose_renders_script_for_all_stages(self):
+        """Test that done script select is rendered for all stages."""
+        from tui import UnifiedEditModal
+        
+        class TestApp(App):
+            def __init__(self, stage: str):
+                super().__init__()
+                self.stage = stage
+            
+            def compose(self) -> ComposeResult:
+                yield Button("Open", id="open")
+            
+            async def on_button_pressed(self, event: Button.Pressed) -> None:
+                if event.button.id == "open":
+                    feature_data = {"title": "Test", "description": "", "item_type": "feature", "done_script": ""}
+                    modal = UnifiedEditModal(feature_data, self.stage, [])
+                    self.push_screen(modal)
+
+        for stage in ("ideas", "implementing", "done"):
+            app = TestApp(stage)
+            async with app.run_test() as pilot:
+                await pilot.click("#open")
+                await pilot.pause()
+                
+                script_select = app.screen.query_one("#script-select", Select)
+                assert script_select is not None
+
+    @pytest.mark.asyncio
+    async def test_save_returns_title_and_description_for_all_stages(self):
+        """Test that _save returns title and description for all stages."""
+        from tui import UnifiedEditModal
+        
+        saved_result = {}
+        
+        class TestApp(App):
+            def compose(self) -> ComposeResult:
+                yield Button("Open", id="open")
+            
+            async def on_button_pressed(self, event: Button.Pressed) -> None:
+                if event.button.id == "open":
+                    feature_data = {"title": "Test Title", "description": "Test Desc", "item_type": "feature", "done_script": ""}
+                    modal = UnifiedEditModal(feature_data, "implementing", [])
+                    self.push_screen(modal, callback=self.on_result)
+            
+            def on_result(self, result):
+                saved_result.update(result or {})
+
+        app = TestApp()
+        async with app.run_test() as pilot:
+            await pilot.click("#open")
+            await pilot.pause()
+            
+            await pilot.click("#edit-save")
+            await pilot.pause()
+        
+        assert saved_result.get("title") == "Test Title"
+        assert saved_result.get("description") == "Test Desc"
+        assert "item_type" not in saved_result
+
+    @pytest.mark.asyncio
+    async def test_save_returns_type_for_early_stages_only(self):
+        """Test that _save returns item_type only for early stages."""
+        from tui import UnifiedEditModal
+        
+        saved_result = {}
+        
+        class TestApp(App):
+            def __init__(self, stage: str):
+                super().__init__()
+                self.stage = stage
+            
+            def compose(self) -> ComposeResult:
+                yield Button("Open", id="open")
+            
+            async def on_button_pressed(self, event: Button.Pressed) -> None:
+                if event.button.id == "open":
+                    feature_data = {"title": "Test", "description": "", "item_type": "bug", "done_script": ""}
+                    modal = UnifiedEditModal(feature_data, self.stage, [])
+                    self.push_screen(modal, callback=self.on_result)
+            
+            def on_result(self, result):
+                saved_result.update(result or {})
+
+        app = TestApp("ideas")
+        async with app.run_test() as pilot:
+            await pilot.click("#open")
+            await pilot.pause()
+            
+            save_button = app.screen.query_one("#edit-save", Button)
+            await pilot.click("#edit-save")
+            await pilot.pause()
+        
+        assert saved_result.get("item_type") == "bug"
+
+        saved_result.clear()
+        
+        app2 = TestApp("implementing")
+        async with app2.run_test() as pilot:
+            await pilot.click("#open")
+            await pilot.pause()
+            
+            save_button = app2.screen.query_one("#edit-save", Button)
+            await pilot.click("#edit-save")
+            await pilot.pause()
+        
+        assert "item_type" not in saved_result
 
 
 class TestScriptsPane:

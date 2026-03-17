@@ -273,6 +273,11 @@
       "ts": "2026-03-17T18:38Z",
       "stage": "REVIEW",
       "note": "Verdict: PASS - All 52 tests pass. The previous review's critical feedback (no tests for run_idea..."
+    },
+    {
+      "ts": "2026-03-17T18:38Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
     }
   ],
   "pipeline_log": [],

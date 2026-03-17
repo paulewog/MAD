@@ -600,21 +600,23 @@ When you have finished all work:
             else:
                 got_completion_marker = any("DONE" in line.upper() for line in output_lines)
             
-            # Check for API key errors (not retryable) - always check, even if completed
-            auth_error_phrases = [
-                "invalid api key",
-                "invalid_api_key",
-                "api key is invalid",
-                "authentication failed",
-                "unauthorized",
-                "invalid credentials",
-            ]
-            stderr_lower = (stderr_output or "").lower()
-            if any(phrase in stderr_lower for phrase in auth_error_phrases):
-                raise RuntimeError(
-                    f"{self.agent.name} authentication error — check your API key configuration.\n"
-                    f"Output: {full_output[-300:]}"
-                )
+            # Only check for API key errors if the phase did NOT complete successfully
+            # If the agent wrote the completion marker, the phase succeeded - don't check for auth errors
+            if not got_completion_marker:
+                auth_error_phrases = [
+                    "invalid api key",
+                    "invalid_api_key",
+                    "api key is invalid",
+                    "authentication failed",
+                    "unauthorized",
+                    "invalid credentials",
+                ]
+                stderr_lower = (stderr_output or "").lower()
+                if any(phrase in stderr_lower for phrase in auth_error_phrases):
+                    raise RuntimeError(
+                        f"{self.agent.name} authentication error — check your API key configuration.\n"
+                        f"Output: {full_output[-300:]}"
+                    )
 
             # Only check for rate limiting if the phase did NOT complete successfully
             # If the agent wrote the completion marker, the phase succeeded - don't check for rate limits

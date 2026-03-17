@@ -368,3 +368,173 @@ class TestEditFeatureCLI:
             data = json.load(f)
             assert data["description"] == "New desc"
             assert data["title"] == "Test Feature"
+
+    def test_set_field_ideation_prompt(self, mock_config, temp_board_dir):
+        """Test setting ideation_prompt field."""
+        cli = pipeline_module.cli
+        result = run_cli_command(cli, mock_config, [
+            "edit-feature", "test-feature", "set-field", "ideation_prompt", "Focus on security"
+        ])
+        
+        assert result.exit_code == 0
+        assert "Set ideation_prompt on test-feature" in result.output
+        
+        feature = find_feature_with_mock(mock_config, "test-feature")
+        assert feature.ideation_prompt == "Focus on security"
+
+    def test_get_field_ideation_prompt(self, mock_config, temp_board_dir):
+        """Test getting ideation_prompt field."""
+        cli = pipeline_module.cli
+        result = run_cli_command(cli, mock_config, [
+            "edit-feature", "test-feature", "get-field", "ideation_prompt"
+        ])
+        
+        assert result.exit_code == 0
+
+    def test_set_field_ideation_prompt_stdin(self, mock_config, temp_board_dir):
+        """Test setting ideation_prompt field via stdin."""
+        cli = pipeline_module.cli
+        runner = CliRunner()
+        with patch("pipeline.pipeline.get_config", return_value=mock_config):
+            with patch("state.Config", return_value=mock_config):
+                result = runner.invoke(cli, [
+                    "edit-feature", "test-feature", "set-field", "ideation_prompt", "--stdin"
+                ], input="Focus on performance")
+        
+        assert result.exit_code == 0
+        assert "Set ideation_prompt on test-feature" in result.output
+        
+        feature = find_feature_with_mock(mock_config, "test-feature")
+        assert feature.ideation_prompt == "Focus on performance"
+
+    def test_set_field_ideation_prompt_file(self, mock_config, temp_board_dir):
+        """Test setting ideation_prompt from file."""
+        cli = pipeline_module.cli
+        
+        direction_file = Path(temp_board_dir[0]) / "direction.txt"
+        direction_file.write_text("Focus on security concerns")
+        
+        result = run_cli_command(cli, mock_config, [
+            "edit-feature", "test-feature", "set-field", "ideation_prompt", "--file", str(direction_file)
+        ])
+        
+        assert result.exit_code == 0
+        assert "Set ideation_prompt on test-feature" in result.output
+        
+        feature = find_feature_with_mock(mock_config, "test-feature")
+        assert feature.ideation_prompt == "Focus on security concerns"
+
+
+class TestListFeaturesCLI:
+    """Test cases for pipeline ls CLI command."""
+
+    @pytest.fixture
+    def temp_board_dir(self):
+        """Create a temporary board directory with test features."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            board_dir = Path(tmpdir) / "testboard"
+            ideas_dir = board_dir / "ideas"
+            ideas_dir.mkdir(parents=True)
+            
+            feature1_path = ideas_dir / "feature-one.json"
+            feature1_data = {
+                "id": "feat1",
+                "board": "testboard",
+                "title": "Feature One",
+                "type": "feature",
+                "created": "2024-01-01T00:00:00Z",
+                "description": "",
+                "done_script": "",
+                "plan": "",
+                "impl_spec": "",
+                "test_spec": "",
+                "impl_notes": "",
+                "design_ref": "",
+                "history": [],
+                "pipeline_log": [],
+                "plan_reviews": [],
+                "impl_reviews": [],
+                "questions": [],
+                "test_results": {},
+            }
+            with open(feature1_path, "w") as f:
+                json.dump(feature1_data, f, indent=2)
+                f.write("\n")
+            
+            plan_dir = board_dir / "plan-inbox"
+            plan_dir.mkdir(parents=True)
+            
+            feature2_path = plan_dir / "feature-two.json"
+            feature2_data = {
+                "id": "feat2",
+                "board": "testboard",
+                "title": "Feature Two",
+                "type": "feature",
+                "created": "2024-01-01T00:00:00Z",
+                "description": "",
+                "done_script": "",
+                "plan": "Plan for feature two",
+                "impl_spec": "",
+                "test_spec": "",
+                "impl_notes": "",
+                "design_ref": "",
+                "history": [],
+                "pipeline_log": [],
+                "plan_reviews": [],
+                "impl_reviews": [],
+                "questions": [],
+                "test_results": {},
+            }
+            with open(feature2_path, "w") as f:
+                json.dump(feature2_data, f, indent=2)
+                f.write("\n")
+            
+            yield tmpdir, board_dir
+
+    @pytest.fixture
+    def mock_config(self, temp_board_dir):
+        """Mock Config to use temp directory."""
+        tmpdir, board_dir = temp_board_dir
+        
+        class MockConfig:
+            def __init__(self):
+                self.boards_dir = Path(tmpdir)
+                self.boards = ["testboard"]
+                self.mad_dir = Path(tmpdir) / ".mad"
+                self.mad_dir.mkdir(exist_ok=True)
+                self.agents = {}
+                self.current_agent_name = "claude"
+                
+            def setup_boards(self):
+                pass
+        
+        return MockConfig()
+
+    def test_list_features(self, mock_config, temp_board_dir):
+        """Test listing features across all boards."""
+        cli = pipeline_module.cli
+        result = run_cli_command(cli, mock_config, ["ls"])
+        
+        assert result.exit_code == 0
+        assert "testboard/" in result.output
+        assert "feature-one" in result.output
+        assert "feature-two" in result.output
+
+    def test_list_features_with_board_filter(self, mock_config, temp_board_dir):
+        """Test listing features filtered by board."""
+        cli = pipeline_module.cli
+        result = run_cli_command(cli, mock_config, ["ls", "--board", "testboard"])
+        
+        assert result.exit_code == 0
+        assert "testboard/" in result.output
+        assert "feature-one" in result.output
+        assert "feature-two" in result.output
+
+    def test_list_features_with_stage_filter(self, mock_config, temp_board_dir):
+        """Test listing features filtered by stage."""
+        cli = pipeline_module.cli
+        result = run_cli_command(cli, mock_config, ["ls", "--stage", "ideas"])
+        
+        assert result.exit_code == 0
+        assert "feature-one" in result.output
+        assert "feature-two" not in result.output

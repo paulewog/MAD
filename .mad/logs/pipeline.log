@@ -35595,3 +35595,296 @@ You are a senior code reviewer tasked with critically evaluating an implementati
 2026-03-17 11:38:18,974 INFO [auto-impl] Skipping - implementation already in progress
 2026-03-17 11:38:24,146 INFO [runner] Read 3847 chars from output file
 2026-03-17 11:38:24,146 INFO [runner] Log file closed
+2026-03-17 11:38:24,186 WARNING [git] Commit failed: Command '['git', 'add', '-A', '.mad/boards/', '.mad/logs/']' returned non-zero exit status 1.
+2026-03-17 11:38:24,186 INFO Review PASSED. Feature moved to final-human-approval.
+2026-03-17 11:38:29,057 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:38:29,057 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:38:29,057 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:38:29,058 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:38:29,058 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:38:29,058 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:38:29,058 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:38:29,058 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:38:38,948 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:38:38,948 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:38:38,948 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:38:38,948 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:38:38,948 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:38:38,948 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:38:38,948 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:38:38,948 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:38:48,942 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:38:48,942 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:38:48,942 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:38:48,943 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:38:48,943 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:38:48,943 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:38:48,943 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:38:48,943 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:38:58,944 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:38:58,944 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:38:58,944 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:38:58,944 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:38:58,944 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:38:58,944 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:38:58,945 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:38:58,945 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:39:08,946 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:39:08,947 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:39:08,947 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:39:08,947 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:39:08,947 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:39:08,947 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:39:08,947 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:39:08,947 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:39:18,939 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:39:18,940 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:39:18,940 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:39:18,940 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:39:18,940 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:39:18,940 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:39:18,940 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:39:18,940 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:39:28,943 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:39:28,943 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:39:28,943 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:39:28,944 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:39:28,944 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:39:28,944 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:39:28,944 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:39:28,944 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:39:38,941 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:39:38,941 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:39:38,941 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:39:38,941 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:39:38,941 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:39:38,941 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:39:38,941 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:39:38,942 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:39:48,939 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:39:48,940 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:39:48,940 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:39:48,940 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:39:48,940 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:39:48,940 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:39:48,940 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:39:48,940 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:39:58,937 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:39:58,937 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:39:58,937 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:39:58,937 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:39:58,937 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:39:58,937 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:39:58,937 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:39:58,937 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:40:08,938 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:40:08,938 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:40:08,938 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:40:08,938 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:40:08,939 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:40:08,939 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:40:08,939 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:40:08,939 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:40:18,936 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:40:18,937 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:40:18,937 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:40:18,937 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:40:18,937 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:40:18,937 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:40:18,937 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:40:18,937 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:40:28,948 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:40:28,948 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:40:28,948 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:40:28,948 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:40:28,948 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:40:28,948 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:40:28,948 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:40:28,949 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:40:38,943 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:40:38,943 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:40:38,943 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:40:38,943 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:40:38,943 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:40:38,943 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:40:38,943 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:40:38,944 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:40:48,935 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:40:48,936 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:40:48,936 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:40:48,936 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:40:48,936 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:40:48,936 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:40:48,936 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:40:48,936 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:40:58,922 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:40:58,922 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:40:58,922 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:40:58,922 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:40:58,923 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:40:58,923 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:40:58,923 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:40:58,923 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:41:08,941 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:41:08,941 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:41:08,941 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:41:08,941 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:41:08,941 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:41:08,941 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:41:08,941 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:41:08,941 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:41:18,936 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:41:18,936 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:41:18,936 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:41:18,936 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:41:18,937 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:41:18,937 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:41:18,937 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:41:18,937 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:41:28,934 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:41:28,934 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:41:28,934 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:41:28,935 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:41:28,935 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:41:28,935 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:41:28,935 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:41:28,935 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:41:38,936 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:41:38,936 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:41:38,936 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:41:38,936 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:41:38,937 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:41:38,937 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:41:38,937 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:41:38,937 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:41:48,934 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:41:48,935 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:41:48,935 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:41:48,935 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:41:48,935 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:41:48,935 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:41:48,935 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:41:48,935 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:41:58,931 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:41:58,931 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:41:58,931 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:41:58,932 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:41:58,932 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:41:58,932 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:41:58,932 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:41:58,932 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:42:08,934 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:42:08,934 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:42:08,934 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:42:08,934 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:42:08,934 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:42:08,934 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:42:08,934 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:42:08,934 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:42:18,927 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:42:18,927 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:42:18,927 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:42:18,928 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:42:18,928 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:42:18,928 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:42:18,928 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:42:18,928 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:42:28,931 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:42:28,932 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:42:28,932 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:42:28,932 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:42:28,932 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:42:28,932 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:42:28,932 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:42:28,932 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:42:38,928 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:42:38,928 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:42:38,928 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:42:38,928 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:42:38,928 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:42:38,928 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:42:38,928 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:42:38,928 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:42:48,931 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:42:48,932 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:42:48,932 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:42:48,932 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:42:48,932 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:42:48,932 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:42:48,932 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:42:48,932 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:42:58,931 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:42:58,932 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:42:58,932 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:42:58,932 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:42:58,932 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:42:58,932 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:42:58,932 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:42:58,933 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:43:08,928 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:43:08,928 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:43:08,928 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:43:08,928 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:43:08,928 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:43:08,928 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:43:08,928 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:43:08,928 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:43:18,925 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:43:18,925 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:43:18,925 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:43:18,925 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:43:18,925 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:43:18,925 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:43:18,925 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:43:18,925 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:43:28,927 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:43:28,927 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:43:28,927 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:43:28,927 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:43:28,927 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:43:28,927 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:43:28,928 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:43:28,928 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:43:38,922 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:43:38,922 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:43:38,922 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:43:38,922 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:43:38,922 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:43:38,922 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:43:38,922 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:43:38,922 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:43:48,928 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:43:48,928 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:43:48,928 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:43:48,928 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:43:48,928 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:43:48,928 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:43:48,928 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:43:48,928 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:43:58,927 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:43:58,927 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:43:58,927 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:43:58,927 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:43:58,927 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:43:58,927 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:43:58,927 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:43:58,927 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:44:08,925 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:44:08,925 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:44:08,925 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:44:08,926 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:44:08,926 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:44:08,926 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:44:08,926 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:44:08,926 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:44:18,920 INFO [auto-plan] Checking boards: ['mad']
+2026-03-17 11:44:18,920 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-17 11:44:18,920 INFO [auto-impl] Checking boards: ['mad']
+2026-03-17 11:44:18,920 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-17 11:44:18,920 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-17 11:44:18,921 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-17 11:44:18,921 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-17 11:44:18,921 INFO [auto-impl] Board 'mad', stage 'approved': 0 features
+2026-03-17 11:44:35,035 INFO Connected to server as 'wsl-mad-cwd'
+2026-03-17 11:44:48,143 INFO Connected to server as 'wsl-mad-cwd'
+2026-03-17 12:13:53,107 INFO Connected to server as 'wsl-mad-cwd'

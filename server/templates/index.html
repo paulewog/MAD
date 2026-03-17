@@ -316,6 +316,29 @@
             <div id="modal-body"></div>
         </div>
     </div>
+    <!-- Rejection Reason Modal -->
+    <div class="modal-overlay" id="reject-reason-modal" onclick="closeRejectReasonModal(event)">
+        <div class="modal" onclick="event.stopPropagation()" style="max-width:450px">
+            <h3 style="color:#f85149">Reject Item</h3>
+            <p style="color:#8b949e;margin:0 0 1rem;font-size:0.85rem">Provide a reason for rejection (optional):</p>
+            <textarea id="reject-reason-input" placeholder="Rejection reason (optional)" style="width:100%;height:80px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:0.5rem;border-radius:4px;font-family:inherit;font-size:0.85rem;resize:vertical;margin-bottom:1rem"></textarea>
+            <div style="display:flex;gap:0.5rem;justify-content:flex-end">
+                <button onclick="closeRejectReasonModal()" style="padding:0.5rem 1rem;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer">Cancel</button>
+                <button onclick="confirmReject()" style="padding:0.5rem 1rem;background:#da3633;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">Reject</button>
+            </div>
+        </div>
+    </div>
+    <!-- Move Confirmation Modal -->
+    <div class="modal-overlay" id="move-confirm-modal" onclick="closeMoveConfirmModal(event)">
+        <div class="modal" onclick="event.stopPropagation()" style="max-width:400px">
+            <h3>Confirm Move</h3>
+            <p id="move-confirm-message" style="color:#c9d1d9;margin:0 0 1rem;font-size:0.9rem"></p>
+            <div style="display:flex;gap:0.5rem;justify-content:flex-end">
+                <button onclick="closeMoveConfirmModal()" style="padding:0.5rem 1rem;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer">Cancel</button>
+                <button onclick="confirmMoveFeature()" style="padding:0.5rem 1rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">Confirm</button>
+            </div>
+        </div>
+    </div>
     <!-- New Idea Modal -->
     <div class="modal-overlay" id="new-idea-modal" onclick="closeNewIdeaModal(event)">
         <div class="modal" onclick="event.stopPropagation()" style="max-width:450px">
@@ -346,6 +369,11 @@
                 <select id="new-idea-done-script" style="width:100%;padding:0.5rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.9rem;font-family:inherit">
                     <option value="">(none)</option>
                 </select>
+            </div>
+            <div style="margin-bottom:1rem">
+                <label style="display:block;color:#8b949e;font-size:0.8rem;margin-bottom:0.3rem">
+                    <input type="checkbox" id="new-idea-requires-approval"> Require human approval before implementation
+                </label>
             </div>
             <div style="display:flex;gap:0.5rem;justify-content:flex-end">
                 <button onclick="closeNewIdeaModal()" style="padding:0.5rem 1rem;background:#30363d;color:#c9d1d9;border:none;border-radius:4px;cursor:pointer;font-size:0.85rem;font-family:inherit">Cancel</button>
@@ -404,7 +432,8 @@
                     function cardHash(c) {
                         return [c.getAttribute('data-id'), c.getAttribute('data-stage'),
                                 c.getAttribute('data-title'), c.getAttribute('data-description'),
-                                c.getAttribute('data-history'), c.getAttribute('data-active')].join('|');
+                                c.getAttribute('data-history'), c.getAttribute('data-active'),
+                                c.getAttribute('data-ideation'), c.getAttribute('data-ideation-summaries')].join('|');
                     }
                     var newCards = newBody.querySelectorAll('.feature-card');
                     var curCards = curBody.querySelectorAll('.feature-card');
@@ -444,6 +473,7 @@
             }
         });
         var _clientsCache = [];
+        var ALL_STAGES = ['ideas','ideating','plan-inbox','reviewing-plan','requested-input','awaiting-human-approval','approved','spec-writing','implementing','testing','review','final-human-approval','done','rejected'];
         function showNewIdeaModal() {
             document.getElementById('new-idea-modal').classList.add('active');
             document.getElementById('new-idea-title').value = '';
@@ -469,6 +499,7 @@
                 var connected = clients.filter(function(c) { return c.connected; });
                 if (connected.length === 1) {
                     select.value = connected[0].client_id;
+                    fetchScriptsForNewIdea();
                 }
             }).catch(function() {});
             
@@ -518,10 +549,11 @@
             }
             btn.disabled = true;
             btn.textContent = 'Creating...';
+            var requiresApproval = document.getElementById('new-idea-requires-approval').checked;
             fetch('/api/clients/' + encodeURIComponent(clientID) + '/ideas?key=' + encodeURIComponent(key), {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({title: title, board: board, description: description, done_script: doneScript})
+                body: JSON.stringify({title: title, board: board, description: description, done_script: doneScript, requires_human_approval: requiresApproval})
             }).then(function(resp) {
                 return resp.json().then(function(data) { return {ok: resp.ok, data: data}; });
             }).then(function(result) {
@@ -552,36 +584,92 @@
         }
         var _modalClientId = null;
         var _modalFeatureId = null;
+        var _modalStage = null;
+        var _modalOriginalTitle = null;
+        var _modalOriginalType = null;
+        var _modalOriginalDescription = null;
+        var _modalOriginalDoneScript = null;
         function showFeature(card) {
             _modalClientId = card.getAttribute('data-client');
             _modalFeatureId = card.getAttribute('data-id');
+            _modalStage = card.getAttribute('data-stage');
             var title = card.getAttribute('data-title');
             var itemType = card.getAttribute('data-type') || 'feature';
             var stage = card.getAttribute('data-stage');
             var board = card.getAttribute('data-board');
             var created = card.getAttribute('data-created');
             var featureId = card.getAttribute('data-id');
-            var description = decodeHtmlEntities(card.getAttribute('data-description') || '');
+            var description = card.getAttribute('data-description') || '';
             var historyJSON = card.getAttribute('data-history') || '[]';
             var doneScript = card.getAttribute('data-done-script') || '';
+            var requiresHumanApproval = card.getAttribute('data-requires-human-approval') === 'true';
+            _modalOriginalTitle = title;
+            _modalOriginalType = itemType;
+            _modalOriginalDescription = description;
+            _modalOriginalDoneScript = doneScript;
             var html =
                 '<div class="detail-row"><span class="detail-label">Stage</span><span class="detail-value">' + escapeHtml(stage) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Board</span><span class="detail-value">' + escapeHtml(board) + '</span></div>' +
-                '<div class="detail-row"><span class="detail-label">Type</span><span class="detail-value">' + escapeHtml(itemType) + '</span></div>' +
+                '<div class="detail-row"><span class="detail-label">Type</span><span class="detail-value" id="field-type">' + escapeHtml(itemType) + (stage === 'ideas' ? ' <button onclick="startEditType()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit type">&#9998;</button>' : '') + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">' + escapeHtml(created) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">ID</span><span class="detail-value">' + escapeHtml(featureId) + '</span></div>' +
-                (doneScript ? '<div class="detail-row"><span class="detail-label">Done Script</span><span class="detail-value" style="color:#d2a8ff">' + escapeHtml(doneScript) + '</span></div>' : '') +
-                (stage === 'final-human-approval' ?
+                (requiresHumanApproval ? '<div class="detail-row"><span class="detail-label" style="color:#d29922">Requires Human Approval</span><span class="detail-value" style="color:#d29922">Yes</span></div>' : '') +
+                '<div class="detail-row"><span class="detail-label">Done Script</span><span class="detail-value" id="field-done-script" style="color:#d2a8ff">' +
+                (doneScript ? escapeHtml(doneScript) : '<span style="color:#484f58;font-style:italic">(none)</span>') +
+                ' <button onclick="startEditDoneScript()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit done script">&#9998;</button></span></div>' +
+                '<div style="margin-top:0.75rem;padding:0.5rem 0;border-top:1px solid #21262d;border-bottom:1px solid #21262d">' +
+                '<div style="color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase;margin-bottom:0.4rem">Move to Stage</div>' +
+                '<div style="display:flex;gap:0.5rem;align-items:center">' +
+                '<select id="move-stage-select" style="flex:1;padding:0.4rem;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;font-size:0.8rem;font-family:inherit">';
+            for (var si = 0; si < ALL_STAGES.length; si++) {
+                if (ALL_STAGES[si] !== stage) {
+                    html += '<option value="' + ALL_STAGES[si] + '">' + escapeHtml(ALL_STAGES[si]) + '</option>';
+                }
+            }
+            html += '</select>' +
+                '<button id="btn-move" onclick="moveFeature()" style="padding:0.4rem 0.8rem;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-weight:600;color:#fff;background:#1f6feb">Move</button>' +
+                '</div>' +
+                '<span id="move-feedback" style="font-size:0.8rem;margin-top:0.3rem;display:block"></span>' +
+                '</div>' +
+                (stage === 'final-human-approval' || stage === 'awaiting-human-approval' ?
                 '<div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.75rem;padding:0.5rem 0;border-bottom:1px solid #21262d">' +
-                '<button id="btn-approve" onclick="approveFeature(\'done\')" style="padding:0.4rem 0.8rem;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-weight:600;color:#fff;background:#238636">Approve</button>' +
+                '<button id="btn-approve" onclick="approveFeature(\'' + (stage === 'awaiting-human-approval' ? 'approved' : 'done') + '\')" style="padding:0.4rem 0.8rem;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-weight:600;color:#fff;background:#238636">Approve</button>' +
                 '<button id="btn-reject" onclick="showRejectModal()" style="padding:0.4rem 0.8rem;border:none;border-radius:4px;cursor:pointer;font-size:0.8rem;font-weight:600;color:#fff;background:#da3633">Reject</button>' +
                 '<span id="approval-feedback" style="margin-left:0.5rem;font-size:0.8rem"></span>' +
                 '</div>' : '');
             if (description) {
                 html += '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid #21262d">' +
-                    '<div style="color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase;margin-bottom:0.3rem">Description</div>' +
-                    '<div style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap">' + escapeHtml(description) + '</div></div>';
+                    '<div style="color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase;margin-bottom:0.3rem">Description' +
+                    (stage === 'ideas' ? ' <button onclick="startEditDescription()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.7rem" title="Edit description">&#9998;</button>' : '') +
+                    '</div>' +
+                    '<div id="field-description" style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap">' + escapeHtml(description) + '</div></div>';
+            } else if (stage === 'ideas') {
+                html += '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid #21262d">' +
+                    '<div style="color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase;margin-bottom:0.3rem">Description' +
+                    ' <button onclick="startEditDescription()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.7rem" title="Add description">&#9998;</button>' +
+                    '</div>' +
+                    '<div id="field-description" style="color:#484f58;font-size:0.8rem;font-style:italic">(none)</div></div>';
             }
+            var ideation = card.getAttribute('data-ideation') || '';
+            if (ideation) {
+                html += '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid #21262d">' +
+                    '<div style="color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase;margin-bottom:0.3rem">Ideation</div>' +
+                    '<div style="color:#c9d1d9;font-size:0.8rem;white-space:pre-wrap">' + escapeHtml(ideation) + '</div></div>';
+            }
+            try {
+                var ideationSummaries = JSON.parse(card.getAttribute('data-ideation-summaries') || '[]');
+                if (ideationSummaries && ideationSummaries.length > 0) {
+                    html += '<div style="margin-top:0.75rem;padding-top:0.5rem;border-top:1px solid #21262d">' +
+                        '<div style="color:#8b949e;font-size:0.75rem;font-weight:600;text-transform:uppercase;margin-bottom:0.3rem">Ideation Summaries (' + ideationSummaries.length + ' rounds)</div>' +
+                        '<div style="max-height:300px;overflow-y:auto">';
+                    for (var si = 0; si < ideationSummaries.length; si++) {
+                        html += '<div style="font-size:0.75rem;padding:0.3rem 0;border-bottom:1px solid #161b22">' +
+                            '<span style="color:#d2a8ff;font-weight:600">Round ' + (si + 1) + '</span>' +
+                            '<div style="color:#c9d1d9;white-space:pre-wrap;margin-top:0.2rem">' + escapeHtml(ideationSummaries[si]) + '</div></div>';
+                    }
+                    html += '</div></div>';
+                }
+            } catch(e) {}
             try {
                 var history = JSON.parse(historyJSON);
                 if (history && history.length > 0) {
@@ -642,9 +730,200 @@
                     html += '</div>';
                 }
             } catch(e) {}
-            document.getElementById('modal-title').textContent = title;
+            document.getElementById('modal-title').innerHTML = escapeHtml(title) + (stage === 'ideas' ? ' <button onclick="startEditTitle()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.85rem;vertical-align:middle" title="Edit title">&#9998;</button>' : '');
             document.getElementById('modal-body').innerHTML = html;
             document.getElementById('feature-modal').classList.add('active');
+        }
+        function startEditTitle() {
+            var titleInput = document.createElement('input');
+            titleInput.id = 'edit-title-input';
+            titleInput.type = 'text';
+            titleInput.value = _modalOriginalTitle;
+            titleInput.style.cssText = 'background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:0.4rem;font-family:inherit;font-size:1rem;width:70%';
+            var modalTitle = document.getElementById('modal-title');
+            modalTitle.innerHTML = '';
+            modalTitle.appendChild(titleInput);
+            var saveBtn = document.createElement('button');
+            saveBtn.textContent = 'Save';
+            saveBtn.onclick = saveEditTitle;
+            saveBtn.style.cssText = 'margin-left:0.4rem;padding:0.3rem 0.6rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem;font-weight:600';
+            modalTitle.appendChild(saveBtn);
+            var cancelBtn = document.createElement('button');
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.onclick = cancelEditTitle;
+            cancelBtn.style.cssText = 'margin-left:0.3rem;padding:0.3rem 0.6rem;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;font-size:0.75rem';
+            modalTitle.appendChild(cancelBtn);
+            var feedbackSpan = document.createElement('span');
+            feedbackSpan.id = 'edit-title-feedback';
+            feedbackSpan.style.cssText = 'margin-left:0.5rem;font-size:0.75rem';
+            modalTitle.appendChild(feedbackSpan);
+            titleInput.focus();
+        }
+        function saveEditTitle() {
+            var newValue = document.getElementById('edit-title-input').value;
+            var feedbackEl = document.getElementById('edit-title-feedback');
+            feedbackEl.textContent = 'Saving...';
+            feedbackEl.style.color = '#8b949e';
+            fetch('/api/clients/' + encodeURIComponent(_modalClientId) + '/features/' + encodeURIComponent(_modalFeatureId) + '/edit-title?key=' + encodeURIComponent(key), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({title: newValue})
+            }).then(function(r) {
+                return r.json().then(function(data) {
+                    if (r.ok) {
+                        feedbackEl.style.color = '#3fb950';
+                        feedbackEl.textContent = 'Saved!';
+                        _modalOriginalTitle = newValue;
+                        document.getElementById('modal-title').innerHTML = escapeHtml(newValue) + ' <button onclick="startEditTitle()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.85rem;vertical-align:middle" title="Edit title">&#9998;</button>';
+                        setTimeout(function() { smartPollBoard(); }, 500);
+                    } else {
+                        feedbackEl.style.color = '#f85149';
+                        feedbackEl.textContent = data.error || 'Save failed';
+                    }
+                });
+            }).catch(function() {
+                feedbackEl.style.color = '#f85149';
+                feedbackEl.textContent = 'Network error';
+            });
+        }
+        function cancelEditTitle() {
+            document.getElementById('modal-title').innerHTML = escapeHtml(_modalOriginalTitle) + ' <button onclick="startEditTitle()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.85rem;vertical-align:middle" title="Edit title">&#9998;</button>';
+        }
+        function startEditType() {
+            var currentType = _modalOriginalType || 'feature';
+            document.getElementById('field-type').innerHTML = '<select id="edit-type-select" style="background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:0.3rem;font-family:inherit;font-size:0.85rem">' +
+                '<option value="feature"' + (currentType === 'feature' ? ' selected' : '') + '>feature</option>' +
+                '<option value="bug"' + (currentType === 'bug' ? ' selected' : '') + '>bug</option>' +
+                '</select>' +
+                '<button onclick="saveEditType()" style="margin-left:0.4rem;padding:0.3rem 0.6rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem;font-weight:600">Save</button>' +
+                '<button onclick="cancelEditType()" style="margin-left:0.3rem;padding:0.3rem 0.6rem;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;font-size:0.75rem">Cancel</button>' +
+                '<span id="edit-type-feedback" style="margin-left:0.5rem;font-size:0.75rem"></span>';
+        }
+        function saveEditType() {
+            var newValue = document.getElementById('edit-type-select').value;
+            var feedbackEl = document.getElementById('edit-type-feedback');
+            feedbackEl.textContent = 'Saving...';
+            feedbackEl.style.color = '#8b949e';
+            fetch('/api/clients/' + encodeURIComponent(_modalClientId) + '/features/' + encodeURIComponent(_modalFeatureId) + '/edit-type?key=' + encodeURIComponent(key), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({type: newValue})
+            }).then(function(r) {
+                return r.json().then(function(data) {
+                    if (r.ok) {
+                        feedbackEl.style.color = '#3fb950';
+                        feedbackEl.textContent = 'Saved!';
+                        _modalOriginalType = newValue;
+                        document.getElementById('field-type').innerHTML = escapeHtml(newValue) + ' <button onclick="startEditType()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit type">&#9998;</button>';
+                        setTimeout(function() { smartPollBoard(); }, 500);
+                    } else {
+                        feedbackEl.style.color = '#f85149';
+                        feedbackEl.textContent = data.error || 'Save failed';
+                    }
+                });
+            }).catch(function() {
+                feedbackEl.style.color = '#f85149';
+                feedbackEl.textContent = 'Network error';
+            });
+        }
+        function cancelEditType() {
+            document.getElementById('field-type').innerHTML = escapeHtml(_modalOriginalType) + ' <button onclick="startEditType()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit type">&#9998;</button>';
+        }
+        function startEditDescription() {
+            document.getElementById('field-description').innerHTML = '<textarea id="edit-description-input" style="background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:0.4rem;font-family:inherit;font-size:0.85rem;width:100%;min-height:100px;resize:vertical">' + escapeHtml(_modalOriginalDescription || '') + '</textarea>' +
+                '<div style="margin-top:0.4rem">' +
+                '<button onclick="saveEditDescription()" style="padding:0.3rem 0.6rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem;font-weight:600">Save</button>' +
+                '<button onclick="cancelEditDescription()" style="margin-left:0.3rem;padding:0.3rem 0.6rem;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;font-size:0.75rem">Cancel</button>' +
+                '<span id="edit-description-feedback" style="margin-left:0.5rem;font-size:0.75rem"></span></div>';
+        }
+        function saveEditDescription() {
+            var newValue = document.getElementById('edit-description-input').value;
+            var feedbackEl = document.getElementById('edit-description-feedback');
+            feedbackEl.textContent = 'Saving...';
+            feedbackEl.style.color = '#8b949e';
+            fetch('/api/clients/' + encodeURIComponent(_modalClientId) + '/features/' + encodeURIComponent(_modalFeatureId) + '/edit-description?key=' + encodeURIComponent(key), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({description: newValue})
+            }).then(function(r) {
+                return r.json().then(function(data) {
+                    if (r.ok) {
+                        feedbackEl.style.color = '#3fb950';
+                        feedbackEl.textContent = 'Saved!';
+                        _modalOriginalDescription = newValue;
+                        var displayValue = newValue ? escapeHtml(newValue) : '<span style="color:#484f58;font-style:italic">(none)</span>';
+                        document.getElementById('field-description').innerHTML = displayValue + ' <button onclick="startEditDescription()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.7rem" title="Edit description">&#9998;</button>';
+                        setTimeout(function() { smartPollBoard(); }, 500);
+                    } else {
+                        feedbackEl.style.color = '#f85149';
+                        feedbackEl.textContent = data.error || 'Save failed';
+                    }
+                });
+            }).catch(function() {
+                feedbackEl.style.color = '#f85149';
+                feedbackEl.textContent = 'Network error';
+            });
+        }
+        function cancelEditDescription() {
+            var displayValue = _modalOriginalDescription ? escapeHtml(_modalOriginalDescription) : '<span style="color:#484f58;font-style:italic">(none)</span>';
+            document.getElementById('field-description').innerHTML = displayValue + ' <button onclick="startEditDescription()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.7rem" title="Edit description">&#9998;</button>';
+        }
+        function startEditDoneScript() {
+            var doneScriptInput = document.createElement('input');
+            doneScriptInput.id = 'edit-done-script-input';
+            doneScriptInput.type = 'text';
+            doneScriptInput.value = _modalOriginalDoneScript || '';
+            doneScriptInput.style.cssText = 'background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#c9d1d9;padding:0.3rem;font-family:inherit;font-size:0.85rem;width:60%';
+            var fieldDoneScript = document.getElementById('field-done-script');
+            fieldDoneScript.innerHTML = '';
+            fieldDoneScript.appendChild(doneScriptInput);
+            var saveBtn = document.createElement('button');
+            saveBtn.textContent = 'Save';
+            saveBtn.onclick = saveEditDoneScript;
+            saveBtn.style.cssText = 'margin-left:0.4rem;padding:0.3rem 0.6rem;background:#238636;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.75rem;font-weight:600';
+            fieldDoneScript.appendChild(saveBtn);
+            var cancelBtn = document.createElement('button');
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.onclick = cancelEditDoneScript;
+            cancelBtn.style.cssText = 'margin-left:0.3rem;padding:0.3rem 0.6rem;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer;font-size:0.75rem';
+            fieldDoneScript.appendChild(cancelBtn);
+            var feedbackSpan = document.createElement('span');
+            feedbackSpan.id = 'edit-done-script-feedback';
+            feedbackSpan.style.cssText = 'margin-left:0.5rem;font-size:0.75rem';
+            fieldDoneScript.appendChild(feedbackSpan);
+            doneScriptInput.focus();
+        }
+        function saveEditDoneScript() {
+            var newValue = document.getElementById('edit-done-script-input').value;
+            var feedbackEl = document.getElementById('edit-done-script-feedback');
+            feedbackEl.textContent = 'Saving...';
+            feedbackEl.style.color = '#8b949e';
+            fetch('/api/clients/' + encodeURIComponent(_modalClientId) + '/features/' + encodeURIComponent(_modalFeatureId) + '/edit-done-script?key=' + encodeURIComponent(key), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({done_script: newValue})
+            }).then(function(r) {
+                return r.json().then(function(data) {
+                    if (r.ok) {
+                        feedbackEl.style.color = '#3fb950';
+                        feedbackEl.textContent = 'Saved!';
+                        _modalOriginalDoneScript = newValue;
+                        var displayValue = newValue ? escapeHtml(newValue) : '<span style="color:#484f58;font-style:italic">(none)</span>';
+                        document.getElementById('field-done-script').innerHTML = displayValue + ' <button onclick="startEditDoneScript()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit done script">&#9998;</button>';
+                        setTimeout(function() { smartPollBoard(); }, 500);
+                    } else {
+                        feedbackEl.style.color = '#f85149';
+                        feedbackEl.textContent = data.error || 'Save failed';
+                    }
+                });
+            }).catch(function() {
+                feedbackEl.style.color = '#f85149';
+                feedbackEl.textContent = 'Network error';
+            });
+        }
+        function cancelEditDoneScript() {
+            var displayValue = _modalOriginalDoneScript ? escapeHtml(_modalOriginalDoneScript) : '<span style="color:#484f58;font-style:italic">(none)</span>';
+            document.getElementById('field-done-script').innerHTML = displayValue + ' <button onclick="startEditDoneScript()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit done script">&#9998;</button>';
         }
         function closeModal(event) {
             if (!event || event.target === document.getElementById('feature-modal')) {
@@ -652,14 +931,24 @@
             }
         }
         function showRejectModal() {
-            var reason = prompt('Rejection reason (optional):');
-            if (reason === null) return;
-            approveFeature('implementing', reason || 'No reason given');
+            document.getElementById('reject-reason-input').value = '';
+            document.getElementById('reject-reason-modal').classList.add('active');
+        }
+        function closeRejectReasonModal(event) {
+            if (!event || event.target === document.getElementById('reject-reason-modal')) {
+                document.getElementById('reject-reason-modal').classList.remove('active');
+            }
+        }
+        function confirmReject() {
+            var reason = document.getElementById('reject-reason-input').value.trim();
+            var targetStage = _modalStage === 'final-human-approval' ? 'implementing' : (_modalStage === 'awaiting-human-approval' ? 'ideas' : 'rejected');
+            closeRejectReasonModal();
+            approveFeature(targetStage, reason || 'No reason given');
         }
         function approveFeature(action, reason) {
             var feedbackEl = document.getElementById('approval-feedback');
             if (!feedbackEl) return;
-            feedbackEl.textContent = action === 'done' ? 'Approving...' : 'Rejecting...';
+            feedbackEl.textContent = action === 'done' ? 'Approving...' : (action === 'implementing' ? 'Sending back for rework...' : 'Rejecting...');
             feedbackEl.style.color = '#8b949e';
             var btnApprove = document.getElementById('btn-approve');
             var btnReject = document.getElementById('btn-reject');
@@ -673,7 +962,7 @@
                 return r.json().then(function(data) {
                     if (r.ok) {
                         feedbackEl.style.color = '#3fb950';
-                        feedbackEl.textContent = action === 'done' ? 'Approved!' : 'Rejected!';
+                        feedbackEl.textContent = action === 'done' ? 'Approved!' : (action === 'implementing' ? 'Sent back for rework!' : 'Rejected!');
                         setTimeout(function() {
                             closeModal();
                             smartPollBoard();
@@ -692,6 +981,55 @@
                 if (btnReject) btnReject.disabled = false;
             });
         }
+        var _pendingMoveStage = null;
+        function moveFeature() {
+            var select = document.getElementById('move-stage-select');
+            var targetStage = select.value;
+            if (!targetStage) return;
+            _pendingMoveStage = targetStage;
+            document.getElementById('move-confirm-message').textContent = 'Move this item to "' + targetStage + '"?';
+            document.getElementById('move-confirm-modal').classList.add('active');
+        }
+        function closeMoveConfirmModal(event) {
+            if (!event || event.target === document.getElementById('move-confirm-modal')) {
+                document.getElementById('move-confirm-modal').classList.remove('active');
+                _pendingMoveStage = null;
+            }
+        }
+        function confirmMoveFeature() {
+            var targetStage = _pendingMoveStage;
+            closeMoveConfirmModal();
+            if (!targetStage) return;
+            var feedbackEl = document.getElementById('move-feedback');
+            var btn = document.getElementById('btn-move');
+            feedbackEl.textContent = 'Moving...';
+            feedbackEl.style.color = '#8b949e';
+            btn.disabled = true;
+            fetch('/api/clients/' + encodeURIComponent(_modalClientId) + '/features/' + encodeURIComponent(_modalFeatureId) + '/move?key=' + encodeURIComponent(key), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({target_stage: targetStage})
+            }).then(function(r) {
+                return r.json().then(function(data) {
+                    if (r.ok) {
+                        feedbackEl.style.color = '#3fb950';
+                        feedbackEl.textContent = 'Moved to ' + targetStage + '!';
+                        setTimeout(function() {
+                            closeModal();
+                            smartPollBoard();
+                        }, 1000);
+                    } else {
+                        feedbackEl.style.color = '#f85149';
+                        feedbackEl.textContent = data.error || 'Move failed';
+                        btn.disabled = false;
+                    }
+                });
+            }).catch(function() {
+                feedbackEl.style.color = '#f85149';
+                feedbackEl.textContent = 'Network error';
+                btn.disabled = false;
+            });
+        }
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 document.getElementById('feature-modal').classList.remove('active');
@@ -701,11 +1039,6 @@
             var div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
-        }
-        function decodeHtmlEntities(text) {
-            var ta = document.createElement('textarea');
-            ta.innerHTML = text;
-            return ta.value;
         }
     </script>
     {{end}}
@@ -749,6 +1082,32 @@
         try { localStorage.removeItem('mad_key'); } catch(e) {}
         window.location.href = window.location.pathname;
     }
+    function restartClient(clientID) {
+        if (!confirm('Restart TUI instance ' + clientID + '? Running agents will be killed.')) {
+            return;
+        }
+        var key = getKey();
+        fetch('/api/clients/' + encodeURIComponent(clientID) + '/restart?key=' + encodeURIComponent(key), {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'}
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                alert('Restart failed: ' + data.error);
+            } else {
+                showToast('Restart signal sent to ' + clientID);
+            }
+        })
+        .catch(err => alert('Error: ' + err));
+    }
+    function showToast(message) {
+        var toast = document.createElement('div');
+        toast.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#238636;color:#fff;padding:10px 20px;border-radius:6px;z-index:9999';
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        setTimeout(function() { toast.remove(); }, 3000);
+    }
     var key = getKey();
     if (key && !new URLSearchParams(window.location.search).get('key')) {
         window.location.href = window.location.pathname + '?key=' + encodeURIComponent(key);
@@ -789,13 +1148,22 @@
     <td>{{if .ImplAgent.Running}}<span class="status-dot status-active"></span>{{.ImplAgent.Phase}}{{if .ImplAgent.Feature}} ({{.ImplAgent.Feature}}){{end}}{{else}}<span style="color:#484f58">idle</span>{{end}}</td>
     <td>{{.LastSeen.Format "15:04:05"}}</td>
     <td>{{if .Connected}}<span class="status-dot status-active"></span>Connected{{else}}<span class="status-dot status-stale"></span>Disconnected{{end}}</td>
-</tr>{{end}}{{else}}<tr><td colspan="7" class="empty-state">No clients connected</td></tr>{{end}}{{end}}
-{{define "board_fragment"}}{{range .StageGroups}}<div class="stage-section{{if eq .Stage "final-human-approval"}} needs-action{{end}}">
-    <button type="button" class="stage-toggle{{if not .Features}} collapsed{{end}}" onclick="toggleStage(this)">
+    <td>
+        {{if .Connected}}
+        <button class="btn btn-sm btn-warning" 
+                onclick="restartClient('{{.ClientID}}')"
+                title="Restart this TUI instance">
+            Restart
+        </button>
+        {{end}}
+    </td>
+</tr>{{end}}{{else}}<tr><td colspan="8" class="empty-state">No clients connected</td></tr>{{end}}{{end}}
+{{define "board_fragment"}}{{range .StageGroups}}<div class="stage-section{{if or (eq .Stage "final-human-approval") (eq .Stage "awaiting-human-approval")}} needs-action{{end}}">
+    <button type="button" class="stage-toggle{{if or (not .Features) (eq .Stage "done") (eq .Stage "final-human-approval")}} collapsed{{end}}" onclick="toggleStage(this)">
         <span>{{stageLabel .Stage}} <span class="stage-count{{if .Features}} has-items{{end}}">{{len .Features}}</span></span>
         <span class="arrow">&#9660;</span>
     </button>
-    <div class="stage-body{{if not .Features}} hidden{{end}}">
+    <div class="stage-body{{if or (not .Features) (eq .Stage "done") (eq .Stage "final-human-approval")}} hidden{{end}}">
         {{if .Features}}{{range .Features}}<div class="feature-card" onclick="showFeature(this)"
             data-title="{{.Title}}"
             data-type="{{.ItemType}}"
@@ -803,13 +1171,16 @@
             data-board="{{.Board}}"
             data-created="{{.Created}}"
             data-id="{{.ID}}"
-            data-description="{{escapeAttr .Description}}"
+            data-description="{{.Description}}"
             data-history="{{toJSON .History}}"
             data-client="{{.ClientID}}"
             data-checkpoint="{{toJSON .Checkpoint}}"
             data-plan-reviews="{{toJSON .PlanReviews}}"
             data-impl-reviews="{{toJSON .ImplReviews}}"
             data-done-script="{{.DoneScript}}"
+            data-ideation="{{.Ideation}}"
+            data-ideation-summaries="{{toJSON .IdeationSummaries}}"
+            data-requires-human-approval="{{.RequiresHumanApproval}}"
             data-active="{{if index $.ActiveSlugs .Slug}}true{{end}}">
             <div class="title">{{.Title}}{{if and .ItemType (ne .ItemType "feature")}} <span class="item-type-badge item-type-{{.ItemType}}" aria-label="Item type: {{.ItemType}}">{{.ItemType}}</span>{{end}}{{if .Checkpoint}}{{if .Checkpoint.exists}} <span style="color:#d29922;font-size:0.7rem">● checkpoint</span>{{end}}{{end}}</div>
             <div class="meta">{{if .ClientID}}<span style="color:#d2a8ff">{{.ClientID}}</span>{{end}}<span>{{.Board}}</span><span>{{.Created}}</span>{{if .Checkpoint}}{{if .Checkpoint.exists}}<span style="color:#d29922">{{.Checkpoint.last_checkpoint}}</span>{{end}}{{end}}{{if .DoneScript}}<span class="done-script-badge" style="background:#a855f7;color:white;padding:0 4px;border-radius:3px;font-size:0.7rem">Script</span>{{end}}</div>

@@ -6,6 +6,10 @@
 
 ---
 
+## Source Priority
+
+**IMPORTANT:** The feature **description** above is the authoritative source of truth. Ideation summaries below provide useful background context and exploration, but if there is any conflict or discrepancy between the description and the ideation content, **always defer to the description**. The user may have refined their requirements after ideation completed.
+
 You are an AI helping plan this feature. Generate a plan based on the description.
 
 ## Feature Context

@@ -119,7 +119,7 @@ def ensure_local_config(cwd: Path) -> Path:
     
     # Create board structure
     stages = [
-        "ideas", "plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing",
+        "ideas", "plan-inbox", "reviewing-plan", "requested-input", "awaiting-human-approval", "approved", "spec-writing",
         "implementing", "testing", "review", "final-human-approval", "done", "rejected",
     ]
     for stage in stages:
@@ -297,6 +297,12 @@ class Config:
             else:
                 result.append(IdeatingRound(cli=r))
         return result
+
+    @property
+    def ideating_max_rounds(self) -> int:
+        """Get max total ideation rounds across all cycles. Default 12."""
+        raw = self._data.get("ideating", {})
+        return raw.get("max_rounds", 12)
 
     @property
     def current_agent(self) -> AgentConfig:
@@ -538,7 +544,7 @@ class Config:
     def setup_boards(self) -> None:
         """Create all board/stage directories if they don't exist."""
         stages = [
-            "ideas", "plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing",
+            "ideas", "plan-inbox", "reviewing-plan", "requested-input", "awaiting-human-approval", "approved", "spec-writing",
             "implementing", "testing", "review", "final-human-approval", "done", "rejected",
         ]
         for board in self.boards:
@@ -554,7 +560,7 @@ class Config:
         boards.append(name)
         self._data["boards"] = boards
         self._save()
-        for stage in ["ideas", "plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing",
+        for stage in ["ideas", "plan-inbox", "reviewing-plan", "requested-input", "awaiting-human-approval", "approved", "spec-writing",
                       "implementing", "testing", "review", "final-human-approval", "done", "rejected"]:
             (self.boards_dir / name / stage).mkdir(parents=True, exist_ok=True)
 

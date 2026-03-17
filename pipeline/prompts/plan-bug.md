@@ -6,6 +6,10 @@
 
 ---
 
+## Source Priority
+
+**IMPORTANT:** The bug **description** above is the authoritative source of truth. Ideation summaries below provide useful background context and exploration, but if there is any conflict or discrepancy between the description and the ideation content, **always defer to the description**. The user may have refined their requirements after ideation completed.
+
 You are an AI helping plan a bug fix. This is a **bug report**, not a feature request.
 
 ## Feature Context

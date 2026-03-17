@@ -6,7 +6,9 @@ import atexit
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import shutil
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -164,7 +166,7 @@ def _handle_context_command(args: list) -> bool:
         return True
 
 # Stages that require human attention — highlighted differently
-HUMAN_STAGES = {"final-human-approval"}
+HUMAN_STAGES = {"final-human-approval", "awaiting-human-approval"}
 
 # Display order: ideas first, then pipeline flow, then archived
 STAGE_DISPLAY_ORDER = [
@@ -173,6 +175,7 @@ STAGE_DISPLAY_ORDER = [
     "plan-inbox",
     "requested-input",
     "reviewing-plan",
+    "awaiting-human-approval",
     "approved",
     "spec-writing",
     "implementing",
@@ -335,6 +338,13 @@ def _build_feature_detail_widgets(feature: FeatureFile) -> list:
         widgets.append(Collapsible(Static(escaped), title="Ideation", collapsed=True))
     else:
         widgets.append(Collapsible(Static("[dim]No ideation provided[/dim]"), title="Ideation", collapsed=True))
+    
+    # Ideation Prompt / User Direction (always visible if set)
+    if feature.ideation_prompt:
+        import re
+        escaped_prompt = feature.ideation_prompt.replace("[", r"\[").replace("]", r"\]").replace("{", r"\{").replace("}", r"\}")
+        escaped_prompt = re.sub(r'([%])', r'\\\1', escaped_prompt)
+        widgets.append(Static(f"User Direction: {escaped_prompt}"))
     
     # Ideation Rounds (collapsible, collapsed by default)
     if feature.ideation_summaries:
@@ -802,8 +812,8 @@ class AnswerQuestionsModal(ModalScreen[bool | None]):
             self.dismiss(True)
 
 
-class NewFeatureModal(ModalScreen[tuple[str, str, str, str, str] | None]):
-    """Modal to create a new feature -- collects title, description, board, and done_script."""
+class NewFeatureModal(ModalScreen[tuple[str, str, str, str, str, bool] | None]):
+    """Modal to create a new feature -- collects title, description, board, done_script, and requires_human_approval."""
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
@@ -898,6 +908,8 @@ class NewFeatureModal(ModalScreen[tuple[str, str, str, str, str] | None]):
             yield Input(placeholder="Brief description", id="new-desc")
             yield Label("Done Script (optional):")
             yield Select(script_options, value="", id="new-done-script")
+            yield Label("Require Human Approval:")
+            yield Select([("No", "no"), ("Yes", "yes")], value="no", id="new-requires-approval")
             with Horizontal(id="new-buttons"):
                 yield Button("Create", variant="primary", id="new-create")
                 yield Button("Cancel", variant="default", id="new-cancel")
@@ -923,7 +935,9 @@ class NewFeatureModal(ModalScreen[tuple[str, str, str, str, str] | None]):
         item_type = self.query_one("#new-type", Select).value
         done_script_select = self.query_one("#new-done-script", Select)
         done_script = done_script_select.value if done_script_select.value else ""
-        self.dismiss((str(board), title, desc, done_script, str(item_type)))
+        requires_approval_select = self.query_one("#new-requires-approval", Select)
+        requires_approval = requires_approval_select.value == "yes"
+        self.dismiss((str(board), title, desc, done_script, str(item_type), requires_approval))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1193,12 +1207,12 @@ class UnifiedEditModal(ModalScreen[dict | None]):
         width: 60;
         height: auto;
         max-height: 80%;
+        overflow-y: auto;
         border: thick $panel;
         background: $surface;
         padding: 1 2;
     }
     #unified-edit-dialog VerticalScroll {
-        height: 100%;
     }
     #unified-edit-dialog Label {
         width: 100%;
@@ -1218,7 +1232,6 @@ class UnifiedEditModal(ModalScreen[dict | None]):
     #unified-edit-buttons {
         margin-top: 1;
         height: 3;
-        dock: bottom;
     }
     #unified-edit-buttons Button {
         margin: 0 1;
@@ -1263,6 +1276,16 @@ class UnifiedEditModal(ModalScreen[dict | None]):
                 script_options = [("(none)", "")] + [(s.label, s.id) for s in self.scripts]
                 current_script = self.feature_data.get("done_script", "")
                 yield Select(script_options, value=current_script, id="script-select")
+                yield Label("Require Human Approval:")
+                current_approval = "yes" if self.feature_data.get("requires_human_approval", False) else "no"
+                yield Select([("No", "no"), ("Yes", "yes")], value=current_approval, id="approval-select")
+                
+                yield Label("Ideation Prompt (User Direction):")
+                yield TextArea(
+                    self.feature_data.get("ideation_prompt", ""),
+                    placeholder="Optional: provide direction for ideation debates",
+                    id="ideation-prompt-area"
+                )
             
             with Horizontal(id="unified-edit-buttons"):
                 yield Button("Save", variant="primary", id="edit-save")
@@ -1290,6 +1313,12 @@ class UnifiedEditModal(ModalScreen[dict | None]):
         
         script_select = self.query_one("#script-select", Select)
         result["done_script"] = script_select.value if script_select.value else ""
+        
+        approval_select = self.query_one("#approval-select", Select)
+        result["requires_human_approval"] = approval_select.value == "yes"
+        
+        ideation_prompt_area = self.query_one("#ideation-prompt-area", TextArea)
+        result["ideation_prompt"] = ideation_prompt_area.text
         
         self.dismiss(result)
 
@@ -1738,6 +1767,7 @@ class PipelineApp(App):
         "plan-inbox": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart"), ("e", "unified_edit", "Edit")],
         "reviewing-plan": [("m", "move", "Move"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart"), ("e", "unified_edit", "Edit")],
         "requested-input": [("m", "move", "Move"), ("q", "answer_questions", "Answer"), ("s", "start", "Start"), ("e", "unified_edit", "Edit")],
+        "awaiting-human-approval": [("m", "move", "Move"), ("a", "approve", "Approve"), ("x", "reject", "Reject"), ("e", "unified_edit", "Edit")],
         "approved": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart"), ("e", "unified_edit", "Edit")],
         "spec-writing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart"), ("e", "unified_edit", "Edit")],
         "implementing": [("m", "move", "Move"), ("x", "reject", "Reject"), ("s", "start", "Start"), ("ctrl+r", "restart", "Restart"), ("e", "unified_edit", "Edit")],
@@ -1935,6 +1965,11 @@ class PipelineApp(App):
         # Track which features have been auto-queued to avoid duplicates
         self._auto_plan_queued: set[str] = set()
         self._auto_implement_queued: set[str] = set()
+        # Track failures for retry cooldown
+        self._auto_plan_fail_cooldown: dict[str, float] = {}  # slug -> timestamp when eligible again
+        self._auto_implement_fail_cooldown: dict[str, float] = {}  # slug -> timestamp when eligible again
+        self._auto_plan_fail_count: dict[str, int] = {}  # slug -> consecutive failure count
+        self._auto_implement_fail_count: dict[str, int] = {}  # slug -> consecutive failure count
         # Track if plan/implement pipelines are running
         self._plan_running = False
         self._implement_running = False
@@ -2045,6 +2080,7 @@ class PipelineApp(App):
                 on_edit_done_script=self._handle_edit_done_script,
                 on_edit_title=self._handle_edit_title,
                 on_edit_item_type=self._handle_edit_item_type,
+                on_edit_ideation_prompt=self._handle_edit_ideation_prompt,
                 on_run_script=self._handle_run_script,
                 on_set_agent_for_phase=self._handle_set_agent_for_phase,
             )
@@ -2140,10 +2176,10 @@ class PipelineApp(App):
             self._implement_running = True
             self._run_implement_async(feature)
 
-    async def _handle_create_idea(self, title: str, board: str, description: str, item_type: str = "feature", done_script: str = "") -> None:
+    async def _handle_create_idea(self, title: str, board: str, description: str, item_type: str = "feature", done_script: str = "", requires_human_approval: bool = False) -> None:
         """Handle create_idea message from the server (web UI created a new idea)."""
         try:
-            feature = FeatureFile.create(board, title, description, item_type=item_type, done_script=done_script)
+            feature = FeatureFile.create(board, title, description, item_type=item_type, done_script=done_script, requires_human_approval=requires_human_approval)
             logger.info(f"Created new idea: {feature.title} ({feature.id}) in board {board}")
             self._refresh_board(self.active_board)
             if self._server_client and self._server_client.connected:
@@ -2173,7 +2209,10 @@ class PipelineApp(App):
                     await self._server_client.send_move_result(request_id, False, f"invalid target stage: {target_stage}")
                 return
             logger.info(f"Moving feature {feature_id} to {target_stage} via web UI")
-            if target_stage == "implementing" and feature.current_stage == "final-human-approval" and reason:
+            if target_stage == "ideas" and feature.current_stage == "awaiting-human-approval" and reason:
+                feature.add_plan_review("FAIL", f"Human rejected plan: {reason}", reason)
+                feature.add_history("REJECTED", f"Plan rejected by human via web UI: {reason}")
+            elif target_stage == "implementing" and feature.current_stage == "final-human-approval" and reason:
                 from phases import _get_latest_feedback
                 prev_feedback = _get_latest_feedback(feature)
                 full_feedback = f"Human rejection: {reason}\n\nPrevious review feedback:\n{prev_feedback}"
@@ -2312,6 +2351,30 @@ class PipelineApp(App):
                 ))
         except Exception as e:
             logger.warning(f"edit_item_type: failed to edit item type: {e}")
+
+    async def _handle_edit_ideation_prompt(self, feature_id: str, ideation_prompt: str) -> None:
+        """Handle edit_ideation_prompt message from the server (web UI edited a feature's ideation prompt)."""
+        try:
+            feature = FeatureFile.find(feature_id)
+            if not feature:
+                logger.warning(f"edit_ideation_prompt: feature {feature_id} not found")
+                return
+            logger.info(f"Editing ideation_prompt for feature {feature_id} via web UI")
+            feature.set_ideation_prompt(ideation_prompt)
+            feature.add_history(feature.current_stage.upper(), "Ideation prompt edited via web UI")
+            self._refresh_board(self.active_board)
+            # Push updated state back to server
+            if self._server_client and self._server_client.connected:
+                features = self._load_features(self.active_board)
+                asyncio.create_task(self._server_client.push_state(
+                    features, self._plan_agent_status, self._implement_agent_status,
+                    auto_plan_enabled=self.auto_plan_enabled,
+                    auto_impl_enabled=self.auto_implement_enabled,
+                    scripts=self._scripts,
+                    script_status=self._script_status,
+                ))
+        except Exception as e:
+            logger.warning(f"edit_ideation_prompt: failed: {e}")
 
     async def _handle_run_script(self, script_id: str, context: str) -> None:
         """Handle run_script message from the server (web UI requested script execution)."""
@@ -2694,6 +2757,8 @@ class PipelineApp(App):
             "item_type": f.item_type,
             "description": f.get_section("Description") or "",
             "done_script": f.done_script,
+            "requires_human_approval": f.requires_human_approval,
+            "ideation_prompt": f.ideation_prompt,
         }
 
         def handle_unified_edit(result: dict | None) -> None:
@@ -2722,6 +2787,12 @@ class PipelineApp(App):
             
             if "done_script" in result:
                 f.set_done_script(result["done_script"])
+            
+            if "requires_human_approval" in result:
+                f.set_requires_human_approval(result["requires_human_approval"])
+            
+            if "ideation_prompt" in result:
+                f.set_ideation_prompt(result["ideation_prompt"])
             
             self.notify("Feature updated", severity="information")
             self._update_detail_view()
@@ -2763,54 +2834,34 @@ class PipelineApp(App):
 
     def action_focus_previous(self) -> None:
         """Move focus to the previous item (stage header or feature)."""
-        try:
-            items_pane = self.query_one("#items-pane")
-            items_pane.focus()
-        except Exception as e:
-            logger.debug(f"Failed to focus items pane in focus_previous: {e}")
-
         item_list = list(self.query("StageHeader, FeatureItem"))
         if not item_list:
             return
-        
+
         current = self.focused
         if current and current in item_list:
-            try:
-                idx = item_list.index(current)
-                if idx > 0:
-                    item_list[idx - 1].focus()
-                else:
-                    item_list[-1].focus()
-            except ValueError:
-                if item_list:
-                    item_list[0].focus()
+            idx = item_list.index(current)
+            if idx > 0:
+                item_list[idx - 1].focus()
+            else:
+                item_list[-1].focus()
         else:
             if item_list:
                 item_list[0].focus()
 
     def action_focus_next(self) -> None:
         """Move focus to the next item (stage header or feature)."""
-        try:
-            items_pane = self.query_one("#items-pane")
-            items_pane.focus()
-        except Exception as e:
-            logger.debug(f"Failed to focus items pane in focus_next: {e}")
-
         item_list = list(self.query("StageHeader, FeatureItem"))
         if not item_list:
             return
-        
+
         current = self.focused
         if current and current in item_list:
-            try:
-                idx = item_list.index(current)
-                if idx < len(item_list) - 1:
-                    item_list[idx + 1].focus()
-                else:
-                    item_list[0].focus()
-            except ValueError:
-                if item_list:
-                    item_list[0].focus()
+            idx = item_list.index(current)
+            if idx < len(item_list) - 1:
+                item_list[idx + 1].focus()
+            else:
+                item_list[0].focus()
         else:
             if item_list:
                 item_list[0].focus()
@@ -2901,6 +2952,12 @@ class PipelineApp(App):
             f.save()
             f.move_to_stage("plan-inbox")
             self.notify(f"Moved to plan-inbox: {f.title}", severity="information")
+        elif f.current_stage == "awaiting-human-approval":
+            # Approve on awaiting-human-approval = move to approved for pipeline pickup
+            f.add_history("PROMOTED", "Human approved plan, moving to approved")
+            f.save()
+            f.move_to_stage("approved")
+            self.notify(f"Approved for implementation: {f.title}", severity="information")
         elif f.current_stage == "final-human-approval":
             # Approve on final-human-approval = it's done
             f.add_history("DONE", "Approved as complete (TUI)")
@@ -3014,7 +3071,21 @@ class PipelineApp(App):
             return
         
         # Handle different stages
-        if f.current_stage == "final-human-approval":
+        if f.current_stage == "awaiting-human-approval":
+            def handle_plan_reject(reason: str | None) -> None:
+                if reason is None:
+                    return
+                f.add_plan_review("FAIL", f"Human rejected plan: {reason}", reason)
+                f.add_history("REJECTED", f"Plan rejected by human, sent back to ideas: {reason}")
+                f.move_to_stage("ideas")
+                self.notify(f"Rejected plan, sent to ideas: {f.title}", severity="information")
+                refreshed = FeatureFile.find(f.slug)
+                self.selected_feature = refreshed
+                self._refresh_board(self.active_board)
+                self._update_detail_view()
+            self.push_screen(RejectModal(), callback=handle_plan_reject)
+            return
+        elif f.current_stage == "final-human-approval":
             # Push a modal to get rejection reason
             def handle_final_reject(reason: str | None) -> None:
                 if reason is None:
@@ -3416,6 +3487,8 @@ class PipelineApp(App):
 
     # Auto-run settings
     AUTO_RUN_INTERVAL = 60  # 60 seconds between runs
+    AUTO_RETRY_COOLDOWN = 120  # seconds before retrying a failed item
+    AUTO_MAX_RETRIES = 5  # max consecutive failures before permanent skip until restart
     _last_auto_plan_time: Optional[float] = None
     _last_auto_implement_time: Optional[float] = None
 
@@ -3473,6 +3546,10 @@ class PipelineApp(App):
                 stage_counts[s] = len(found)
 
             logger.info(f"[auto-plan] {board}: {', '.join(f'{s}={n}' for s, n in stage_counts.items())}")
+            if self._auto_plan_queued:
+                logger.info(f"[auto-plan] Currently queued: {self._auto_plan_queued}")
+            if self._auto_plan_fail_cooldown:
+                logger.info(f"[auto-plan] In cooldown: {list(self._auto_plan_fail_cooldown.keys())}")
             
             if not candidates:
                 continue
@@ -3482,6 +3559,18 @@ class PipelineApp(App):
                 
             for f in candidates:
                 if f.slug in self._auto_plan_queued:
+                    logger.info(f"[auto-plan] Skipping {f.slug} - already in queued set")
+                    continue
+                # Skip items in cooldown after failure
+                if f.slug in self._auto_plan_fail_cooldown:
+                    if now < self._auto_plan_fail_cooldown[f.slug]:
+                        logger.info(f"[auto-plan] Skipping {f.slug} - in failure cooldown")
+                        continue
+                    else:
+                        del self._auto_plan_fail_cooldown[f.slug]
+                # Skip items that have exceeded max retries
+                if self._auto_plan_fail_count.get(f.slug, 0) >= self.AUTO_MAX_RETRIES:
+                    logger.info(f"[auto-plan] Skipping {f.slug} - exceeded max retries ({self.AUTO_MAX_RETRIES})")
                     continue
                 self._last_auto_plan_time = now
                 self._auto_plan_queued.add(f.slug)
@@ -3530,12 +3619,28 @@ class PipelineApp(App):
                 logger.info(f"[auto-impl] Board '{board}', stage '{stage}': {len(candidates)} features")
                 for f in candidates:
                     if f.slug in self._auto_implement_queued:
+                        logger.info(f"[auto-impl] Skipping {f.slug} - already in queued set")
+                        continue
+                    # Skip items in cooldown after failure
+                    if f.slug in self._auto_implement_fail_cooldown:
+                        if now < self._auto_implement_fail_cooldown[f.slug]:
+                            logger.info(f"[auto-impl] Skipping {f.slug} - in failure cooldown")
+                            continue
+                        else:
+                            del self._auto_implement_fail_cooldown[f.slug]
+                    # Skip items that have exceeded max retries
+                    if self._auto_implement_fail_count.get(f.slug, 0) >= self.AUTO_MAX_RETRIES:
+                        logger.info(f"[auto-impl] Skipping {f.slug} - exceeded max retries ({self.AUTO_MAX_RETRIES})")
                         continue
                     self._last_auto_implement_time = now
                     self._auto_implement_queued.add(f.slug)
                     logger.info(f"[auto-impl] Starting: {f.title} ({f.current_stage})")
                     self._auto_implement_feature(f)
                     return  # Only process one feature at a time
+            if self._auto_implement_queued:
+                logger.info(f"[auto-impl] Currently queued: {self._auto_implement_queued}")
+            if self._auto_implement_fail_cooldown:
+                logger.info(f"[auto-impl] In cooldown: {list(self._auto_implement_fail_cooldown.keys())}")
 
     def _auto_plan_feature(self, feature: FeatureFile) -> None:
         """Auto-run planning or ideation on a feature."""
@@ -3680,6 +3785,10 @@ class PipelineApp(App):
             self._plan_running = False
             self._implement_running = False
             status.running = False
+            if feature.current_stage in ("plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing"):
+                self._auto_plan_queued.discard(feature.slug)
+            else:
+                self._auto_implement_queued.discard(feature.slug)
             # Determine which callback based on stage
             if feature.current_stage in ("plan-inbox", "reviewing-plan", "requested-input", "approved", "spec-writing"):
                 self.app.call_from_thread(self._on_plan_done, feature.slug)
@@ -3705,6 +3814,7 @@ class PipelineApp(App):
                     "[plan] Skipped - lock held by another process"
                 )
             self._plan_running = False
+            self._auto_plan_queued.discard(feature.slug)
             return
         
         self.running = True
@@ -3747,16 +3857,23 @@ class PipelineApp(App):
                     feature.move_to_stage("plan-inbox")
                     self.app.call_from_thread(self._log_line, f"=== Plan rejected: {feedback[:100]}... ===")
             self.app.call_from_thread(self._log_line, "=== Planning completed ===")
+            self._auto_plan_fail_count.pop(feature.slug, None)
+            self._auto_plan_fail_cooldown.pop(feature.slug, None)
         except RateLimitError as e:
             self.app.call_from_thread(self._log_line, f"=== Rate limited: {e} ===")
             self.app.call_from_thread(self._handle_rate_limit, "plan")
+            self._auto_plan_fail_count[feature.slug] = self._auto_plan_fail_count.get(feature.slug, 0) + 1
+            self._auto_plan_fail_cooldown[feature.slug] = time.time() + self.AUTO_RETRY_COOLDOWN
         except Exception as e:
             tb = traceback.format_exc()
             self.app.call_from_thread(self._log_line, f"=== Planning failed: {e} ===")
             self.app.call_from_thread(self._log_line, f"=== Traceback:\n{tb} ===")
+            self._auto_plan_fail_count[feature.slug] = self._auto_plan_fail_count.get(feature.slug, 0) + 1
+            self._auto_plan_fail_cooldown[feature.slug] = time.time() + self.AUTO_RETRY_COOLDOWN
         finally:
             self.running = False
             self._plan_running = False
+            self._auto_plan_queued.discard(feature.slug)
             status.running = False
             self._pipeline_lock.release('plan')
             restart = status.restart_requested
@@ -3791,6 +3908,7 @@ class PipelineApp(App):
                     "[ideating] Skipped - lock held by another process"
                 )
             self._plan_running = False
+            self._auto_plan_queued.discard(feature.slug)
             return
         
         self.running = True
@@ -3809,21 +3927,28 @@ class PipelineApp(App):
             from phases import run_ideating
             run_ideating(feature, runner, status=status)
             self.app.call_from_thread(self._log_line, "=== Ideation complete ===")
-            self.app.call_from_thread(self._on_plan_done, feature.slug)
+            self._auto_plan_fail_count.pop(feature.slug, None)
+            self._auto_plan_fail_cooldown.pop(feature.slug, None)
         except RateLimitError as e:
             self.app.call_from_thread(self._log_line, f"=== Rate limited: {e} ===")
             self.app.call_from_thread(self._handle_rate_limit, "plan")
+            self._auto_plan_fail_count[feature.slug] = self._auto_plan_fail_count.get(feature.slug, 0) + 1
+            self._auto_plan_fail_cooldown[feature.slug] = time.time() + self.AUTO_RETRY_COOLDOWN
         except Exception as e:
             tb = traceback.format_exc()
             self.app.call_from_thread(self._log_line, f"=== Ideation failed: {e} ===")
             self.app.call_from_thread(self._log_line, f"=== Traceback:\n{tb} ===")
+            self._auto_plan_fail_count[feature.slug] = self._auto_plan_fail_count.get(feature.slug, 0) + 1
+            self._auto_plan_fail_cooldown[feature.slug] = time.time() + self.AUTO_RETRY_COOLDOWN
         finally:
             self.running = False
             self._plan_running = False
+            self._auto_plan_queued.discard(feature.slug)
             status.running = False
             self._pipeline_lock.release('plan')
             status.restart_requested = False
             status.kill_requested = False
+            self.app.call_from_thread(self._refresh_board, self.active_board)
 
     @work(thread=True, exclusive=True, group="implement")
     def _run_implement_async(self, feature: FeatureFile) -> None:
@@ -3843,6 +3968,7 @@ class PipelineApp(App):
                     "[impl] Skipped - lock held by another process"
                 )
             self._implement_running = False
+            self._auto_implement_queued.discard(feature.slug)
             return
         
         self.running = True
@@ -3901,15 +4027,22 @@ class PipelineApp(App):
                     feature.save()
                     self.app.call_from_thread(self._log_line, f"[impl] Moved to final-human-approval")
             self.app.call_from_thread(self._log_line, "=== Implementation completed ===")
+            self._auto_implement_fail_count.pop(feature.slug, None)
+            self._auto_implement_fail_cooldown.pop(feature.slug, None)
         except RateLimitError as e:
             self.app.call_from_thread(self._log_line, f"=== Rate limited: {e} ===")
             self.app.call_from_thread(self._handle_rate_limit, "implement")
+            self._auto_implement_fail_count[feature.slug] = self._auto_implement_fail_count.get(feature.slug, 0) + 1
+            self._auto_implement_fail_cooldown[feature.slug] = time.time() + self.AUTO_RETRY_COOLDOWN
         except Exception as e:
             self.app.call_from_thread(self._log_line, f"=== Implementation failed: {e} ===")
+            self._auto_implement_fail_count[feature.slug] = self._auto_implement_fail_count.get(feature.slug, 0) + 1
+            self._auto_implement_fail_cooldown[feature.slug] = time.time() + self.AUTO_RETRY_COOLDOWN
         finally:
             self.running = False
             self._implement_running = False
             status.running = False
+            self._auto_implement_queued.discard(feature.slug)
             self._pipeline_lock.release('impl')
             restart = status.restart_requested
             status.restart_requested = False
@@ -3928,12 +4061,10 @@ class PipelineApp(App):
                         self.app.call_from_thread(self._refresh_board, self.active_board)
                         self._run_implement_async(refreshed)
                         return
-            self.app.call_from_thread(self._on_implement_done, feature.slug)
+            self.app.call_from_thread(self._refresh_board, self.active_board)
 
     def _on_plan_done(self, slug: str) -> None:
         """Called on main thread after planning completes."""
-        self._plan_running = False
-        self._auto_plan_queued.discard(slug)
         refreshed = FeatureFile.find(slug)
         if refreshed:
             self.selected_feature = refreshed
@@ -3944,8 +4075,6 @@ class PipelineApp(App):
 
     def _on_implement_done(self, slug: str) -> None:
         """Called on main thread after implementation completes."""
-        self._implement_running = False
-        self._auto_implement_queued.discard(slug)
         refreshed = FeatureFile.find(slug)
         if refreshed:
             self.selected_feature = refreshed
@@ -3994,11 +4123,11 @@ class PipelineApp(App):
         boards = self._config.boards
         default = self.active_board or (boards[0] if boards else "")
 
-        def handle_new(result: tuple[str, str, str, str, str] | None) -> None:
+        def handle_new(result: tuple[str, str, str, str, str, bool] | None) -> None:
             if result is None:
                 return  # Cancelled
-            board, title, desc, done_script, item_type = result
-            self._create_feature(board, title, desc, done_script, item_type)
+            board, title, desc, done_script, item_type, requires_approval = result
+            self._create_feature(board, title, desc, done_script, item_type, requires_approval)
 
         self.push_screen(
             NewFeatureModal(boards, default, self._scripts),
@@ -4006,10 +4135,10 @@ class PipelineApp(App):
         )
 
     @work(thread=True, exclusive=True, group="create")
-    def _create_feature(self, board: str, title: str, desc: str, done_script: str = "", item_type: str = "feature") -> None:
+    def _create_feature(self, board: str, title: str, desc: str, done_script: str = "", item_type: str = "feature", requires_approval: bool = False) -> None:
         """Create a feature file in a background thread, then hand off to interactive planning."""
         try:
-            feature = FeatureFile.create(board, title, desc, item_type=item_type, done_script=done_script)
+            feature = FeatureFile.create(board, title, desc, item_type=item_type, done_script=done_script, requires_human_approval=requires_approval)
             self.app.call_from_thread(
                 self._on_feature_created, feature.slug, board
             )
@@ -4044,20 +4173,61 @@ class PipelineApp(App):
 # ---------------------------------------------------------------------------
 
 
-def _acquire_lock() -> PipelineLock:
-    """Acquire a lock using PipelineLock. Exits if another instance is running."""
+def _acquire_lock(force: bool = False) -> PipelineLock:
+    """Acquire a TUI lock. If another TUI is running in tmux, attach to it instead."""
     config = Config()
     lock = PipelineLock(config)
-    if not lock.acquire('tui'):
-        info = lock.check('tui')
-        if info:
-            print(f"Another pipeline instance is already running (PID {info.pid} on {info.hostname}).")
-            print(f"Started at {info.timestamp} by {info.username}")
-        else:
-            print("Another pipeline instance is already running.")
-        print(f"If this is stale, run: pipeline lock clear tui")
+    
+    if lock.acquire('tui', force=force):
+        return lock
+    
+    # Lock acquisition failed — another TUI is running
+    info = lock.check('tui')
+    if not info:
+        print("Another pipeline instance is already running.")
+        print("If this is stale, run: pipeline lock clear tui")
         sys.exit(1)
-    return lock
+    
+    # Try to attach to tmux session if tmux is available
+    if shutil.which("tmux"):
+        project_dir = config.code_path or Path.cwd()
+        from service import tmux_session_name
+        session = tmux_session_name(project_dir)
+        
+        # Check if the tmux session exists
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", session],
+            capture_output=True
+        )
+        
+        if result.returncode == 0:
+            # Session exists — attach or switch
+            print(f"TUI is already running in tmux session '{session}'. Attaching...")
+            
+            if os.environ.get("TMUX"):
+                # Already inside tmux — use switch-client
+                attach_result = subprocess.run(
+                    ["tmux", "switch-client", "-t", session]
+                )
+            else:
+                # Not inside tmux — use attach-session
+                attach_result = subprocess.run(
+                    ["tmux", "attach-session", "-t", session]
+                )
+            
+            if attach_result.returncode == 0:
+                sys.exit(0)
+            else:
+                print(f"Failed to attach to tmux session '{session}'.")
+                print("The session may have exited. Try again.")
+                sys.exit(1)
+    
+    # No tmux session found (or tmux not installed) — show lock error
+    print(f"Another TUI instance is already running (PID {info.pid} on {info.hostname}).")
+    print(f"Started at {info.timestamp} by {info.username}")
+    print(f"The running TUI is not accessible via tmux.")
+    print(f"Use --force to start a new instance, or run: pipeline lock clear tui")
+    sys.exit(1)
 
 
 def _release_lock(lock: PipelineLock):
@@ -4068,8 +4238,8 @@ def _release_lock(lock: PipelineLock):
         logger.error(f"Failed to release lock: {e}")
 
 
-def run_tui():
-    lock = _acquire_lock()
+def run_tui(force: bool = False):
+    lock = _acquire_lock(force=force)
     atexit.register(_release_lock, lock)
     app = PipelineApp()
     app.run()

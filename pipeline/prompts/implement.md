@@ -4,6 +4,9 @@ Feature: {title}
 
 **Feature Data:** `{feature_file_path}`
 
+★★★ PREVIOUS REVIEW FEEDBACK (MUST ADDRESS EACH ITEM) ★★★
+{feedback_section}
+
 Plan:
 {plan}
 
@@ -40,3 +43,4 @@ Work through the implementation tasks systematically. After completing implement
 Your output JSON must have:
 - "summary": A brief plain-text summary of what was done and any decisions made
 - "files_changed": A list of file paths that were created or modified
+- "feedback_addressed": For each piece of previous feedback above, explain what you changed to address it. Format: [{"feedback": "...", "addressed": true/false, "how_fixed": "..."}]

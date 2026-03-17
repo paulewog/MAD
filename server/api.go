@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"embed"
 	"encoding/json"
 	"html/template"
@@ -20,6 +21,7 @@ var stageOrder = []string{
 	"plan-inbox",
 	"reviewing-plan",
 	"requested-input",
+	"awaiting-human-approval",
 	"approved",
 	"spec-writing",
 	"implementing",
@@ -174,18 +176,6 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 			b, _ := json.Marshal(v)
 			return string(b)
 		},
-		"escapeAttr": func(s string) template.HTMLAttr {
-			r := strings.NewReplacer(
-				`&`, `&amp;`,
-				`"`, `&quot;`,
-				`'`, `&#39;`,
-				`<`, `&lt;`,
-				`>`, `&gt;`,
-				"\n", `&#10;`,
-				"\r", `&#13;`,
-			)
-			return template.HTMLAttr(r.Replace(s))
-		},
 		"uniqueBoards": func(features []FeatureSummary) string {
 			seen := map[string]bool{}
 			var boards []string
@@ -249,6 +239,16 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 			}
 		}
 
+		activeSlugs := map[string]bool{}
+		for _, c := range clients {
+			if c.PlanAgent.Running && c.PlanAgent.Feature != "" {
+				activeSlugs[c.PlanAgent.Feature] = true
+			}
+			if c.ImplAgent.Running && c.ImplAgent.Feature != "" {
+				activeSlugs[c.ImplAgent.Feature] = true
+			}
+		}
+
 		data := map[string]interface{}{
 			"Clients":       clients,
 			"Key":           key,
@@ -256,12 +256,16 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 			"ShowKeyModal":  showKeyModal,
 			"StageGroups":   groupFeaturesByStage(allFeatures),
 			"Boards":        boardsFromClients(clients),
+			"ActiveSlugs":   activeSlugs,
 		}
-		w.Header().Set("Content-Type", "text/html")
-		if err := tmpl.ExecuteTemplate(w, "index.html", data); err != nil {
+		var buf bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&buf, "index.html", data); err != nil {
 			log.Printf("template error: %v", err)
 			http.Error(w, "internal server error", 500)
+			return
 		}
+		w.Header().Set("Content-Type", "text/html")
+		buf.WriteTo(w)
 	})
 
 	// API: list clients (and sub-paths /api/clients/{id}, /api/clients/{id}/logs)
@@ -292,6 +296,10 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 				}
 				if sub == "run-script" {
 					serveRunScript(w, r, hub, cfg, clientID)
+					return
+				}
+				if sub == "restart" {
+					serveRestartTUI(w, r, hub, cfg, clientID)
 					return
 				}
 				if sub == "ideas" {
@@ -332,6 +340,10 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 					}
 					if len(featureParts) == 2 && featureParts[1] == "edit-type" && featureID != "" {
 						serveEditItemType(w, r, hub, cfg, clientID, featureID)
+						return
+					}
+					if len(featureParts) == 2 && featureParts[1] == "edit-ideation-prompt" && featureID != "" {
+						serveEditIdeationPrompt(w, r, hub, cfg, clientID, featureID)
 						return
 					}
 				}
@@ -414,16 +426,19 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 				activeSlugs[c.ImplAgent.Feature] = true
 			}
 		}
-		w.Header().Set("Content-Type", "text/html")
 		data := map[string]interface{}{
 			"StageGroups": groupFeaturesByStage(allFeatures),
 			"Key":         r.URL.Query().Get("key"),
 			"ActiveSlugs": activeSlugs,
 		}
-		if err := tmpl.ExecuteTemplate(w, "board_fragment", data); err != nil {
+		var buf bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&buf, "board_fragment", data); err != nil {
 			log.Printf("template error: %v", err)
 			http.Error(w, "internal server error", 500)
+			return
 		}
+		w.Header().Set("Content-Type", "text/html")
+		buf.WriteTo(w)
 	})
 
 	// Favicon
@@ -870,9 +885,17 @@ func serveClientPage(w http.ResponseWriter, r *http.Request, hub *Hub, tmpl *tem
 		w.Header().Set("Content-Type", "text/html")
 		switch parts[1] {
 		case "features":
+			activeSlugs := map[string]bool{}
+			if state.PlanAgent.Running && state.PlanAgent.Feature != "" {
+				activeSlugs[state.PlanAgent.Feature] = true
+			}
+			if state.ImplAgent.Running && state.ImplAgent.Feature != "" {
+				activeSlugs[state.ImplAgent.Feature] = true
+			}
 			fdata := map[string]interface{}{
 				"StageGroups": groupFeaturesByStage(state.Features),
 				"Key":         key,
+				"ActiveSlugs": activeSlugs,
 			}
 			if err := tmpl.ExecuteTemplate(w, "feature_stages", fdata); err != nil {
 				log.Printf("template error: %v", err)
@@ -888,6 +911,14 @@ func serveClientPage(w http.ResponseWriter, r *http.Request, hub *Hub, tmpl *tem
 		}
 		http.NotFound(w, r)
 		return
+	}
+
+	activeSlugs := map[string]bool{}
+	if state.PlanAgent.Running && state.PlanAgent.Feature != "" {
+		activeSlugs[state.PlanAgent.Feature] = true
+	}
+	if state.ImplAgent.Running && state.ImplAgent.Feature != "" {
+		activeSlugs[state.ImplAgent.Feature] = true
 	}
 
 	data := map[string]interface{}{
@@ -906,6 +937,7 @@ func serveClientPage(w http.ResponseWriter, r *http.Request, hub *Hub, tmpl *tem
 		"ShowKeyModal":  showKeyModal,
 		"Boards":        boardsFromClients([]ClientState{*state}),
 		"Config":        state.Config,
+		"ActiveSlugs":   activeSlugs,
 	}
 	w.Header().Set("Content-Type", "text/html")
 	if err := tmpl.ExecuteTemplate(w, "client.html", data); err != nil {
@@ -962,11 +994,12 @@ func serveClientLogs(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Conf
 }
 
 type createIdeaData struct {
-	Title       string `json:"title"`
-	Board       string `json:"board"`
-	Description string `json:"description"`
-	Type        string `json:"type"`
-	DoneScript  string `json:"done_script"`
+	Title                 string `json:"title"`
+	Board                 string `json:"board"`
+	Description           string `json:"description"`
+	Type                  string `json:"type"`
+	DoneScript            string `json:"done_script"`
+	RequiresHumanApproval bool   `json:"requires_human_approval"`
 }
 
 func serveCreateIdea(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string) {
@@ -1015,12 +1048,13 @@ func serveCreateIdea(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Conf
 		ideaType = "feature"
 	}
 	msg, _ := json.Marshal(map[string]interface{}{
-		"type":        "create_idea",
-		"title":       idea.Title,
-		"board":       idea.Board,
-		"description": idea.Description,
-		"item_type":   ideaType,
-		"done_script": idea.DoneScript,
+		"type":                    "create_idea",
+		"title":                   idea.Title,
+		"board":                   idea.Board,
+		"description":             idea.Description,
+		"item_type":               ideaType,
+		"done_script":             idea.DoneScript,
+		"requires_human_approval": idea.RequiresHumanApproval,
 	})
 	if err := hub.SendToClient(clientID, msg); err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
@@ -1265,6 +1299,67 @@ func serveEditDoneScript(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+type editIdeationPromptRequest struct {
+	IdeationPrompt string `json:"ideation_prompt"`
+}
+
+func serveEditIdeationPrompt(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string, featureID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !checkAnyAuth(r, cfg) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1*1024*1024))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+
+	var req editIdeationPromptRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	state, ok := hub.GetClient(clientID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
+		return
+	}
+	if !state.Connected {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "client not connected"})
+		return
+	}
+
+	var found bool
+	for _, f := range state.Features {
+		if f.ID == featureID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "feature not found"})
+		return
+	}
+
+	msg, _ := json.Marshal(map[string]interface{}{
+		"type":            "edit_ideation_prompt",
+		"feature_id":      featureID,
+		"ideation_prompt": req.IdeationPrompt,
+	})
+	if err := hub.SendToClient(clientID, msg); err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 type editTitleRequest struct {
 	Title string `json:"title"`
 }
@@ -1402,4 +1497,24 @@ func serveEditItemType(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Co
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func serveRestartTUI(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string) {
+	if !checkAnyAuth(r, cfg) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	msg, _ := json.Marshal(map[string]string{"type": "restart_tui"})
+	err := hub.SendToClient(clientID, msg)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found or disconnected"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "restart signal sent"})
 }

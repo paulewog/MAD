@@ -53,7 +53,9 @@ type FeatureSummary struct {
 	DoneScript             string           `json:"done_script,omitempty"`
 	ItemType               string           `json:"item_type,omitempty"`
 	Ideation               string           `json:"ideation,omitempty"`
+	IdeationPrompt         string           `json:"ideation_prompt,omitempty"`
 	IdeationSummaries      []string         `json:"ideation_summaries,omitempty"`
+	RequiresHumanApproval  bool             `json:"requires_human_approval,omitempty"`
 }
 
 type LogEntry struct {

@@ -34,6 +34,7 @@ def _make_feature(title="Test Feature", slug="test-feature", fid="f1"):
     f.test_spec = ""
     f.impl_notes = ""
     f.history = "[]"
+    f.ideation_prompt = ""
     f._data = {"pipeline_log": [], "history": []}
     f.add_history = MagicMock()
     f.save = MagicMock()

@@ -11,17 +11,11 @@
   },
   "agent_for_phase": {
     "planning": "claude",
-    "spec_writing": {
-      "agent": "claude",
-      "model": "opus"
-    },
+    "spec_writing": "claude",
     "implementing": "opencode",
     "fix_feedback": "opencode",
     "testing": "opencode",
-    "review": {
-      "agent": "claude",
-      "model": "opus"
-    },
+    "review": "claude",
     "reviewing_plan": "opencode"
   },
   "ideating": {

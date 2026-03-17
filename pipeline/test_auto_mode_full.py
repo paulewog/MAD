@@ -44,12 +44,23 @@ def _make_feature(title="Test Feature", stage="ideas", board="default",
     f.board = board
     f.created = created
     f.id = fid
+    f.slug = fid
     f.description = ""
     f.questions = []
     f.plan = ""
+    f.plan_exploration_summary = ""
     f.impl_spec = ""
     f.test_spec = ""
     f.impl_notes = ""
+    f.plan_reviews = []
+    f.impl_reviews = []
+    f.test_results = {}
+    f.done_script = ""
+    f.item_type = "feature"
+    f.Ideation = ""
+    f.ideation_summaries = []
+    f.requires_human_approval = False
+    f.ideation_prompt = ""
     f._data = {"pipeline_log": [], "history": []}
     return f
 

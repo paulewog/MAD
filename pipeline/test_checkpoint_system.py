@@ -59,6 +59,7 @@ def _make_feature(title="Test Feature", slug="test-feature", fid="f1"):
     f.impl_spec = ""
     f.test_spec = ""
     f.impl_notes = ""
+    f.ideation_prompt = ""
     f._data = {"pipeline_log": [], "history": []}
     return f
 
