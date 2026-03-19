@@ -1,0 +1,43 @@
+{
+  "id": "e958fd0f",
+  "board": "mad",
+  "title": "Webui refresh keeps clearing all items",
+  "type": "bug",
+  "created": "2026-03-18T05:45Z",
+  "description": "No description provided.",
+  "done_script": "",
+  "requires_human_approval": false,
+  "plan": "",
+  "plan_exploration_summary": "",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "ideation_summaries": [],
+  "ideation": "",
+  "ideation_prompt": "",
+  "history": [
+    {
+      "ts": "2026-03-18T05:45Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-18T05:45Z",
+      "stage": "IDEATING",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-18T05:45Z",
+      "stage": "IDEATING",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-18T13:54Z",
+      "stage": "REJECTED",
+      "note": "Rejected: duplicate"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [],
+  "impl_reviews": []
+}

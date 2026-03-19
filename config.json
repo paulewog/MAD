@@ -1,20 +1,11 @@
 {
-  "current_agent": "claude",
-  "agents": {
+  "default_agent": "claude",
+  "agent_defaults": {
     "claude": {
-      "command": "claude",
-      "headless_flag": "-p",
-      "headless_extra_flags": [
-        "--dangerously-skip-permissions"
-      ]
+      "command": "/home/paulewog/.local/bin/claude"
     },
-    "kilo": {
-      "command": "kilo",
-      "headless_flag": "",
-      "headless_extra_flags": [
-        "run",
-        "--auto"
-      ]
+    "opencode": {
+      "command": "/home/paulewog/.opencode/bin/opencode"
     }
   },
   "agent_for_phase": {

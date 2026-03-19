@@ -233,7 +233,7 @@ When you have finished all work:
             console.print(f"[dim].tmp/{item_name}.instructions contains the task. Just talk to opencode naturally![/dim]")
             
             # Build command: opencode uses --prompt, claude uses positional arg for interactive TUI
-            if self.agent.command == "opencode":
+            if self.agent.command.endswith("opencode"):
                 cmd = [self.agent.command, "--prompt", f"Read {instructions_path} and follow the instructions exactly."]
             else:
                 # claude: positional arg opens TUI with context
@@ -319,7 +319,7 @@ When you have finished all work:
             # For claude: "claude -p <message> --dangerously-skip-permissions"
             cmd = [self.agent.command]
             
-            if self.agent.command == "opencode":
+            if self.agent.command.endswith("opencode"):
                 # opencode: run comes first, then flags, then message
                 for f in self.agent.headless_extra_flags:
                     if not f.startswith("-"):
@@ -346,7 +346,7 @@ When you have finished all work:
             env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
             # Set OPENCODE_PERMISSION for opencode headless runs (JSON format)
-            if self.agent.command == "opencode":
+            if self.agent.command.endswith("opencode"):
                 env["OPENCODE_PERMISSION"] = '{"*": "allow"}'
 
             if status is not None:

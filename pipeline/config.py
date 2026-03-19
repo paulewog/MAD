@@ -44,6 +44,8 @@ PIPELINE_PHASES = [
     ("review", "Review"),
 ]
 
+VALID_TERMINAL_STAGES = {"plan", "spec"}
+
 
 def find_config() -> Optional[Path]:
     """Find config file - prefers local .mad/config.json, falls back to ~/MAD/config.json.
@@ -51,28 +53,33 @@ def find_config() -> Optional[Path]:
     Searches:
     1. .mad/config.json in current directory
     2. Walk up from current dir to find .mad/config.json
-    3. ~/MAD/config.json as global fallback (only if no local .mad in cwd tree)
+    3. Create local config if .mad/ dir exists (without config.json)
+    4. ~/MAD/config.json as global fallback (only if no local .mad in cwd tree)
     """
     cwd = Path.cwd()
-    found_local = False
+    found_local_dir = None
     
     # Check current directory and parents for local config
     for dir_path in [cwd] + list(cwd.parents):
         local_path = dir_path / LOCAL_DIR / LOCAL_CONFIG
         if local_path.exists():
             return local_path
-        # Track if we hit a .mad dir (even without config)
-        if (dir_path / LOCAL_DIR).exists():
-            found_local = True
+        # Track the first (closest to cwd) .mad dir found
+        if (dir_path / LOCAL_DIR).exists() and found_local_dir is None:
+            found_local_dir = dir_path
         # Stop if we hit home or root
         if dir_path == Path.home() or dir_path == Path("/"):
             break
     
-    # If we're in a directory tree with no .mad/ at all, create local one
-    if not found_local and not (cwd / LOCAL_DIR).exists():
-        return None  # Signal to create local
+    # If no .mad/ anywhere in tree, signal to create local in cwd
+    if found_local_dir is None and not (cwd / LOCAL_DIR).exists():
+        return None  # Signal to create local in cwd
     
-    # Fall back to global config
+    # .mad/ dir exists but has no config.json - create one there
+    if found_local_dir is not None:
+        return ensure_local_config(found_local_dir)
+    
+    # Fall back to global config only when no .mad/ exists anywhere
     if DEFAULT_GLOBAL_CONFIG.exists():
         return DEFAULT_GLOBAL_CONFIG
     
@@ -261,9 +268,14 @@ class Config:
         result = {}
         for name, cfg in BUILTIN_AGENTS.items():
             defaults = agent_defaults.get(name, {})
+            command = defaults.get("command")
+            if not command:
+                command = cfg["command"]
+            if command and not command.startswith("/"):
+                command = os.path.expanduser(command)
             result[name] = AgentConfig(
                 name=name,
-                command=cfg["command"],
+                command=command,
                 headless_flag=cfg["headless_flag"],
                 headless_extra_flags=cfg.get("headless_extra_flags", []),
                 model_flag=cfg.get("model_flag", "--model"),
@@ -364,6 +376,25 @@ class Config:
             except (json.JSONDecodeError, OSError):
                 pass
         return None
+
+    def get_terminal_stage(self, board_name: str) -> Optional[str]:
+        """Get the terminal_stage for a board, or None for full pipeline."""
+        board_config = self._get_per_board_config(board_name)
+        if not board_config:
+            return None
+        value = board_config.get("terminal_stage")
+        if not value or not isinstance(value, str):
+            return None
+        value = value.strip().lower()
+        if not value:
+            return None
+        if value not in VALID_TERMINAL_STAGES:
+            logger.warning(
+                f"Board '{board_name}' has invalid terminal_stage '{value}'. "
+                f"Valid values: {VALID_TERMINAL_STAGES}. Running full pipeline."
+            )
+            return None
+        return value
 
     @property
     def code_path(self) -> Optional[Path]:

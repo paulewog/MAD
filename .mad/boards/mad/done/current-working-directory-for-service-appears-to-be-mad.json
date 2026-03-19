@@ -1,0 +1,226 @@
+{
+  "id": "81e44b63",
+  "board": "mad",
+  "title": "current working directory for service appears to be ~/MAD",
+  "type": "bug",
+  "created": "2026-03-17T23:54Z",
+  "description": "It looks like the current working directory for the pipeline service ends up being ~/MAD, or whever the pipeline.py file actually is. I tried running a second service from ~/chickentracks.app and it wouldn't start; it looks like it's failing to start due to the lock file (my guess, since I can run \"pipeline tui\" from the directory just fine)",
+  "done_script": "",
+  "requires_human_approval": false,
+  "plan": "## Root Cause Analysis\n\nThe config discovery logic has a subtle boolean tracking bug. When searching for a project-local config file, the code walks up the directory tree and sets a boolean flag when it encounters a project metadata directory (even one that lacks a config file). This boolean flag then prevents the code from triggering the \"create a new local config\" path. Instead, execution falls through to the global fallback config.\n\nBecause the global fallback config lives in a fixed location, all projects that hit this path end up sharing the same metadata directory. Lock files are derived from the config's parent directory, so all projects compete for the same lock files. A second service instance launched from a different project directory finds the shared lock already held and fails to start.\n\nThe secondary contributor is that the boolean flag discards the actual directory path where the metadata directory was found. Even if the code wanted to create a local config in the right place, it has no record of which directory should receive it.\n\n## Impact Assessment\n\n- **Severity: High** \u2014 Completely prevents running multiple independent project instances, which is a core use case for the service management feature.\n- **Scope:** Affects any project directory that has a metadata directory without a config file. This can happen naturally if the directory structure is partially created (e.g., board directories exist but config was never written, or config was deleted).\n- **Lock contention:** All affected projects share a single set of lock files, so starting one project's service blocks all others.\n- **Config contamination:** All affected projects share the same agent configuration, board definitions, and other settings from the global config, which could cause unexpected behavior even if lock contention is resolved separately.\n\n## Fix Strategy\n\n1. **Replace the boolean flag with a directory path tracker.** Instead of recording whether any metadata directory was found, record *which* directory contains it. This preserves the location information needed to create a config in the right place.\n\n2. **Add a missing config creation path.** When the directory walk completes having found a metadata directory but no config file, use the tracked directory path to create a local config there (analogous to the existing \"no metadata directory at all\" path that already creates one in cwd).\n\n3. **Preserve the global fallback only for truly global usage.** The global config should only be returned when no metadata directory exists anywhere in the parent tree. If a metadata directory exists, the project clearly intends to be locally configured.\n\n## Risks\n\n- **Existing projects with intentionally missing configs:** If any user relies on the current behavior (metadata directory exists but intentionally uses global config), this fix would change their behavior by creating a local config. This is unlikely since the current behavior is a bug, not a feature.\n- **Config migration:** Projects that have been running with the global config may have state (board contents, lock files) in the global metadata directory. The fix itself doesn't migrate this state, but it's not expected to \u2014 each project should start fresh with its own config.\n- **Ensure the config creation function handles the tracked directory correctly.** The existing local config creation function accepts a directory parameter, so this should be straightforward, but the caller must pass the metadata directory's parent (the project root), not the metadata directory itself.\n\n## Scope\n\n- **In scope:** The config discovery function and the boolean-to-path refactor. The conditional that decides whether to create a local config vs. fall back to global.\n- **Out of scope:** Lock file format or locking mechanism changes. Service unit file generation (already correctly sets WorkingDirectory). Runner workdir resolution (already correctly derives from config). Any UI or CLI changes.",
+  "plan_exploration_summary": "",
+  "impl_spec": "## Implementation Spec: Fix config discovery to use per-project configs\n\n### Task 1: Replace boolean flag with directory path tracker in `find_config()`\n\n**File:** `pipeline/config.py`\n**Function:** `find_config()` (lines 48-79)\n\n**Current code (buggy):**\n```python\nfound_local = False\n```\nAt line 57, a boolean is used. At lines 65-66, it's set to `True` when any `.mad/` dir is found. At lines 71-73, `None` is only returned when `found_local` is `False`. When `found_local` is `True` but no `config.json` exists, execution falls through to the global fallback at lines 76-77.\n\n**Changes:**\n\n1. **Line 57:** Replace `found_local = False` with `found_local_dir = None`\n\n2. **Lines 65-66:** Replace:\n   ```python\n   if (dir_path / LOCAL_DIR).exists():\n       found_local = True\n   ```\n   with:\n   ```python\n   if (dir_path / LOCAL_DIR).exists() and found_local_dir is None:\n       found_local_dir = dir_path\n   ```\n   Note: We only record the first (closest to cwd) `.mad/` directory found. The `found_local_dir is None` guard ensures we keep the closest match, not a parent.\n\n3. **Lines 71-73:** Replace:\n   ```python\n   if not found_local and not (cwd / LOCAL_DIR).exists():\n       return None  # Signal to create local\n   ```\n   with:\n   ```python\n   if found_local_dir is None and not (cwd / LOCAL_DIR).exists():\n       return None  # Signal to create local in cwd\n   ```\n\n4. **Lines 75-77:** Replace the global fallback block:\n   ```python\n   # Fall back to global config\n   if DEFAULT_GLOBAL_CONFIG.exists():\n       return DEFAULT_GLOBAL_CONFIG\n   ```\n   with:\n   ```python\n   # .mad/ dir exists but has no config.json - create one there\n   if found_local_dir is not None:\n       return ensure_local_config(found_local_dir)\n\n   # Fall back to global config only when no .mad/ exists anywhere\n   if DEFAULT_GLOBAL_CONFIG.exists():\n       return DEFAULT_GLOBAL_CONFIG\n   ```\n   When `found_local_dir` is set, we call `ensure_local_config(found_local_dir)` which creates `.mad/config.json` in the project directory that already has a `.mad/` folder. This returns the path to the newly created config file. The global fallback is only reached when no `.mad/` directory exists anywhere in the tree.\n\n**Dependencies:** None. This is the only task.\n\n### Why `find_config()` handles creation instead of `Config.__init__()`\n\nThe current `Config.__init__()` calls `ensure_local_config(Path.cwd())` when `find_config()` returns `None`. If we simply made `find_config()` return `None` when `found_local_dir` is set, `Config.__init__()` would create the config in `cwd` \u2014 but the `.mad/` directory may be in a parent directory, not `cwd`. By having `find_config()` call `ensure_local_config(found_local_dir)` directly, we pass the correct target directory without needing to change the `find_config()` return type or `Config.__init__()` signature.\n\n### Summary of net changes\n\n- **File modified:** `pipeline/config.py`\n- **Function modified:** `find_config()` only\n- **Lines changed:** ~6 lines modified/added within the function\n- **No other files need changes** \u2014 `Config.__init__()`, `ensure_local_config()`, lock file logic, service unit generation, and runner workdir resolution all work correctly once `find_config()` returns the right path\n- **No new functions or classes added**\n\n### Verification\n\nAfter the fix:\n1. A project with `.mad/` but no `config.json` will get a local `config.json` created in that `.mad/` directory instead of falling back to `~/MAD/config.json`\n2. A project with `.mad/config.json` already present is unaffected (early return on line 63)\n3. A directory with no `.mad/` anywhere in its tree still returns `None`, triggering `Config.__init__()` to create one in cwd (existing behavior preserved)\n4. The global fallback `~/MAD/config.json` is only used when no `.mad/` directory exists in the tree (rare/legacy case)\n5. Each project gets its own lock files since `config.mad_dir` now points to the project's own `.mad/` directory",
+  "test_spec": "# Test Specification: Fix config discovery to use per-project configs\n\n## Feature: current working directory for service appears to be ~/MAD\n\n---\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Boolean-to-path refactor: `found_local` replaced with `found_local_dir`\n\n**Behavior:** When `find_config()` walks the directory tree and encounters a `.mad/` directory without a `config.json`, it records the directory path (not just a boolean) of the first such `.mad/` directory found.\n\n**Success criteria:**\n- `find_config()` no longer contains a `found_local` boolean variable\n- A path-tracking variable (e.g., `found_local_dir`) is used instead\n- The tracked path corresponds to the closest `.mad/` parent directory to cwd, not a more distant ancestor\n\n**Expected output:** The variable holds the parent directory of the `.mad/` folder (the project root), or `None` if no `.mad/` directory exists in the tree.\n\n### 1.2 Local config creation when `.mad/` exists without `config.json`\n\n**Behavior:** When the directory walk finds a `.mad/` directory but no `config.json` inside it, `find_config()` calls `ensure_local_config()` with the tracked directory path to create a local config.\n\n**Success criteria:**\n- Given a directory structure where `<project>/.mad/` exists but `<project>/.mad/config.json` does not, calling `find_config()` from within `<project>/` (or any subdirectory) results in `<project>/.mad/config.json` being created\n- The returned path points to `<project>/.mad/config.json`\n- The created config contains valid default configuration (default_agent, boards)\n\n**Expected output:** Path to newly created `<project>/.mad/config.json`\n\n### 1.3 Existing local config is still found (no regression)\n\n**Behavior:** When a `.mad/config.json` already exists in the directory tree, `find_config()` returns it immediately via the early return path.\n\n**Success criteria:**\n- Given `<project>/.mad/config.json` exists, `find_config()` returns that path\n- No new config files are created\n- Works when cwd is `<project>/` or any subdirectory of `<project>/`\n\n**Expected output:** Path to existing `<project>/.mad/config.json`\n\n### 1.4 Global fallback only when no `.mad/` exists anywhere\n\n**Behavior:** The global config (`~/MAD/config.json`) is only returned when no `.mad/` directory exists anywhere in the parent tree from cwd to home/root.\n\n**Success criteria:**\n- Given cwd has no `.mad/` directory anywhere in its parent tree, and `~/MAD/config.json` exists, `find_config()` returns `~/MAD/config.json`\n- Given cwd has a `.mad/` directory (even without config.json), `find_config()` does NOT return `~/MAD/config.json`\n\n**Expected output:** `~/MAD/config.json` only when no `.mad/` exists in tree; otherwise the local path.\n\n### 1.5 No `.mad/` anywhere and no global config triggers local creation signal\n\n**Behavior:** When no `.mad/` directory exists in the tree and no global config exists, `find_config()` returns `None`, signaling `Config.__init__()` to create a local config in cwd.\n\n**Success criteria:**\n- `find_config()` returns `None`\n- Subsequent `Config()` instantiation creates `.mad/config.json` in cwd\n\n### 1.6 Per-project lock file isolation\n\n**Behavior:** After the fix, two projects in different directories each get their own config, and therefore their own `.mad/` directory and lock files.\n\n**Success criteria:**\n- Project A at `/tmp/projectA/` with `.mad/` gets config at `/tmp/projectA/.mad/config.json`\n- Project B at `/tmp/projectB/` with `.mad/` gets config at `/tmp/projectB/.mad/config.json`\n- `config.mad_dir` for project A is `/tmp/projectA/.mad/`\n- `config.mad_dir` for project B is `/tmp/projectB/.mad/`\n- Lock file paths derived from each config's `mad_dir` are different\n- Both services can start without lock contention\n\n### 1.7 `ensure_local_config()` receives the correct directory\n\n**Behavior:** When `find_config()` calls `ensure_local_config()`, it passes the project root directory (parent of `.mad/`), not the `.mad/` directory itself.\n\n**Success criteria:**\n- `ensure_local_config()` is called with the directory that CONTAINS `.mad/`, not `.mad/` itself\n- The resulting config is at `<project_root>/.mad/config.json`, not `<project_root>/.mad/.mad/config.json`\n\n### 1.8 Closest `.mad/` directory takes precedence\n\n**Behavior:** When multiple `.mad/` directories exist in the parent tree (e.g., both `/a/b/.mad/` and `/a/.mad/`), the one closest to cwd is used.\n\n**Success criteria:**\n- When cwd is `/a/b/`, and both `/a/b/.mad/` and `/a/.mad/` exist (neither with config.json), the config is created at `/a/b/.mad/config.json`\n- `/a/.mad/config.json` is NOT created\n\n---\n\n## 2. Edge Cases\n\n### 2.1 `.mad/` directory exists but is empty\n- A `.mad/` directory with no files inside it should trigger local config creation in that directory\n- The `boards/` subdirectory structure should be created as part of `ensure_local_config()`\n\n### 2.2 `.mad/` directory exists with other files but no `config.json`\n- A `.mad/` directory containing `boards/`, log files, or other artifacts but no `config.json` should trigger config creation\n- Existing files in `.mad/` should not be disturbed\n\n### 2.3 cwd is the home directory\n- When cwd is `~` (home), and `~/MAD/config.json` exists as the global config, the walk should stop and return the global config (since `~` is the stop boundary)\n- If `~/.mad/` exists, it should be treated as a local project config, not confused with the global config\n\n### 2.4 cwd is the root directory\n- When cwd is `/`, the walk should terminate immediately and fall back appropriately\n- No attempt should be made to create `.mad/` in `/`\n\n### 2.5 Deeply nested subdirectory\n- When cwd is several levels deep (e.g., `/project/src/pkg/internal/`), the walk should find `.mad/` at `/project/.mad/` and use that path\n- Should not time out or have performance issues with deep nesting\n\n### 2.6 Concurrent config creation\n- If two processes simultaneously discover a `.mad/` without config and both try to create one, the result should be a valid config file (not corrupted)\n- `ensure_local_config()` already checks `if config_path.exists()` before creating, but a race is possible between the check and the write\n\n### 2.7 `.mad/` is a symlink\n- If `.mad/` is a symlink to another directory, the code should still function correctly\n- Config should be created in the symlink target\n\n### 2.8 Read-only filesystem or permissions error\n- If the `.mad/` directory exists but is not writable, `ensure_local_config()` will fail\n- The error should propagate clearly rather than silently falling back to global config\n\n### 2.9 `found_local_dir` tracking with `config.json` found higher up\n- If `/a/.mad/config.json` exists and `/a/b/.mad/` exists without config, the walk from `/a/b/` should find `.mad/` at `/a/b/` first (recording `found_local_dir = /a/b/`) but should NOT find the config.json there. It should continue walking and find `/a/.mad/config.json` via the early return.\n- Wait \u2014 no: the early return at line 62-63 checks `local_path.exists()` and returns if found. So if `/a/.mad/config.json` exists, walking from `/a/b/` would first check `/a/b/.mad/config.json` (not found), record `found_local_dir = /a/b/`, then check `/a/.mad/config.json` (found) and return it. This is correct behavior \u2014 the existing config at `/a/` should be used.\n\n---\n\n## 3. What Constitutes Failure\n\n### 3.1 Global config returned when local `.mad/` exists\n- **FAIL** if `find_config()` returns `~/MAD/config.json` when any `.mad/` directory exists in the cwd parent tree. This is the core bug being fixed.\n\n### 3.2 Config created in wrong directory\n- **FAIL** if `ensure_local_config()` is called with `.mad/` path instead of its parent, resulting in `.mad/.mad/config.json`\n- **FAIL** if config is created in cwd when `.mad/` exists in a parent directory (should create in the parent that has `.mad/`)\n\n### 3.3 `found_local` boolean still present\n- **FAIL** if the code still uses a boolean `found_local` variable instead of a path-tracking variable\n\n### 3.4 Lock file collision between projects\n- **FAIL** if two separate projects (with their own `.mad/` directories) produce the same `config.mad_dir` path, meaning they would share lock files\n\n### 3.5 Regression: existing configs no longer found\n- **FAIL** if a project with an existing `.mad/config.json` fails to load it after the fix\n- **FAIL** if the early return path (line 62-63) is broken\n\n### 3.6 Regression: new project initialization broken\n- **FAIL** if a directory with no `.mad/` anywhere fails to get `None` from `find_config()`, preventing `Config.__init__()` from creating a fresh local config\n\n### 3.7 Error on config creation\n- **FAIL** if `ensure_local_config()` raises an unhandled exception that crashes the service instead of producing a clear error message\n\n---\n\n## 4. Out of Scope\n\n- **Lock file format or locking mechanism changes** \u2014 the fix only ensures each project gets its own lock file path; the locking mechanism itself is not being changed\n- **Service unit file generation** \u2014 already correctly sets WorkingDirectory; not being modified\n- **Runner workdir resolution** \u2014 already correctly derives from config; not being modified\n- **UI or CLI changes** \u2014 no user-facing interface changes\n- **Performance benchmarks** \u2014 the directory walk is inherently bounded by tree depth; no perf concerns\n- **Config migration from global to local** \u2014 existing state in `~/MAD/.mad/` is not migrated; each project starts fresh\n- **Visual/TUI assertions** \u2014 this is a config discovery logic fix with no UI component\n- **systemd integration testing** \u2014 the fix is in Python config discovery code; systemd behavior is not being tested\n- **Multi-user or multi-host scenarios** \u2014 the fix is for per-project isolation on a single host\n- **MAD_DIR environment variable behavior** \u2014 confirmed not relevant to config discovery; not being changed",
+  "impl_notes": "Fixed config discovery bug in pipeline/config.py. Replaced boolean found_local with path tracker found_local_dir to record the first .mad/ directory found during tree walk. When .mad/ exists but no config.json, the code now creates a local config in that directory instead of incorrectly falling back to global ~/MAD/config.json. Global fallback is now only used when no .mad/ exists anywhere in the parent tree. All 53 config unit tests pass.",
+  "ideation_summaries": [
+    "The root cause is that find_config() in config.py walks up the directory tree from cwd and falls back to the global ~/MAD/config.json when no local .mad/config.json is found. This means lock files (constructed via config.mad_dir) always resolve to ~/MAD/.mad/.pipeline-lock.tui regardless of which project started the service. When a second service starts from ~/chickentracks.app, it finds the same global config, tries to acquire the same lock file, and fails. The fix should ensure per-project iso",
+    "The previous proposal's recommended fix (option a: setting Environment=MAD_DIR in the systemd unit) is incorrect because MAD_DIR is only used by AgentRunner as a fallback for _workdir (the directory where agents execute), NOT by Config() for locating config or lock files. Config.__init__() calls find_config() which walks from cwd \u2014 it never reads MAD_DIR. So setting MAD_DIR would not change where lock files are created. The actual root cause has two parts: (1) find_config() falls back to ~/MAD/c",
+    "The second critique correctly identifies that MAD_DIR doesn't influence Config() resolution, but its concern about a WorkingDirectory race condition is unfounded \u2014 systemd guarantees cwd is set before ExecStart runs, so find_config() will always see the correct cwd. The real gap is subtler: find_config() lines 64-66 track 'found_local' when ANY .mad/ directory exists in the parent tree (even without a config.json inside it), which prevents the None return at line 73 that would trigger ensure_loc",
+    "The third proposal's 'two-line fix' has three gaps. First, the found_local branch fix is under-specified: find_config() tracks found_local as a boolean but doesn't record WHICH directory contained the .mad/ folder. When found_local is True and no config.json exists, ensure_local_config() needs a target directory \u2014 but the proposal implies calling it for 'that directory' without tracking it. The loop would need to save the closest .mad/ parent path (e.g., found_local_dir) and pass it to ensure_lo"
+  ],
+  "ideation": "",
+  "ideation_prompt": "",
+  "history": [
+    {
+      "ts": "2026-03-17T23:54Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-17T23:54Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-18T00:11Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-18T00:11Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T00:13Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-18T00:13Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T00:19Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-18T00:19Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T00:21Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-18T00:22Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T00:23Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-18T00:25Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 1)"
+    },
+    {
+      "ts": "2026-03-18T00:26Z",
+      "stage": "IDEATING",
+      "note": "Consensus reached after 4 rounds"
+    },
+    {
+      "ts": "2026-03-18T00:26Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-18T00:33Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-18T01:27Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T01:29Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T01:29Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T01:30Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan is comprehensive, clear, and addresses the root cause effectively. It co..."
+    },
+    {
+      "ts": "2026-03-18T01:30Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-18T02:11Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-18T02:11Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-18T02:13Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-18T02:14Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-18T02:14Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-18T02:16Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-18T02:16Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-18T02:16Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-18T02:18Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-18T02:18Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-18T02:20Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation correctly replaces boolean found_local with path-tracking found_lo..."
+    },
+    {
+      "ts": "2026-03-18T02:20Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-18T18:15Z",
+      "stage": "DONE",
+      "note": "Moved via web UI"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-18T01:30Z",
+      "verdict": "PASS",
+      "summary": "The plan is comprehensive, clear, and addresses the root cause effectively. It correctly identifies the boolean-to-path refactor needed in find_config(), preserves the global fallback appropriately, and defines a focused scope. Previous ideation concerns are all addressed.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-18T02:20Z",
+      "verdict": "PASS",
+      "summary": "Implementation correctly replaces boolean found_local with path-tracking found_local_dir in find_config(). The fix ensures .mad/ dirs without config.json get a local config created (via ensure_local_config) instead of falling through to global ~/MAD/config.json. Global fallback is now properly gated. All 53 tests pass.",
+      "feedback": null
+    }
+  ],
+  "ideation_cycle_verdicts": [
+    {
+      "cycle": 1,
+      "verdict": "consensus",
+      "reason": "All rounds agree on the same fix location (`find_config()`) and the same approach (track `found_local_dir` instead of a boolean, call `ensure_local_config()` with that path). Round 4 adds implementation sub-details about the fix but does not challenge the fundamental approach established in Round 3.",
+      "rounds_completed": 4
+    }
+  ],
+  "Ideation": "The bug stems from `find_config()` in `config.py` falling back to the global `~/MAD/config.json` when no local `.mad/config.json` is found by walking up from cwd. Because lock file paths are constructed via `config.mad_dir`, all services end up competing for `~/MAD/.mad/.pipeline-lock.tui` regardless of which project directory they started from. A second service launched from `~/chickentracks.app` finds the same global config, attempts to acquire the same lock, and fails.\n\nThe root cause has two interrelated parts. First, `find_config()` has a subtle logic error: it sets `found_local = True` whenever ANY `.mad/` directory is found in the parent tree, even if that directory contains no `config.json`. This prevents the `None` return at line 73 that would otherwise trigger `ensure_local_config()` to create a per-project config. Second, because `found_local` is a boolean rather than tracking the actual path, the code has no way to know which directory should receive a new local config when `ensure_local_config()` needs to be called.\n\nThe agreed fix is to change `found_local` to `found_local_dir` (storing the actual `.mad/` parent path), and when the loop exits with `found_local_dir` set but no config.json found, call `ensure_local_config(found_local_dir)` to create a project-local config there. This ensures each project directory gets its own `.mad/config.json` and thus its own lock file path. Setting `WorkingDirectory` to the project directory in the systemd unit is valid and correct (systemd guarantees cwd is set before ExecStart), but is not sufficient on its own without the `find_config()` fix.\n\nThe `MAD_DIR` environment variable approach was correctly ruled out early: `MAD_DIR` only influences `AgentRunner._workdir` (the agent execution directory) and is never read by `Config.__init__()`. The implementation of the `find_config()` fix requires careful attention to: (1) tracking `found_local_dir` rather than a boolean, (2) passing that directory to `ensure_local_config()`, and (3) ensuring the fallback to the global config only occurs when no `.mad/` directory exists anywhere in the parent tree.\n\n[Ideation concluded by consensus after 4 rounds, 1 cycles.]",
+  "test_results": {
+    "ts": "2026-03-17T19:18:34.876241",
+    "verdict": "PASS",
+    "results": {
+      "passed": 53,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 53 tests pass. Implementation correctly uses found_local_dir (path variable) instead of boolean found_local. Core behaviors covered: local config discovery, parent directory search, global fallback only when no .mad/ exists, ensure_local_config receives correct directory. Coverage gaps: explicit test for closest .mad/ precedence, per-project lock isolation edge cases, symlink handling, read-only filesystem, deep nesting."
+  }
+}

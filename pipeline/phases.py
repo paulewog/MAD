@@ -849,9 +849,9 @@ def run_ideating(
             
             try:
                 result = json.loads(output)
-                summary = result.get("summary", "")[:500]
+                summary = result.get("summary", "")
             except json.JSONDecodeError:
-                summary = output[:500]
+                summary = output
             
             feature.add_ideation_summary(summary)
             summaries.append(summary)
@@ -1598,7 +1598,16 @@ def _run_pipeline_impl(
             )
             
             if verdict == "PASS":
-                if feature.requires_human_approval:
+                config = Config()
+                terminal_stage = config.get_terminal_stage(feature.board)
+                if terminal_stage == "plan":
+                    feature.move_to_stage("final-human-approval")
+                    feature.add_history("TERMINAL_STAGE", "Terminal stage reached (plan) — moved to final-human-approval")
+                    feature.save()
+                    _git_commit(feature, "terminal stage reached (plan)")
+                    console.print("[green]Plan approved. Terminal stage 'plan' reached — moved to final-human-approval.[/green]")
+                    return
+                elif feature.requires_human_approval:
                     feature.move_to_stage("awaiting-human-approval")
                     feature.add_history("AWAITING_HUMAN_APPROVAL", "Plan approved by AI, awaiting human approval")
                 else:
@@ -1653,7 +1662,11 @@ def _run_pipeline_impl(
             feature.move_to_stage("final-human-approval")
             feature.save()
             return
-    
+
+    if feature.current_stage != "approved":
+        logger.info(f"[pipeline] Feature '{feature.title}' is in '{feature.current_stage}', not 'approved'. Stopping pipeline.")
+        return
+
     # Phase 1: Spec writing + spec review loop
     max_spec_review_attempts = 3
     for spec_attempt in range(1, max_spec_review_attempts + 1):
@@ -1669,6 +1682,15 @@ def _run_pipeline_impl(
         )
         
         if verdict == "PASS":
+            config = Config()
+            terminal_stage = config.get_terminal_stage(feature.board)
+            if terminal_stage == "spec":
+                feature.move_to_stage("final-human-approval")
+                feature.add_history("TERMINAL_STAGE", "Terminal stage reached (spec) — moved to final-human-approval")
+                feature.save()
+                _git_commit(feature, "terminal stage reached (spec)")
+                console.print("[green]Specs approved. Terminal stage 'spec' reached — moved to final-human-approval.[/green]")
+                return
             feature.move_to_stage("implementing")
             feature.add_history("SPECREVIEW", "Specs approved, moving to implementing")
             feature.save()

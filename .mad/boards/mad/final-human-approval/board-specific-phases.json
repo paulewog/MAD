@@ -1,0 +1,431 @@
+{
+  "id": "343bd493",
+  "board": "mad",
+  "title": "Board-specific phases",
+  "type": "feature",
+  "created": "2026-03-08T05:30Z",
+  "description": "I'm thinking that we may want to have board specific phases at some point; for example, I may just want to work on a plan but not actually implement anything; in that case, I would want to skip a bunch of phases.  Maybe allowing phases to be skipped would make sense, as a board configuration.",
+  "plan": "## What\n\nAdd a `terminal_stage` configuration option to per-board config that halts the automated pipeline waterfall after a named stage boundary. When the pipeline reaches the terminal stage boundary during an automated run, instead of continuing to the next block, items are routed to `final-human-approval` with a descriptive history entry. This enables boards to be scoped to specific purposes \u2014 e.g., a planning-only board that stops after plan review.\n\n## Why\n\nDifferent boards serve different purposes. A user may want a board purely for ideation and planning without ever generating specs or code. Currently, the pipeline is all-or-nothing: once an item enters the pipeline, it runs through every phase. A `terminal_stage` config gives boards clear boundaries that match their intended purpose, without requiring manual intervention to halt the pipeline at the desired point.\n\n## Design\n\nThe mechanism is a single optional string field `terminal_stage` in the per-board config JSON file. Valid values correspond to the natural block boundaries in the pipeline: `\"plan\"` (stop after plan review passes) and `\"spec\"` (stop after spec review passes). When omitted, null, or empty string, the full pipeline runs as today (default behavior).\n\n**Validation:** Invalid `terminal_stage` values (anything other than `\"plan\"`, `\"spec\"`, null, or omitted) should be detected when the config is read and logged as a warning. The pipeline should treat unrecognized values as if the field were omitted (full pipeline), rather than silently accepting typos like `\"planning\"` or numeric values. This fail-open approach avoids blocking the pipeline on config errors while still surfacing the misconfiguration.\n\n**Guard mechanism at block boundaries:** After each major block completes successfully (plan review passes, spec review passes), the pipeline checks whether the board's `terminal_stage` matches that block. If so, the item is routed to `final-human-approval` with a history entry like \"Terminal stage reached (plan) \u2014 moved to final-human-approval\" and the pipeline returns.\n\n**Critical bug fix (bundled):** The spec-writing block currently runs unconditionally after the plan review block exits. When `requires_human_approval` is true and plan review passes, the feature is moved to `awaiting-human-approval` and the review loop breaks, but execution falls through to the spec-writing block. An explicit stage guard must be added before the spec-writing block that checks whether the feature is still in a stage that warrants spec writing (i.e., `approved` stage). This guard is required for `terminal_stage` to work correctly and simultaneously fixes this pre-existing bug. The guard should check the feature's current stage \u2014 if the feature is not in `approved` stage when reaching the spec block, the pipeline should return without entering the spec block.\n\n**Automated vs. manual moves:** The `terminal_stage` guard only applies within the automated pipeline orchestrator function. Manual stage moves (via CLI commands, TUI actions, or WebUI) go through a different code path that does not invoke the pipeline orchestrator. Therefore, no special detection mechanism is needed to distinguish automated from manual moves \u2014 the guard is structurally scoped to the orchestrator function. If a user manually moves an item past its board's terminal stage, the pipeline will not interfere because it is not running. If the auto-pipeline later picks up that item (now in a stage past the terminal boundary), it will process it from wherever it currently sits \u2014 the terminal_stage check only fires at block boundaries during a pipeline run, not retroactively.\n\n**Items already in flight when terminal_stage is added:** When a board's `terminal_stage` is configured while items are already progressing through the pipeline, the behavior depends on where the item currently is relative to the terminal boundary:\n- Items that have not yet reached the terminal boundary will stop at it on their next pipeline run \u2014 no issue.\n- Items that have already passed the terminal boundary (e.g., already in `implementing` when `terminal_stage=\"plan\"` is added) will continue through the remaining blocks normally. The guard checks occur at block boundaries during forward progression; since those items have already passed the relevant boundary, the guard won't fire. This is the correct behavior \u2014 retroactively halting in-flight work would be surprising and disruptive.\n- Items currently in the middle of a block (e.g., in `spec-writing` when `terminal_stage=\"plan\"` is set) will complete that block and then hit the guard at the next boundary. This is acceptable because partial block output (e.g., half-written specs) would be worse than completing the block.\n\n**Items after reaching final-human-approval:** Items routed to `final-human-approval` by the terminal stage mechanism follow the same lifecycle as any other item in that stage. The human reviews the work product (plan, spec, etc.) and either approves it (moving to `done`) or rejects it (moving to `rejected`). This is existing behavior \u2014 no new handling is needed. The history entry should make it clear that the item reached final-human-approval due to the terminal stage configuration, not due to an error or review exhaustion.\n\n## Impact\n\n- Per-board config gains a new optional field; no existing configs are affected (field is optional with omitted meaning \"run full pipeline\")\n- The pipeline orchestrator gains guard checks at two block boundaries \u2014 these are additive checks that don't change existing behavior when `terminal_stage` is not set\n- The TUI and WebUI display items correctly since they already handle the `final-human-approval` stage\n- The latent `requires_human_approval` fallthrough bug is fixed as a side effect of adding the stage guard before the spec-writing block\n- The config loading infrastructure already supports per-board config \u2014 no new config plumbing is needed\n\n## Risks\n\n- Low overall risk: one new config field, a small number of targeted guard checks, and a bug fix\n- The guard logic must correctly identify block boundaries \u2014 the two natural boundaries are after plan review and after spec review, which are clear in the code structure\n- Config typos (e.g., `\"planning\"` instead of `\"plan\"`) could silently result in the full pipeline running. Mitigation: validation with warning logging when unrecognized values are encountered\n- The bug fix (stage guard before spec block) changes control flow for the existing `requires_human_approval` case \u2014 this is intentional and correct, but should be tested to ensure no regression\n\n## Scope\n\n**In scope:**\n- `terminal_stage` field in per-board config.json with `\"plan\"` and `\"spec\"` as valid values\n- Guard checks at the two block boundaries in the pipeline orchestrator\n- Stage guard before the ungated spec-writing block (fixes latent requires_human_approval fallthrough bug)\n- Routing halted items to `final-human-approval` with descriptive history entries\n- Validation/warning logging for invalid terminal_stage values\n\n**Out of scope:**\n- Skipping early phases (e.g., starting at planning without ideation)\n- Per-feature terminal stage overrides\n- UI changes beyond what already exists for `final-human-approval`\n- Validation or migration tooling for board configs\n- Retroactive enforcement on in-flight items that have already passed the terminal boundary",
+  "impl_spec": "## Implementation Spec: Board-specific phases (terminal_stage)\n\n### Task 1: Add `get_terminal_stage` method to `Config` class\n\n**File:** `pipeline/config.py`\n\n**What:** Add a method to `Config` that reads the `terminal_stage` field from a board's per-board config and validates it.\n\n**Approach:**\n\n1. Add a constant at module level (near line 36, after `PIPELINE_PHASES`):\n   ```python\n   VALID_TERMINAL_STAGES = {\"plan\", \"spec\"}\n   ```\n\n2. Add a method `get_terminal_stage(self, board_name: str) -> Optional[str]` to the `Config` class (after `_get_per_board_config`, around line 376):\n   ```python\n   def get_terminal_stage(self, board_name: str) -> Optional[str]:\n       \"\"\"Get the terminal_stage for a board, or None for full pipeline.\"\"\"\n       board_config = self._get_per_board_config(board_name)\n       if not board_config:\n           return None\n       value = board_config.get(\"terminal_stage\")\n       if not value or not isinstance(value, str):\n           return None\n       value = value.strip().lower()\n       if not value:\n           return None\n       if value not in VALID_TERMINAL_STAGES:\n           logger.warning(\n               f\"Board '{board_name}' has invalid terminal_stage '{value}'. \"\n               f\"Valid values: {VALID_TERMINAL_STAGES}. Running full pipeline.\"\n           )\n           return None\n       return value\n   ```\n\n**Dependencies:** None. This is a standalone addition.\n\n---\n\n### Task 2: Add stage guard before spec-writing block (bug fix)\n\n**File:** `pipeline/phases.py`\n\n**What:** In `_run_pipeline_impl`, add a guard after the plan review block exits and before the spec-writing block begins. If the feature is not in `approved` stage at this point, return early. This fixes the latent bug where `requires_human_approval` causes the feature to move to `awaiting-human-approval` but execution falls through to spec writing.\n\n**Approach:**\n\nIn `_run_pipeline_impl` (line 1552), after the plan review block (the `if feature.current_stage == \"reviewing-plan\":` block ending around line 1655), add a stage guard before line 1657 (`# Phase 1: Spec writing + spec review loop`):\n\n```python\n    # Stage guard: only proceed to spec writing if feature is in 'approved' stage.\n    # This prevents fallthrough when requires_human_approval moved it to awaiting-human-approval,\n    # or when terminal_stage halted the pipeline at the plan boundary.\n    if feature.current_stage != \"approved\":\n        logger.info(f\"[pipeline] Feature '{feature.title}' is in '{feature.current_stage}', not 'approved'. Stopping pipeline.\")\n        return\n```\n\nThis single guard fixes both:\n- The pre-existing `requires_human_approval` fallthrough bug (feature is in `awaiting-human-approval`, not `approved`)\n- The `terminal_stage=\"plan\"` case (feature will be in `final-human-approval`, not `approved`)\n\n**Dependencies:** None, but logically pairs with Task 3.\n\n---\n\n### Task 3: Add terminal_stage guard after plan review passes\n\n**File:** `pipeline/phases.py`\n\n**What:** After plan review passes and the feature is about to be promoted, check whether the board's `terminal_stage` is `\"plan\"`. If so, route to `final-human-approval` instead of `approved`/`awaiting-human-approval`.\n\n**Approach:**\n\nIn `_run_pipeline_impl`, inside the plan review loop, after `verdict == \"PASS\"` is detected (around line 1600-1609), add the terminal_stage check. The modified block should be:\n\n```python\n            if verdict == \"PASS\":\n                # Check terminal_stage before promoting\n                config = Config()\n                terminal_stage = config.get_terminal_stage(feature.board)\n                if terminal_stage == \"plan\":\n                    feature.move_to_stage(\"final-human-approval\")\n                    feature.add_history(\"TERMINAL_STAGE\", \"Terminal stage reached (plan) \u2014 moved to final-human-approval\")\n                    feature.save()\n                    _git_commit(feature, \"terminal stage reached (plan)\")\n                    console.print(\"[green]Plan approved. Terminal stage 'plan' reached \u2014 moved to final-human-approval.[/green]\")\n                    return\n                elif feature.requires_human_approval:\n                    feature.move_to_stage(\"awaiting-human-approval\")\n                    feature.add_history(\"AWAITING_HUMAN_APPROVAL\", \"Plan approved by AI, awaiting human approval\")\n                else:\n                    feature.move_to_stage(\"approved\")\n                    feature.add_history(\"PROMOTED\", \"Plan approved, moving to spec-writing\")\n                feature.save()\n                _git_commit(feature, \"plan approved\")\n                break\n```\n\nNote: The `terminal_stage` check goes BEFORE the `requires_human_approval` check because `terminal_stage` takes priority \u2014 if the board is configured to stop at plan, it should stop regardless of whether human approval is also configured.\n\n**Dependencies:** Task 1 (needs `get_terminal_stage` method).\n\n---\n\n### Task 4: Add terminal_stage guard after spec review passes\n\n**File:** `pipeline/phases.py`\n\n**What:** After the spec review loop completes successfully (verdict == PASS), check whether the board's `terminal_stage` is `\"spec\"`. If so, route to `final-human-approval` instead of `implementing`.\n\n**Approach:**\n\nIn `_run_pipeline_impl`, inside the spec review loop, after `verdict == \"PASS\"` (around line 1671-1676), modify to:\n\n```python\n        if verdict == \"PASS\":\n            # Check terminal_stage before promoting to implementing\n            config = Config()\n            terminal_stage = config.get_terminal_stage(feature.board)\n            if terminal_stage == \"spec\":\n                feature.move_to_stage(\"final-human-approval\")\n                feature.add_history(\"TERMINAL_STAGE\", \"Terminal stage reached (spec) \u2014 moved to final-human-approval\")\n                feature.save()\n                _git_commit(feature, \"terminal stage reached (spec)\")\n                console.print(\"[green]Specs approved. Terminal stage 'spec' reached \u2014 moved to final-human-approval.[/green]\")\n                return\n            feature.move_to_stage(\"implementing\")\n            feature.add_history(\"SPECREVIEW\", \"Specs approved, moving to implementing\")\n            feature.save()\n            _git_commit(feature, \"spec review passed\")\n            break\n```\n\n**Dependencies:** Task 1 (needs `get_terminal_stage` method).\n\n---\n\n### Task 5: Add unit tests\n\n**File:** `pipeline/test_phases_unit.py` (existing test file)\n\n**What:** Add tests covering:\n1. `Config.get_terminal_stage` returns correct values for valid configs\n2. `Config.get_terminal_stage` returns None and logs warning for invalid values\n3. `Config.get_terminal_stage` returns None when field is omitted/null/empty\n4. Pipeline stops at plan boundary when `terminal_stage=\"plan\"`\n5. Pipeline stops at spec boundary when `terminal_stage=\"spec\"`\n6. Pipeline runs full when `terminal_stage` is not set (no regression)\n7. Stage guard before spec-writing prevents fallthrough when feature is in `awaiting-human-approval` (bug fix test)\n\n**Approach:**\n\nFor the config tests, create temporary board config files with various `terminal_stage` values and assert the return values of `get_terminal_stage()`.\n\nFor the pipeline tests, mock the relevant phase functions and verify that `_run_pipeline_impl` stops at the correct point based on `terminal_stage` configuration. Use `unittest.mock.patch` to mock `Config.get_terminal_stage` to return the desired value.\n\nKey test cases:\n- `test_terminal_stage_plan_stops_after_plan_review`: Set `terminal_stage=\"plan\"`, mock plan review to return PASS, verify feature ends up in `final-human-approval` and spec writing is never called.\n- `test_terminal_stage_spec_stops_after_spec_review`: Set `terminal_stage=\"spec\"`, mock plan+spec review to return PASS, verify feature ends up in `final-human-approval` and implementing is never called.\n- `test_terminal_stage_none_runs_full_pipeline`: No terminal_stage set, verify full pipeline runs.\n- `test_stage_guard_prevents_spec_fallthrough`: Set `requires_human_approval=True`, mock plan review to PASS, verify spec writing is NOT called (feature is in `awaiting-human-approval`).\n- `test_get_terminal_stage_valid_values`: Test that \"plan\" and \"spec\" are returned correctly.\n- `test_get_terminal_stage_invalid_value_warns`: Test that \"planning\", \"implement\", 123, etc. return None and log a warning.\n- `test_get_terminal_stage_missing_returns_none`: Test omitted, null, empty string all return None.\n\n**Dependencies:** Tasks 1-4.\n\n---\n\n### Summary of files modified:\n- `pipeline/config.py` \u2014 add `VALID_TERMINAL_STAGES` constant and `get_terminal_stage()` method\n- `pipeline/phases.py` \u2014 add stage guard before spec block, add terminal_stage checks at plan and spec boundaries in `_run_pipeline_impl`\n- `pipeline/test_phases_unit.py` \u2014 add unit tests\n\n### Execution order:\n1. Task 1 (config method) \u2014 no dependencies\n2. Task 2 (stage guard / bug fix) \u2014 no dependencies\n3. Task 3 (plan boundary guard) \u2014 depends on Task 1\n4. Task 4 (spec boundary guard) \u2014 depends on Task 1\n5. Task 5 (tests) \u2014 depends on Tasks 1-4",
+  "test_spec": "# Test Specification: Board-specific phases (terminal_stage)\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Config: get_terminal_stage returns valid values\n\n**Behavior:** When a board's per-board config.json contains `\"terminal_stage\": \"plan\"`, calling `Config.get_terminal_stage(board_name)` returns `\"plan\"`. Same for `\"spec\"`.\n\n**Success criteria:** Method returns the exact string `\"plan\"` or `\"spec\"` respectively.\n\n**Expected output:** `\"plan\"` when config has `\"terminal_stage\": \"plan\"`, `\"spec\"` when config has `\"terminal_stage\": \"spec\"`.\n\n---\n\n### 1.2 Config: get_terminal_stage returns None when field is absent\n\n**Behavior:** When a board's per-board config.json does not contain the `terminal_stage` field at all, `get_terminal_stage` returns `None`.\n\n**Success criteria:** Method returns `None`.\n\n**Expected output:** `None`.\n\n---\n\n### 1.3 Config: get_terminal_stage returns None for null value\n\n**Behavior:** When a board's per-board config.json has `\"terminal_stage\": null`, `get_terminal_stage` returns `None`.\n\n**Success criteria:** Method returns `None`.\n\n**Expected output:** `None`.\n\n---\n\n### 1.4 Config: get_terminal_stage returns None for empty string\n\n**Behavior:** When a board's per-board config.json has `\"terminal_stage\": \"\"`, `get_terminal_stage` returns `None`.\n\n**Success criteria:** Method returns `None`.\n\n**Expected output:** `None`.\n\n---\n\n### 1.5 Config: get_terminal_stage logs warning for invalid values\n\n**Behavior:** When a board's per-board config.json has `\"terminal_stage\": \"planning\"` (or any other unrecognized string like `\"implement\"`, `\"full\"`, `\"test\"`), `get_terminal_stage` returns `None` AND logs a warning message that includes the invalid value and the set of valid values.\n\n**Success criteria:** Method returns `None`. A warning log message is emitted containing the invalid value string and mentioning the valid options.\n\n**Expected output:** `None` return value. Warning log contains `\"planning\"` (or whichever invalid value was used) and mentions `\"plan\"` and `\"spec\"` as valid.\n\n---\n\n### 1.6 Config: get_terminal_stage returns None for non-string values\n\n**Behavior:** When a board's per-board config.json has `\"terminal_stage\": 123` or `\"terminal_stage\": true` or `\"terminal_stage\": [\"plan\"]`, `get_terminal_stage` returns `None` without crashing.\n\n**Success criteria:** Method returns `None` gracefully (no exception raised).\n\n**Expected output:** `None`.\n\n---\n\n### 1.7 Config: get_terminal_stage handles missing board config\n\n**Behavior:** When there is no per-board config.json file for the given board name, `get_terminal_stage` returns `None`.\n\n**Success criteria:** Method returns `None` without error.\n\n**Expected output:** `None`.\n\n---\n\n### 1.8 Pipeline: terminal_stage=\"plan\" stops after plan review passes\n\n**Behavior:** When `terminal_stage` is `\"plan\"` for the feature's board, and plan review returns PASS, the pipeline moves the feature to `final-human-approval` and returns without entering the spec-writing block.\n\n**Success criteria:**\n- Feature ends up in stage `final-human-approval`\n- Feature history contains an entry with tag `TERMINAL_STAGE` and a message mentioning `\"plan\"` and `\"final-human-approval\"`\n- `run_spec_writing` is never called\n- `run_implementing` is never called\n- Pipeline function returns normally (no exception)\n\n**Expected output:** Feature in `final-human-approval` stage with appropriate history entry.\n\n---\n\n### 1.9 Pipeline: terminal_stage=\"spec\" stops after spec review passes\n\n**Behavior:** When `terminal_stage` is `\"spec\"` for the feature's board, plan review passes, spec writing runs, spec review returns PASS, the pipeline moves the feature to `final-human-approval` and returns without entering the implementing block.\n\n**Success criteria:**\n- Feature ends up in stage `final-human-approval`\n- Feature history contains an entry with tag `TERMINAL_STAGE` and a message mentioning `\"spec\"` and `\"final-human-approval\"`\n- `run_spec_writing` IS called (specs are still written)\n- `run_implementing` is never called\n- Pipeline function returns normally\n\n**Expected output:** Feature in `final-human-approval` stage with appropriate history entry.\n\n---\n\n### 1.10 Pipeline: no terminal_stage runs full pipeline (regression test)\n\n**Behavior:** When `terminal_stage` is not set (or is None) for the feature's board, the pipeline runs through all phases as before: planning, plan review, spec writing, spec review, implementing, testing, review.\n\n**Success criteria:**\n- All pipeline phases are invoked in order\n- Feature progresses through all expected stages\n- No `TERMINAL_STAGE` history entries appear\n- Final outcome is the same as the current pipeline behavior\n\n**Expected output:** Full pipeline execution identical to current behavior.\n\n---\n\n### 1.11 Pipeline: stage guard before spec-writing prevents fallthrough (bug fix)\n\n**Behavior:** When `requires_human_approval` is `True` on a feature, and plan review returns PASS, the feature is moved to `awaiting-human-approval`. The pipeline must NOT proceed to spec writing. It should return without entering the spec-writing block.\n\n**Success criteria:**\n- Feature ends up in `awaiting-human-approval` stage\n- `run_spec_writing` is never called\n- Pipeline returns normally\n\n**Expected output:** Feature in `awaiting-human-approval`, no spec writing executed.\n\n---\n\n### 1.12 Pipeline: terminal_stage=\"plan\" takes priority over requires_human_approval\n\n**Behavior:** When both `terminal_stage=\"plan\"` and `requires_human_approval=True` are set, and plan review passes, the terminal_stage check fires first and the feature goes to `final-human-approval` (not `awaiting-human-approval`).\n\n**Success criteria:**\n- Feature ends up in `final-human-approval` (not `awaiting-human-approval`)\n- History entry is the terminal_stage entry, not the human approval entry\n\n**Expected output:** Feature in `final-human-approval` with `TERMINAL_STAGE` history.\n\n---\n\n### 1.13 Pipeline: terminal_stage=\"spec\" allows plan review to proceed normally\n\n**Behavior:** When `terminal_stage=\"spec\"`, the plan review block runs completely normally (including retries on FAIL, re-planning, etc.). The terminal_stage guard only fires after spec review passes, not at the plan boundary.\n\n**Success criteria:**\n- Plan review loop behaves identically to the no-terminal-stage case\n- Feature progresses through planning, plan review, approved, spec writing, spec review\n- After spec review PASS, feature goes to `final-human-approval`\n\n**Expected output:** Normal plan review behavior, then halt at spec boundary.\n\n---\n\n### 1.14 History entries: terminal stage entries are descriptive\n\n**Behavior:** When the terminal stage guard fires, the history entry clearly states the reason (terminal stage configuration) and which boundary was reached.\n\n**Success criteria:**\n- History entry tag is `TERMINAL_STAGE`\n- History note contains the terminal stage value (e.g., `\"plan\"` or `\"spec\"`)\n- History note contains `\"final-human-approval\"`\n- The entry is distinguishable from review-exhaustion entries and error entries\n\n**Expected output:** History entry like `\"Terminal stage reached (plan) \u2014 moved to final-human-approval\"`.\n\n---\n\n### 1.15 Config: case insensitivity for terminal_stage values\n\n**Behavior:** The `get_terminal_stage` method normalizes the value to lowercase, so `\"Plan\"`, `\"PLAN\"`, `\"Plan\"` all return `\"plan\"`.\n\n**Success criteria:** All case variations of `\"plan\"` and `\"spec\"` return the lowercase version.\n\n**Expected output:** `\"plan\"` for `\"Plan\"`, `\"PLAN\"`, etc. `\"spec\"` for `\"Spec\"`, `\"SPEC\"`, etc.\n\n---\n\n### 1.16 Config: whitespace handling for terminal_stage values\n\n**Behavior:** The `get_terminal_stage` method strips whitespace, so `\" plan \"` returns `\"plan\"`.\n\n**Success criteria:** Leading/trailing whitespace is stripped before validation.\n\n**Expected output:** `\"plan\"` for `\" plan \"`, `\"spec\"` for `\" spec \"`.\n\n---\n\n## 2. Edge Cases\n\n### 2.1 Plan review fails all retries with terminal_stage=\"plan\"\n\n**Behavior:** When `terminal_stage=\"plan\"` and plan review fails all retry attempts, the existing exhaustion logic should still apply \u2014 the feature goes to `final-human-approval` via the existing exhaustion path, not via the terminal stage guard.\n\n**Success criteria:** Feature ends up in `final-human-approval` via the review-exhaustion path. The terminal_stage guard never fires (because plan review never passed).\n\n**Expected output:** Feature in `final-human-approval` with review exhaustion history entry (not terminal stage entry).\n\n---\n\n### 2.2 Spec review fails all retries with terminal_stage=\"spec\"\n\n**Behavior:** When `terminal_stage=\"spec\"` and spec review fails all retry attempts, the existing graceful degradation logic should apply \u2014 specs proceed to implementing anyway. The terminal_stage guard does NOT fire because spec review did not pass.\n\n**Success criteria:** Feature proceeds to implementing (existing behavior when spec review is exhausted). The terminal_stage guard does not fire.\n\n**Expected output:** Feature moves to implementing via existing exhaustion logic.\n\n---\n\n### 2.3 Feature already past terminal boundary when pipeline runs\n\n**Behavior:** If a feature is already in `implementing` stage and the board has `terminal_stage=\"plan\"`, running the pipeline (e.g., via `run_pipeline_from_implementing`) should process the feature normally through implement/test/review. The terminal_stage guard only fires at block boundaries during forward progression; it should not retroactively halt items.\n\n**Success criteria:** Feature progresses through implementing, testing, and review normally. No terminal stage halt.\n\n**Expected output:** Normal implement/test/review loop execution.\n\n---\n\n### 2.4 Feature in approved stage with terminal_stage=\"plan\"\n\n**Behavior:** If a feature has already been moved to `approved` stage (past the plan boundary) and the board has `terminal_stage=\"plan\"`, running `run_pipeline` should enter the spec-writing block because the feature is in `approved`. The terminal_stage=\"plan\" guard only fires within the plan review block when plan review passes.\n\n**Success criteria:** Feature enters spec writing and continues normally. The terminal_stage guard does not fire retroactively.\n\n**Expected output:** Normal pipeline progression from approved through specs and implementation.\n\n---\n\n### 2.5 Board config file is malformed JSON\n\n**Behavior:** If the per-board config.json is malformed (not valid JSON), `_get_per_board_config` already returns `None`, so `get_terminal_stage` should return `None` without crashing.\n\n**Success criteria:** `get_terminal_stage` returns `None`. No unhandled exception. Pipeline runs full.\n\n**Expected output:** `None`, full pipeline execution.\n\n---\n\n### 2.6 Board config file has extra unexpected fields\n\n**Behavior:** If the per-board config.json has `terminal_stage` alongside other unknown fields, `get_terminal_stage` should still correctly read the `terminal_stage` field and ignore others.\n\n**Success criteria:** `terminal_stage` is read correctly. Extra fields do not interfere.\n\n**Expected output:** Correct `terminal_stage` value returned.\n\n---\n\n### 2.7 terminal_stage with whitespace-only value\n\n**Behavior:** If `terminal_stage` is set to `\"   \"` (whitespace only), after stripping it becomes empty string, so `get_terminal_stage` should return `None`.\n\n**Success criteria:** Returns `None`.\n\n**Expected output:** `None`.\n\n---\n\n### 2.8 Pipeline called for feature on board without per-board config\n\n**Behavior:** When the feature's board has no per-board config.json at all (the default case for most boards), `get_terminal_stage` returns `None` and the pipeline runs the full waterfall.\n\n**Success criteria:** No errors. Full pipeline runs.\n\n**Expected output:** Full pipeline execution.\n\n---\n\n### 2.9 Stage guard with feature in reviewing-plan (neither approved nor awaiting-human-approval)\n\n**Behavior:** If for some reason the feature is still in `reviewing-plan` when execution reaches the stage guard before spec writing (this could happen if plan review logic changes), the guard should prevent spec writing from running.\n\n**Success criteria:** Feature does not enter spec writing. Pipeline returns.\n\n**Expected output:** Pipeline returns without entering spec block.\n\n---\n\n### 2.10 terminal_stage=\"plan\" with questions during planning\n\n**Behavior:** When `terminal_stage=\"plan\"` and the planning phase raises questions (moving feature to `requested-input`), the pipeline should pause as normal. The terminal_stage only fires when plan review actually passes, not during the planning loop.\n\n**Success criteria:** Feature moves to `requested-input` as normal. Pipeline returns waiting for human input. Terminal stage guard does not fire.\n\n**Expected output:** Feature in `requested-input`, pipeline paused.\n\n---\n\n## 3. What Constitutes Failure\n\n### 3.1 Config failures\n\n- `get_terminal_stage` raises an unhandled exception for any input (including None board name, missing config, malformed JSON, non-string values, numeric values, boolean values, array values)\n- `get_terminal_stage` returns a non-None value for invalid terminal_stage strings (e.g., returns `\"planning\"` instead of `None`)\n- `get_terminal_stage` returns a non-None value when the field is absent, null, or empty string\n- No warning is logged when an invalid (non-empty, non-null) terminal_stage value is provided\n- Warning log message does not include the invalid value or valid options\n\n### 3.2 Pipeline guard failures\n\n- Feature enters spec-writing when `terminal_stage=\"plan\"` and plan review passed \u2014 the terminal stage guard failed to fire\n- Feature enters implementing when `terminal_stage=\"spec\"` and spec review passed \u2014 the terminal stage guard failed to fire\n- Feature does NOT enter spec-writing when `terminal_stage` is not set and plan review passed \u2014 false positive guard activation\n- Feature ends up in a stage other than `final-human-approval` when a terminal stage guard fires (e.g., `done`, `approved`, `rejected`)\n- Pipeline raises an unhandled exception when terminal stage guard fires\n- No history entry is added when the terminal stage guard fires\n- History entry tag is not `TERMINAL_STAGE` or does not mention the boundary name\n\n### 3.3 Bug fix failures\n\n- Feature enters spec-writing when `requires_human_approval=True` and plan review passed \u2014 the stage guard before spec block is missing or broken (this is the pre-existing bug)\n- Feature enters spec-writing when it is in any stage other than `approved` after the plan review block completes\n\n### 3.4 Regression failures\n\n- Full pipeline behavior changes when `terminal_stage` is not configured \u2014 any difference from current behavior when the field is absent\n- Plan review retry logic is altered \u2014 retries, re-planning, system error handling should be unchanged\n- Spec review retry logic is altered \u2014 retries, graceful degradation should be unchanged\n- The implement/test/review loop is altered \u2014 retry count, feedback handling should be unchanged\n- Features that have already passed a terminal boundary are retroactively halted\n\n### 3.5 Error messages expected\n\n- Warning log: When invalid terminal_stage value is encountered, a warning containing the invalid value and valid options should be logged\n- Info log: When the stage guard before spec-writing fires, an info-level log should indicate the feature's current stage and that the pipeline is stopping\n\n## 4. Out of Scope\n\n- **UI testing:** No testing of TUI or WebUI rendering of items in `final-human-approval` \u2014 these already work.\n- **Visual assertions:** No screenshot or visual comparison testing.\n- **Performance benchmarks:** No timing tests for how fast the terminal stage check executes.\n- **Manual stage move testing:** The terminal_stage guard only applies within the automated pipeline orchestrator. Manual moves via CLI/TUI/WebUI use different code paths and do not need testing for this feature.\n- **Per-feature terminal stage overrides:** Out of scope per the plan.\n- **Skipping early phases:** Starting at planning without ideation is explicitly out of scope.\n- **Config migration tooling:** No testing of config migration or validation tooling for board configs.\n- **End-to-end agent execution:** Tests should mock the agent runner; no real AI agent calls.\n- **Concurrent pipeline execution:** The pipeline uses a lock mechanism; concurrent runs are prevented by the lock, not by terminal_stage logic.\n- **Network/filesystem error handling during config reads:** The existing `_get_per_board_config` already handles these; no new error paths are introduced.\n- **Testing the `run_pipeline_from_implementing` entry point with terminal_stage:** This entry point skips planning and spec writing entirely, so terminal stage guards at those boundaries are structurally unreachable. No special testing needed.",
+  "impl_notes": "Added 7 pipeline-level unit tests in TestTerminalStagePipeline class to verify terminal_stage feature: (1) test_terminal_stage_plan_stops_after_plan_review verifies spec 1.8, (2) test_terminal_stage_spec_stops_after_spec_review verifies spec 1.9, (3) test_no_terminal_stage_runs_full_pipeline verifies spec 1.10, (4) test_stage_guard_prevents_spec_fallthrough verifies spec 1.11 (bug fix), (5) test_terminal_stage_plan_priority_over_human_approval verifies spec 1.12, (6) test_terminal_stage_spec_plan_review_normal verifies spec 1.13, (7) test_terminal_stage_history_entries verifies spec 1.14. Tests mock run_plan_review, run_spec_writing, run_spec_review, run_implementing, run_verify_tests, run_review_impl, _git_commit, and Config.get_terminal_stage to control test behavior.",
+  "history": [
+    {
+      "ts": "2026-03-08T05:30Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T00:37Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-13T00:48Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-13T00:48Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T05:42Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-13T05:42Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T05:43Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-13T05:44Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T05:44Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-13T05:45Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis"
+    },
+    {
+      "ts": "2026-03-13T05:46Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-13T21:25Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-13T21:26Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-13T21:26Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T21:27Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-13T21:28Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-13T21:29Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-13T21:29Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis"
+    },
+    {
+      "ts": "2026-03-13T21:30Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-17T05:18Z",
+      "stage": "IDEATING",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-17T05:19Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-17T05:19Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-17T05:19Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-17T05:20Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-17T05:21Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-17T05:22Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis"
+    },
+    {
+      "ts": "2026-03-17T05:23Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-18T01:28Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-18T01:41Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-18T01:41Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T01:42Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-18T01:42Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T01:43Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-18T01:44Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 1)"
+    },
+    {
+      "ts": "2026-03-18T01:45Z",
+      "stage": "IDEATING",
+      "note": "Consensus reached after 4 rounds"
+    },
+    {
+      "ts": "2026-03-18T01:45Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-19T01:26Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-19T04:06Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-19T04:07Z",
+      "stage": "PLANNING",
+      "note": "FAILED: claude exited with code 143.\nstderr: (no stderr)\nstdout (last 500 chars): (no stdout)"
+    },
+    {
+      "ts": "2026-03-19T04:09Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-19T04:10Z",
+      "stage": "PLANNING",
+      "note": "FAILED: claude exited with code 143.\nstderr: (no stderr)\nstdout (last 500 chars): (no stdout)"
+    },
+    {
+      "ts": "2026-03-19T04:12Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-19T04:14Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-19T04:14Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-19T04:14Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Plan is well-structured but has unresolved edge cases around manual vs automated ..."
+    },
+    {
+      "ts": "2026-03-19T04:14Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Specific issues to fix: 1) Edge case 'manual stage moves past terminal_stage' - plan ac..."
+    },
+    {
+      "ts": "2026-03-19T04:14Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-19T04:17Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-19T04:17Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-19T04:17Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-19T04:17Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-19T04:17Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-19T04:17Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-19T04:19Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-19T04:21Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-19T04:21Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-19T04:26Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-19T04:26Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-19T04:26Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-19T04:29Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-19T04:29Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-19T04:30Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation logic is correct and complete (config method, stage guard bug fix,..."
+    },
+    {
+      "ts": "2026-03-19T04:30Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-19T04:35Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-19T04:35Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-19T04:35Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-19T04:36Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-19T04:36Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-19T04:37Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - All previous review feedback addressed: 7 pipeline-level tests added in TestTermi..."
+    },
+    {
+      "ts": "2026-03-19T04:37Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-19T04:14Z",
+      "verdict": "FAIL",
+      "summary": "Plan is well-structured but has unresolved edge cases around manual vs automated stage detection, invalid config validation, and post-terminal state handling.",
+      "feedback": "Specific issues to fix: 1) Edge case 'manual stage moves past terminal_stage' - plan acknowledges but doesn't specify HOW to detect automated vs manual pipeline runs; 2) Missing validation for invalid terminal_stage values (e.g., 'invalid', numbers, empty strings); 3) Unclear what happens to items after reaching final-human-approval - do they stay there indefinitely?; 4) No consideration for items already in flight when terminal_stage is added to an existing board mid-operation"
+    },
+    {
+      "ts": "2026-03-19T04:17Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-19T04:30Z",
+      "verdict": "FAIL",
+      "summary": "Implementation logic is correct and complete (config method, stage guard bug fix, terminal_stage guards at plan/spec boundaries). However, test coverage is critically incomplete: only 11 config-level unit tests exist while all pipeline-level behavioral tests (spec sections 1.8-1.14 and edge cases 2.1-2.10) are missing.",
+      "feedback": "The implementation code in config.py and phases.py is correct. The missing piece is pipeline-level tests in test_phases_unit.py. Add tests that mock the pipeline internals to verify:\n\ntest_terminal_stage_plan_stops_after_plan_review (spec 1.8): Mock run_plan_review to return PASS, set terminal_stage='plan' via Config mock. Verify feature ends in 'final-human-approval', run_spec_writing is never called, history contains TERMINAL_STAGE tag.\n\ntest_terminal_stage_spec_stops_after_spec_review (spec 1.9): Mock plan review PASS and spec review PASS, set terminal_stage='spec'. Verify feature ends in 'final-human-approval', run_spec_writing IS called, run_implementing is NOT called.\n\ntest_no_terminal_stage_runs_full_pipeline (spec 1.10): No terminal_stage set. Verify all phases execute in order.\n\ntest_stage_guard_prevents_spec_fallthrough (spec 1.11): Set requires_human_approval=True, mock plan review PASS. Verify feature ends in 'awaiting-human-approval' and run_spec_writing is never called.\n\ntest_terminal_stage_plan_priority_over_human_approval (spec 1.12): Both terminal_stage='plan' and requires_human_approval=True. Verify feature goes to 'final-human-approval' (not 'awaiting-human-approval') with TERMINAL_STAGE history.\n\ntest_terminal_stage_spec_plan_review_normal (spec 1.13): terminal_stage='spec', verify plan review runs normally and halt only happens at spec boundary.\n\ntest_terminal_stage_history_entries (spec 1.14): Verify TERMINAL_STAGE tag, message contains boundary name and 'final-human-approval'.\n\nThese tests should mock run_planning, run_plan_review, run_spec_writing, run_spec_review, run_implementing, run_verify_tests, run_review_impl, _git_commit, and Config.get_terminal_stage as needed. Use patch decorators to control return values and assert call counts."
+    },
+    {
+      "ts": "2026-03-19T04:37Z",
+      "verdict": "PASS",
+      "summary": "All previous review feedback addressed: 7 pipeline-level tests added in TestTerminalStagePipeline covering specs 1.8-1.14. Implementation in config.py and phases.py is correct. All 18 tests (7 pipeline + 11 config) pass.",
+      "feedback": null
+    }
+  ],
+  "ideation_summaries": [
+    "Board-specific phase configuration is a strong idea that would significantly increase MAD's flexibility. The current system has 13 filesystem stages hardcoded in pipeline/config.py (STAGES list) and 7 agent execution phases in PHASE_CONFIG (pipeline/phases.py), with a single linear flow: ideas \u2192 ideating \u2192 plan-inbox \u2192 reviewing-plan \u2192 approved \u2192 spec-writing \u2192 implementing \u2192 testing \u2192 review \u2192 done. For boards where you only want planning (no implementation), or where you want to skip ideation ",
+    "The previous proposal for explicit phase sequences (approach 2) has several significant gaps that need addressing before implementation. First, the proposal underestimates the coupling between phases \u2014 phases aren't independent steps you can freely omit. The planning phase produces the plan field, spec_writing produces impl_spec and test_spec, and implementing consumes those specs. If you skip spec_writing but keep implementing, the implementing phase will receive empty specs and produce garbage",
+    "The predefined profiles approach from round 2 is the right instinct but too rigid \u2014 instead, model this as 'pipeline recipes' that declare both which phases run AND their data contracts. Looking at the actual code, run_pipeline in phases.py (line 1388) has three distinct sub-pipelines already emerging: (1) the planning loop (plan-inbox/requested-input cycle with plan review retries), (2) spec writing (run_spec_writing), and (3) the impl/test/review loop (_run_impl_test_review_loop). These are na",
+    "The 'pipeline recipes' / composable blocks approach from round 3 is the strongest proposal so far, but it has a critical blind spot: it assumes the three blocks (plan, spec, impl) are cleanly separable, when in reality the code reveals tight coupling between them that block-level composition doesn't fully address. Specifically: (1) The planning block's exit conditions are entangled with downstream assumptions \u2014 _run_pipeline_impl moves items to 'approved' after plan review passes (line 1437-1440",
+    "Building on the previous ideation rounds, I propose a pragmatic incremental approach that avoids the risky 'big refactor first' path. The three sub-pipelines (planning loop, spec writing, impl/test/review loop) are already structurally separated in _run_pipeline_impl as sequential blocks gated by stage checks (lines 1485-1612 in phases.py). Rather than refactoring them into formally independent units with data contracts before adding configuration, we can exploit this existing structure by intro",
+    "The previous pragmatic incremental approach of gating existing sequential blocks in _run_pipeline_impl has three critical weaknesses. First, it doesn't solve the data contract problem it claims to sidestep: the impl/test/review block consumes impl_spec and test_spec produced by spec_writing (phases.py line 1574-1609), so skipping spec writing without providing an alternative data source means the implementing phase receives empty specs and produces low-quality output -- the 'gate check' approach",
+    "Both the 'refactor first' and 'pragmatic gating' camps miss a simpler framing: the real unit of composition isn't the sub-pipeline block \u2014 it's the *terminal stage*. Looking at the actual code, _run_pipeline_impl (phases.py:1473) is essentially a waterfall where each block checks the current stage and runs if applicable. The data contract problem (spec_writing produces impl_spec/test_spec consumed by implementing) is real but overcomplicates the design when you realize most practical use cases a",
+    "The 'terminal_stage' proposal from round 7 is the most pragmatic suggestion yet, but it has two significant blind spots that undermine its claimed simplicity. First, it conflates 'stopping the pipeline' with 'completing the item' \u2014 the proposal says 'move to done and return' when terminal_stage is reached, but this skips final-human-approval entirely, which is the user's last checkpoint before work is considered finished. A plan-only board where plans auto-complete to 'done' without human sign-o",
+    "The `terminal_stage` approach from prior rounds is the right call, but I'd refine the implementation strategy after reading the actual code. In `_run_pipeline_impl` (phases.py:1473), the pipeline is already structured as three sequential blocks gated by stage checks: (1) planning loop at line 1485, (2) spec writing + review at line 1578, and (3) impl/test/review at line 1615. A `terminal_stage` field in board config (loaded via `_get_per_board_config` in config.py:351) would require exactly one ",
+    "The terminal_stage proposal has three underexplored weaknesses. First, it only handles truncation (stopping early) but not the equally common need to skip early phases \u2014 a board that wants to skip ideation and start directly at planning cannot express this with terminal_stage alone, requiring a separate skip_phases or start_stage mechanism that fragments the configuration model. Second, the proposal assumes the pipeline entry point always begins at plan-inbox (line 1485), but _run_pipeline_impl'",
+    "The terminal_stage proposal is sound for truncation use cases, but the previous critique about skipping early phases reveals a real configuration gap that deserves a unified solution rather than a second config knob. Instead of fragmenting the model with both terminal_stage and skip_phases/start_stage, I propose a single 'active_phases' list in board config that declares which of the three natural pipeline blocks run: ['plan', 'spec', 'impl']. This is not arbitrary phase composition \u2014 it's a bou",
+    "The active_phases proposal from round 11 improves on terminal_stage but introduces its own problems. First, it conflates block selection with entry-point routing: declaring active_phases: ['impl'] means skipping planning and spec entirely, but the impl block (lines 1615-1616) calls run_implementing which consumes impl_spec and test_spec \u2014 with no spec-writing block having run, these fields are empty, producing garbage implementations. The proposal hand-waves this by saying items would be 'placed",
+    "The existing ideation has thoroughly explored terminal_stage vs active_phases, but both proposals overlook a simpler structural observation: the pipeline already has natural 'seams' at exactly the stage-check boundaries in _run_pipeline_impl (lines 1564, 1657, 1694), and the routing after each block already converges to well-defined handoff stages (reviewing-plan -> approved, spec-review -> implementing, review-impl -> final-human-approval). Rather than adding a new config field that the pipelin",
+    "The 'exploit existing seams' proposal from round 13 sounds elegant but conflates structural observation with actionable design. Yes, _run_pipeline_impl already has three sequential blocks with stage-check boundaries (lines 1564, 1657, 1694), but 'the seams are already there' is not a design \u2014 it's an observation that every prior proposal also made. The proposal fails to specify what mechanism actually stops the pipeline at a seam: without an explicit config field like terminal_stage, there is no",
+    "Round 14's critique of round 13 is correct that 'the seams are already there' is an observation, not a design, and that an explicit config field is required. But round 14 also validates the terminal_stage approach without addressing its one genuine implementation subtlety: the spec-writing block (line 1657) has no stage guard and runs unconditionally after the plan review block completes. This means a terminal_phase='plan' configuration cannot simply 'not enter' the spec block \u2014 it must explicit",
+    "Round 15 correctly identified the ungated spec-writing block (line 1657) as the key implementation subtlety for terminal_stage, but didn't trace its full implications. The same structural gap already creates a latent issue with requires_human_approval: when plan review passes and requires_human_approval is true (line 1601-1602), the feature is moved to awaiting-human-approval and the for-loop breaks \u2014 but execution then falls through to the spec-writing block at line 1657, which runs uncondition"
+  ],
+  "Ideation": "Board-specific phases would let individual boards opt out of pipeline stages they don't need \u2014 a planning-only board stops after plan review, a board without ideation skips to planning. After multiple debate cycles, the discussion has firmly converged on `terminal_stage` as the right mechanism: a single board config field that halts the pipeline waterfall after a named stage and routes items to `final-human-approval` rather than auto-closing them. This preserves the human checkpoint while delivering the highest-value use case (plan-only boards) with minimal code risk. The competing `active_phases` approach \u2014 a unified list declaring which of the three natural sub-pipeline blocks run \u2014 was rejected because it reintroduces the data contract problem: skipping spec-writing while keeping impl leaves `impl_spec` and `test_spec` empty, producing garbage output from the implementing phase.\n\nThe critical implementation subtlety identified in this cycle is that the spec-writing block (~line 1657 in `_run_pipeline_impl`) has no stage guard and runs unconditionally after the plan review block completes. A `terminal_stage='plan'` configuration cannot simply skip entering the spec block \u2014 it requires an explicit check before that ungated block. This is not a novel design challenge but it must be addressed in the implementation. More importantly, round 4 of this cycle revealed that this same structural gap already constitutes a latent bug: when `requires_human_approval` is true and plan review passes, the feature is moved to `awaiting-human-approval` and the for-loop breaks, but execution falls through to the spec-writing block which then runs unconditionally against an item that is no longer in the expected pipeline state. The `terminal_stage` fix \u2014 adding an explicit guard before the ungated spec block \u2014 would simultaneously resolve this pre-existing bug.\n\nThe design is now well-understood: add `terminal_stage` to board config (loaded via `_get_per_board_config`), check it at each block boundary in `_run_pipeline_impl`, add an explicit guard before the ungated spec-writing block (fixing both `terminal_stage` and the latent `requires_human_approval` fallthrough), and route halted items to `final-human-approval`. Skipping early phases (e.g., starting directly at planning without ideation) remains out of scope \u2014 it requires either pre-populating data fields or formalizing sub-pipeline data contracts, both non-trivial follow-on efforts. The overall risk is low: one new config field, a small number of targeted guard checks, and a bug fix bundled into the same change.\n\n[Ideation concluded by consensus after 4 rounds, 1 cycles.]",
+  "ideation_cycle_verdicts": [
+    {
+      "cycle": 1,
+      "verdict": "consensus",
+      "reason": "All rounds this cycle agreed that `terminal_stage` is the right mechanism and that an explicit guard before the ungated spec-writing block is required. Round 4's new finding (an existing `requires_human_approval` fallthrough bug sharing the same root cause) strengthens the implementation rationale but does not open new design debate \u2014 the approach is settled.",
+      "rounds_completed": 4
+    }
+  ],
+  "plan_exploration_summary": "Explored the MAD pipeline codebase to understand the architecture for board-specific phases.\n\nFiles examined:\n- pipeline/phases.py: Contains _run_pipeline_impl (the main orchestrator), run_spec_writing, run_plan_review, run_spec_review, _run_impl_test_review_loop. The orchestrator has three sequential blocks: (1) planning + plan review, (2) spec writing + spec review, (3) implement/test/review. Confirmed the latent bug: after plan review passes with requires_human_approval=true, feature is moved to awaiting-human-approval and the for-loop breaks, but execution falls through unconditionally to Phase 1 (spec writing) at line 1657 with no stage guard.\n- pipeline/config.py: Config class with _get_per_board_config(board_name) method that loads per-board config.json from boards_dir/<board>/config.json. Currently used for code_path lookups. The infrastructure for reading per-board config already exists.\n- pipeline/state.py: STAGES list defines all valid stages including final-human-approval. FeatureFile.move_to_stage validates against STAGES. The board property is available on FeatureFile.\n- pipeline/pipeline.py: CLI entry points including run, auto, and the edit-feature command.\n- config.json (root): Global config with boards list, agent configuration.\n\nKey architecture insights:\n- Per-board config infrastructure already exists via _get_per_board_config which loads JSON from the board directory\n- The pipeline orchestrator (_run_pipeline_impl) uses sequential if-blocks for each phase, not a state machine \u2014 block boundaries are implicit code locations, not declarative\n- Features know their board (feature.board property) which can be used to look up board config\n- The spec-writing block (Phase 1, line 1657) has no guard checking whether the feature is still in an appropriate stage \u2014 it runs unconditionally after the plan review block exits, regardless of whether the feature was moved to awaiting-human-approval\n- Manual stage moves happen via move_to_stage on FeatureFile, which is also what the automated pipeline uses \u2014 there is no flag distinguishing automated from manual moves\n- Items in final-human-approval are already a well-established pattern \u2014 items land there when reviews exhaust retries or when the full pipeline completes successfully\n\nExisting patterns found:\n- The requires_human_approval flag on features provides a precedent for per-feature pipeline behavior modification\n- Guard-style checks already exist (e.g., checking feature.current_stage before entering planning block)\n- _get_per_board_config returns Optional[dict] and is already called in property accessors",
+  "test_results": {
+    "ts": "2026-03-18T21:36:39.423295",
+    "verdict": "PASS",
+    "results": {
+      "passed": 18,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 18 terminal_stage tests pass (7 pipeline tests + 11 Config tests). Tests cover all required behaviors in test spec sections 1.1-1.16: Config validation (valid values, None for absent/null/empty/invalid/non-string, warning logs, case insensitivity, whitespace handling) and pipeline guards (plan/spec terminal stages, full pipeline regression, stage guard bug fix, priority over human approval, history entries). Edge cases in section 2 (review exhaustion, feature past boundary, malformed JSON) are handled by existing error handling and integration scenarios."
+  }
+}

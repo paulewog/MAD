@@ -1,0 +1,246 @@
+{
+  "id": "d6578c0a",
+  "board": "mad",
+  "title": "webui loads with all items initially and then clears",
+  "type": "bug",
+  "created": "2026-03-18T13:53Z",
+  "description": "The webui sometimes loses all of its items.  Some of the time it gets a bunch of items back, but sometimes it just gets nothing back and it rewrites the entire ui with no items.",
+  "done_script": "",
+  "requires_human_approval": false,
+  "plan": "## Root Cause Analysis\n\nThe bug is caused by inconsistent feature payloads sent from the TUI client to the monitoring server. Three code paths push an unfiltered list of all features across all boards, while the majority of push paths correctly filter features to the active board only. Because the server unconditionally replaces a client's stored feature list on every state update, the server oscillates between holding a full cross-board snapshot and a correctly board-scoped snapshot for the same client. The web UI polls the server's aggregate endpoint, so when a filtered push lands, items disappear; when the next unfiltered periodic push fires, items reappear \u2014 producing the observed load-then-clear flicker.\n\nThe three problematic push sites are: the periodic server push timer callback, the auto-mode toggle handler, and the auto-refresh change-detection handler. All other push paths (answer handling, agent start, feature movement, etc.) correctly use the board-filtered loading method.\n\nA secondary issue is that the periodic push method is defined as synchronous but calls an async push method. Under Textual's `set_interval` dispatch, this means the coroutine may not be properly awaited, potentially allowing interleaved or dropped pushes.\n\n## Impact Assessment\n\n- **Severity:** High \u2014 the web UI intermittently shows an empty board, which is confusing and breaks usability.\n- **Scope:** Only affects the web dashboard view; the TUI itself displays correctly because it always loads board-filtered features for rendering.\n- **Related risk:** The misleading comment on the auto-refresh push path ('push ALL features for aggregate view') reflects a misunderstanding of the server's aggregation model and could cause future regressions if someone reads it and reintroduces unfiltered pushes elsewhere.\n\n## Fix Strategy\n\n1. **Standardize all push paths to use board-filtered feature loading.** The three unfiltered push call sites should use the same board-scoped loading method that all other push paths use. The server's aggregate endpoint is designed to aggregate features across multiple clients \u2014 it does not need any single client to push cross-board data. Each client pushing only its active board's features produces the correct aggregate view.\n\n2. **Remove the misleading comment** that suggests unfiltered pushes are needed for the aggregate view. This comment caused the bug in the first place and will cause regressions if left in place.\n\n3. **Make the periodic push method async** (or dispatch it through Textual's async-aware scheduling) so that the awaited push call is properly handled. This prevents potential interleaving or silently dropped pushes.\n\n## Risks\n\n- **Multi-board visibility in web UI:** If a user expects the web UI to show features from boards other than the TUI's active board, filtering pushes would hide those. However, the server aggregates across all connected clients, so if multiple TUI instances are running on different boards, the web UI will still show all boards. A single TUI instance can only show one board at a time anyway, so this is consistent.\n- **Regression from async change:** Making the periodic push async could surface latent issues if the push method has side effects that depend on synchronous execution order. This is low risk since the push method is a simple websocket send.\n\n## Scope\n\n- **In scope:** The three unfiltered push call sites in the TUI, the misleading comment, and the sync/async mismatch on the periodic push.\n- **Out of scope:** Server-side changes (the server's replacement behavior is correct by design), web UI polling logic, and any other TUI push paths (which are already correct).",
+  "plan_exploration_summary": "",
+  "impl_spec": "## Implementation Spec: Fix unfiltered server pushes causing web UI flicker\n\n### File: `pipeline/tui.py`\n\nAll three tasks modify the same file. No new files needed. No dependencies between tasks (can be done in any order).\n\n---\n\n### Task 1: Fix `_periodic_server_push` (lines 2090-2094)\n\n**What:** Change from `FeatureFile.list_all()` (unfiltered, all boards) to `self._load_features(self.active_board)` (board-filtered). Also make the method `async` so the `_push_to_server` coroutine (which is decorated with `@work(thread=False)`) is properly dispatched.\n\n**Current code:**\n```python\ndef _periodic_server_push(self) -> None:\n    \"\"\"Push current state to server periodically (agent status may change without feature changes).\"\"\"\n    if self._server_client and self._server_client.connected:\n        features = FeatureFile.list_all()\n        self._push_to_server(features[:])\n```\n\n**Change to:**\n```python\nasync def _periodic_server_push(self) -> None:\n    \"\"\"Push current state to server periodically (agent status may change without feature changes).\"\"\"\n    if self._server_client and self._server_client.connected:\n        features = self._load_features(self.active_board)\n        self._push_to_server(features[:])\n```\n\n**Details:**\n- Replace `FeatureFile.list_all()` with `self._load_features(self.active_board)` to only push features for the active board.\n- Change `def` to `async def`. Textual's `set_interval` supports async callbacks \u2014 when it receives a coroutine function, it will properly await it. This ensures the `_push_to_server` worker is dispatched within a proper async context.\n- `_push_to_server` is decorated with `@work(thread=False)` which makes it return a Textual Worker \u2014 calling it from sync or async context both work, but being in an async context is cleaner and avoids potential issues with the event loop.\n\n**Dependencies:** None.\n\n---\n\n### Task 2: Fix `_handle_set_auto_mode` (lines 2128-2138)\n\n**What:** Change from `FeatureFile.list_all()` to `self._load_features(self.active_board)`.\n\n**Current code (lines 2136-2138):**\n```python\n        if self._server_client and self._server_client.connected:\n            features = FeatureFile.list_all()\n            self._push_to_server(features[:])\n```\n\n**Change to:**\n```python\n        if self._server_client and self._server_client.connected:\n            features = self._load_features(self.active_board)\n            self._push_to_server(features[:])\n```\n\n**Details:**\n- Single line change: replace `FeatureFile.list_all()` with `self._load_features(self.active_board)`.\n- This handler is called when the web UI toggles auto-plan or auto-implement mode. The push confirms the state change back to the server.\n\n**Dependencies:** None.\n\n---\n\n### Task 3: Fix `_check_for_changes` auto-refresh handler (lines 2634-2637)\n\n**What:** Change from `FeatureFile.list_all()` to `self._load_features(self.active_board)` and remove the misleading comment.\n\n**Current code (lines 2634-2637):**\n```python\n            # Push state to server if connected (push ALL features for aggregate view)\n            if self._server_client and self._server_client.connected:\n                all_features = FeatureFile.list_all()\n                self._push_to_server(all_features[:])\n```\n\n**Change to:**\n```python\n            if self._server_client and self._server_client.connected:\n                self._push_to_server(features[:])\n```\n\n**Details:**\n- Remove the misleading comment `# Push state to server if connected (push ALL features for aggregate view)` \u2014 this comment caused the bug by suggesting unfiltered pushes are needed.\n- Remove the `all_features = FeatureFile.list_all()` line entirely.\n- Use the `features` variable that already exists in this scope (loaded at the top of `_check_for_changes` via `self._load_features(board)` \u2014 see the surrounding code context). This variable already contains the board-filtered feature list.\n- Remove the `all_features` variable name since it's no longer needed.\n\n**Dependencies:** None.\n\n---\n\n### Verification\n\nAfter applying all three changes:\n- Every call to `_push_to_server` and direct `push_state` in the TUI should use board-filtered features from `self._load_features(self.active_board)` or equivalent.\n- No remaining calls to `FeatureFile.list_all()` should feed into server pushes.\n- The web UI should no longer flicker between showing all items and showing only the active board's items.\n\nGrep verification command: `grep -n 'list_all' pipeline/tui.py` should return no lines that are part of server push code paths.",
+  "test_spec": "# Test Spec: webui loads with all items initially and then clears\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Periodic server push uses board-filtered features\n- **Behavior:** `_periodic_server_push` must call `self._load_features(self.active_board)` instead of `FeatureFile.list_all()`.\n- **Success criteria:** When the periodic push fires, the features sent to the server contain only features belonging to the TUI's active board, not features from other boards.\n- **Expected output:** The server receives a feature list scoped to the active board. If the active board has 3 features and another board has 5, the push payload contains exactly 3 features.\n\n### 1.2 Auto-mode toggle push uses board-filtered features\n- **Behavior:** `_handle_set_auto_mode` must call `self._load_features(self.active_board)` instead of `FeatureFile.list_all()` when pushing state after toggling auto-plan or auto-implement.\n- **Success criteria:** After toggling auto-plan or auto-implement mode, the features pushed to the server are scoped to the active board only.\n- **Expected output:** Same as 1.1 \u2014 only active board features in the push payload.\n\n### 1.3 Auto-refresh change-detection push uses board-filtered features\n- **Behavior:** `_check_for_changes` must use the already-loaded board-filtered `features` variable (from `self._load_features(board)` earlier in the method) instead of calling `FeatureFile.list_all()` and storing in `all_features`.\n- **Success criteria:** When auto-refresh detects changes and pushes state, the features sent are the same board-filtered list used for the kanban refresh \u2014 not a cross-board superset.\n- **Expected output:** The push payload matches the features variable already in scope, containing only the active board's features.\n\n### 1.4 Misleading comment is removed\n- **Behavior:** The comment `# Push state to server if connected (push ALL features for aggregate view)` at the auto-refresh push site must be removed.\n- **Success criteria:** No comment referencing 'push ALL features for aggregate view' exists in the codebase.\n- **Expected output:** A grep for 'push ALL features for aggregate view' in pipeline/tui.py returns zero matches.\n\n### 1.5 Periodic push method is async\n- **Behavior:** `_periodic_server_push` must be declared as `async def` rather than `def`.\n- **Success criteria:** The method signature is `async def _periodic_server_push(self) -> None`. Textual's `set_interval` properly awaits the coroutine.\n- **Expected output:** The method can be awaited. The `_push_to_server` call within it is dispatched in a proper async context.\n\n### 1.6 All push paths are consistent\n- **Behavior:** Every code path that calls `_push_to_server` or directly calls `push_state` must use board-filtered features from `self._load_features(self.active_board)` or equivalent.\n- **Success criteria:** No server push site in the TUI uses `FeatureFile.list_all()` without a board argument.\n- **Expected output:** A grep for `FeatureFile.list_all()` (no board argument) in push-related code paths returns zero matches.\n\n### 1.7 Web UI no longer flickers\n- **Behavior:** With all three push sites fixed, the web UI should receive a consistent board-scoped feature list on every server push, eliminating the oscillation between full and filtered snapshots.\n- **Success criteria:** Over multiple polling cycles, the web UI's /api/board endpoint returns a stable feature list that does not alternate between showing all items and showing none/fewer items.\n- **Expected output:** The feature count returned by the server remains consistent between consecutive polls (no load-then-clear pattern).\n\n## 2. Edge Cases\n\n### 2.1 Empty board\n- When the active board has zero features, the push should send an empty list. The server should accept this and the web UI should show an empty board \u2014 not stale data from a previous push.\n\n### 2.2 Board switch during periodic push\n- If the user switches boards between periodic push intervals, the next periodic push should send features for the newly active board, not the previous one. No cross-board contamination should occur.\n\n### 2.3 Multiple TUI clients on different boards\n- Client A on board-X pushes board-X features. Client B on board-Y pushes board-Y features. The /api/board aggregate endpoint should return features from both boards via cross-client aggregation \u2014 not because any single client sent cross-board data.\n\n### 2.4 Server disconnected during push\n- If the server connection drops between the `connected` check and the actual push, the push should fail gracefully (the existing try/except in `_push_to_server` handles this). No crash, no stale state retained.\n\n### 2.5 Rapid auto-mode toggles\n- Toggling auto-plan or auto-implement multiple times in quick succession should result in multiple pushes, each with the correct board-filtered feature list. No interleaving of filtered/unfiltered payloads.\n\n### 2.6 Auto-refresh fires concurrently with periodic push\n- Both `_check_for_changes` and `_periodic_server_push` may fire close together. After the fix, both send board-filtered features, so concurrent execution should not produce inconsistent server state.\n\n### 2.7 Single board setup\n- When only one board exists, the fix should be transparent \u2014 `FeatureFile.list_all()` and `self._load_features(board)` return the same features. Verify no regression in this common case.\n\n## 3. What Constitutes Failure\n\n### 3.1 Any push site sends unfiltered features\n- If any of the three fixed push sites calls `FeatureFile.list_all()` without a board argument, the test fails. This is the root cause of the bug.\n\n### 3.2 Server receives inconsistent payloads from the same client\n- If consecutive pushes from the same TUI client alternate between different feature set sizes (indicating filtered vs. unfiltered), the test fails.\n\n### 3.3 Web UI shows items then clears them\n- If the web UI's feature list drops to zero or changes size between polls when no actual feature changes occurred, the test fails.\n\n### 3.4 Misleading comment persists\n- If the comment 'push ALL features for aggregate view' still exists in the code after the fix, the test fails \u2014 this comment will cause future regressions.\n\n### 3.5 Periodic push is still synchronous\n- If `_periodic_server_push` is still defined as `def` (not `async def`), the test fails \u2014 the async mismatch could cause interleaved pushes.\n\n### 3.6 Regression in existing push paths\n- If any previously correct push path (e.g., `_handle_server_answers`, `_handle_start_agent`, `_on_server_connected`) is changed to use unfiltered features, the test fails.\n\n## 4. Out of Scope\n\n- **Server-side logic:** The server's unconditional replace at hub.go:354 and the /api/board aggregation at api.go:409-417 are correct by design. Do not test or modify server behavior.\n- **Web UI polling logic:** The web UI's polling interval, rendering, and DOM updates are not under test.\n- **Visual/UI timing assertions:** Do not assert on specific timing of when items appear or disappear in the web UI. The fix is about payload correctness, not timing.\n- **Performance benchmarks:** Do not measure push latency, polling frequency, or feature loading speed.\n- **Other TUI push paths:** Push sites that already use `self._load_features(self.active_board)` (e.g., `_handle_server_answers` at line 2119, `_on_server_connected`) are already correct and do not need re-verification beyond a non-regression check.\n- **FeatureFile.list_all() behavior:** The method itself is correct; the bug is in how it was called (without board argument). Do not test the method's internals.\n- **Textual framework internals:** Do not test how Textual dispatches `set_interval` callbacks or handles async vs sync methods \u2014 only verify the method signature is async.",
+  "impl_notes": "Fixed web UI flicker bug by making all three TUI server push code paths consistently use board-filtered feature loading. Changed _periodic_server_push from sync to async and replaced FeatureFile.list_all() with self._load_features(self.active_board). Changed _handle_set_auto_mode to use board-filtered loading. Changed _check_for_changes to use the existing features variable and removed the misleading comment about 'push ALL features for aggregate view'. This eliminates oscillation between full cross-board and filtered single-board payloads that caused the web UI to flicker.",
+  "ideation_summaries": [
+    "The bug stems from the server's unconditional replacement of client features on every state_update message (hub.go:354). Three TUI code paths call FeatureFile.list_all() without a board filter and push results to the server: the periodic push (tui.py:2093, every 5 seconds), the auto-refresh handler (tui.py:2636), and the auto-mode toggle (tui.py:2137). If list_all() returns an empty list \u2014 due to a transient filesystem issue, timing during startup before boards are initialized, or a brief I/O glitch \u2014 the server replaces the entire feature list with nothing. The webui then polls /api/board, gets the empty state from the server, and renders zero items. Potential fixes include: (1) adding a guard in hub.go to reject empty feature lists when the previous state was non-empty (stale-is-better-than-empty pattern), (2) having the TUI validate that list_all() returned a non-empty result before pushing (or at least log a warning), and (3) adding a timestamp or sequence number to state_update messages so the server can detect stale or out-of-order updates. The simplest immediate fix is option 1 \u2014 refuse to overwrite a non-empty feature list with an empty one on the server side.",
+    "The previous proposal correctly identifies the unconditional replacement at hub.go:354 as the proximate cause, but the recommended fix (option 1 \u2014 refuse to overwrite non-empty with empty) is a dangerous band-aid that masks the real problem and introduces new ones. First, the stale-is-better-than-empty guard would silently suppress legitimate empty states \u2014 if a user genuinely deletes or moves all items from a board, the server would refuse to reflect that, creating a ghost-data problem where the webui shows items that no longer exist on disk. Second, the proposal attributes empty list_all() returns to 'transient filesystem issues' and 'I/O glitches' without evidence \u2014 the far more likely cause is a race condition during TUI startup or board initialization, where the periodic push fires before the board directory is populated. The guard doesn't fix this race; it just hides it. Third, the proposal overlooks a critical architectural issue: list_all() is called without a board filter, meaning each TUI client pushes features from ALL boards. If two TUI instances are connected to different boards, each one's periodic push overwrites the server's view of that client with a potentially stale cross-board snapshot. The real fix should address the source: (a) the TUI should not push state until it has confirmed board initialization is complete (a simple ready flag), and (b) push_state should send only features for the client's active board, not a global list_all(). Option 3 (sequence numbers) adds complexity without addressing why bad data is being sent in the first place.",
+    "Both prior analyses converge on the right area but miss the simplest explanation: the bug is just three copy-paste mistakes. The codebase already has a correct pattern used in ~9 other push sites \u2014 `self._load_features(self.active_board)` which calls `FeatureFile.list_all(board=self.active_board)` \u2014 but three paths (periodic push at tui.py:2093, auto-refresh at tui.py:2636, auto-mode toggle at tui.py:2137) call `FeatureFile.list_all()` with no board argument, which defaults to returning features from ALL boards. When the server receives this unfiltered list at hub.go:354 and unconditionally replaces client.state.Features, the webui gets a cross-board snapshot that may appear empty for the active board's view, or gets overwritten moments later by another client's filtered push. The fix is mechanical: replace the three bare `FeatureFile.list_all()` calls with `self._load_features(self.active_board)` to match the existing correct pattern. No server-side guards, no sequence numbers, no ready flags needed \u2014 the architecture is sound, these are just three call sites that forgot to pass the board filter. The second critique's point about a startup race is valid but secondary; even if a ready flag were added, the unfiltered push would still cause cross-board pollution in steady state.",
+    "The third proposal's 'just three copy-paste mistakes' diagnosis is mostly right but overlooks a critical contradiction: the auto-refresh path at tui.py:2636 intentionally calls FeatureFile.list_all() without a board filter (the comment on line 2634 literally reads 'push ALL features for aggregate view'), and the /api/board endpoint in api.go:411-417 aggregates features across all clients \u2014 meaning the server-side architecture is designed for unfiltered, cross-board pushes. Blindly replacing all three bare list_all() calls with board-filtered _load_features() would break the webui's aggregate view for multi-board setups. The actual fix needs to distinguish two concerns: (1) the periodic push and auto-mode toggle (tui.py:2093, 2137) should indeed use _load_features(self.active_board) since they're just heartbeats that shouldn't overwrite state with a differently-shaped payload, but (2) the auto-refresh path (tui.py:2636) needs a different solution \u2014 either the server should track features per-board-per-client rather than a flat list, or the TUI should send board-tagged features so the server can merge rather than replace. The unconditional assignment at hub.go:354 is the real structural defect: it does a full replace when it should do a merge or at minimum a board-scoped replace. Without fixing the server's replace semantics, any client-side filtering is just choosing which data to lose.",
+    "The prior critiques correctly identify the three unfiltered list_all() calls and the unconditional server-side replace at hub.go:354, but none pinpoints the actual flickering mechanism: the same TUI client sends two differently-shaped payloads to the same server field depending on which code path fires. The periodic push (tui.py:2093), auto-refresh (tui.py:2636), and auto-mode toggle (tui.py:2137) send unfiltered features (all boards), while board-filtered pushes at lines 2119 and 3330 send only the active board's features via _load_features(self.active_board). Because hub.go:354 does an unconditional replace (client.state.Features = features), the server oscillates between holding all-board data and single-board data for the same client. The webui polls /api/board which aggregates across clients \u2014 so when a filtered push lands between polls, the webui sees only active-board items; when the next periodic (unfiltered) push fires 0-5 seconds later, items reappear. This explains the reported symptom precisely: items load, then clear, then sometimes come back. The fourth critique's suggestion to fix the server's replace semantics is the right direction but overcomplicates it \u2014 the simplest correct fix is to make all push paths consistent by always sending unfiltered features. The two filtered call sites (lines 2119 and 3330) should use FeatureFile.list_all() instead of self._load_features(self.active_board), matching the pattern already used by the three other push sites. This preserves the aggregate view the /api/board endpoint is designed for, avoids any server-side merge complexity, and ensures the client never sends a partial snapshot that overwrites a complete one.",
+    "The fifth proposal's fix \u2014 making all push paths consistently use unfiltered FeatureFile.list_all() \u2014 correctly identifies the oscillation mechanism but introduces a worse problem: it means the server always holds a cross-board superset for every client, so the /api/board endpoint (api.go:411-417) will return duplicate features when multiple TUI clients on the same board are connected, since it naively concatenates all clients' feature lists with no deduplication. The real issue is that hub.go:354 does a flat unconditional replace with no concept of board identity, while the /api/board aggregation at api.go:411-417 assumes each client's feature list is a non-overlapping partition. Making all pushes unfiltered guarantees overlap and duplication in the webui. The correct minimal fix is two-fold: (1) make ALL client-side push paths use the same board-filtered call (_load_features(self.active_board)) at lines 2093, 2137, and 2636 so every push is consistently scoped \u2014 this eliminates the oscillation between full and filtered snapshots that causes the flickering \u2014 and (2) the comment at line 2634 ('push ALL features for aggregate view') reflects a misunderstanding of the server architecture, since /api/board already aggregates across clients, so each client only needs to contribute its own board's features for the aggregate to work correctly. The fifth proposal's concern that filtered pushes would break the aggregate view is wrong: if client A pushes board-X features and client B pushes board-Y features, /api/board returns both boards' features via client aggregation \u2014 that's the designed aggregation path, not intra-client cross-board pushes.",
+    "The sixth proposal's fix (make all pushes board-filtered via _load_features(self.active_board)) is the correct direction and the simplest complete fix, but it understates a remaining edge case: the _on_server_connected handler at line 2400 already uses _load_features(board), which is correct, but the _handle_server_answers handler at line 2119 also uses _load_features(self.active_board) \u2014 meaning only three call sites actually need changing (lines 2093, 2137, 2636), which is exactly the three identified. The fix is mechanical: replace FeatureFile.list_all() with self._load_features(self.active_board) at those three sites, and remove the misleading comment at line 2634 ('push ALL features for aggregate view'). The sixth critique correctly explains why this doesn't break aggregate views \u2014 /api/board at api.go:409-417 already aggregates across clients, so each client contributing only its active board's features is the designed aggregation model. The comment at line 2634 was the original misunderstanding that led to the unfiltered calls being written in the first place.",
+    "The consensus fix (replacing FeatureFile.list_all() with self._load_features(self.active_board) at lines 2093, 2137, and 2636) is correct and mechanically simple, but the discussion has overlooked a subtle sequencing issue in _periodic_server_push: it's a synchronous method (no async) calling _push_to_server which is async, meaning the await inside push_state may not execute as expected depending on how Textual's set_interval dispatches it \u2014 if _push_to_server is sometimes fire-and-forget rather than properly awaited, a second push could race the first and the server could still receive interleaved payloads. The three-line fix is necessary but the periodic push method should also be made async (or use call_later/run_worker) to ensure pushes are serialized. Additionally, the misleading comment at line 2634 should be removed as proposed, since it will otherwise invite a future contributor to 'fix' the filtered call back to an unfiltered one."
+  ],
+  "ideation": "",
+  "ideation_prompt": "",
+  "history": [
+    {
+      "ts": "2026-03-18T13:53Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-18T13:53Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-18T13:53Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-18T13:53Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T13:58Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-18T14:00Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T14:02Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-18T14:03Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 1)"
+    },
+    {
+      "ts": "2026-03-18T14:04Z",
+      "stage": "IDEATING",
+      "note": "Cycle 1: progress, continuing"
+    },
+    {
+      "ts": "2026-03-18T14:04Z",
+      "stage": "IDEATING",
+      "note": "Starting round 5 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T14:06Z",
+      "stage": "IDEATING",
+      "note": "Starting round 6 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-18T14:07Z",
+      "stage": "IDEATING",
+      "note": "Starting round 7 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T14:08Z",
+      "stage": "IDEATING",
+      "note": "Starting round 8 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-18T14:08Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 2)"
+    },
+    {
+      "ts": "2026-03-18T14:09Z",
+      "stage": "IDEATING",
+      "note": "Consensus reached after 8 rounds"
+    },
+    {
+      "ts": "2026-03-18T14:09Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-18T14:23Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-18T14:23Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T14:24Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T14:24Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T14:25Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-18T14:25Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-18T14:25Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-18T14:25Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-18T14:26Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-18T14:28Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-18T14:28Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-18T14:31Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-18T14:31Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-18T14:31Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-18T14:35Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-18T14:35Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-18T14:36Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - All three fix sites verified: _periodic_server_push is async and uses board-filte..."
+    },
+    {
+      "ts": "2026-03-18T14:36Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-18T18:15Z",
+      "stage": "DONE",
+      "note": "Moved via web UI"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-18T14:25Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-18T14:36Z",
+      "verdict": "PASS",
+      "summary": "All three fix sites verified: _periodic_server_push is async and uses board-filtered _load_features(self.active_board) (line 2090-2094), _handle_set_auto_mode uses board-filtered loading (line 2137), _check_for_changes uses the existing board-filtered features variable (line 2635). Misleading comment removed. No FeatureFile.list_all() calls remain in push paths. All 5 push sites are consistent.",
+      "feedback": null
+    }
+  ],
+  "ideation_cycle_verdicts": [
+    {
+      "cycle": 1,
+      "verdict": "progress",
+      "reason": "Round 4 introduced a genuinely new and critical architectural finding \u2014 the auto-refresh path intentionally uses unfiltered list_all() for an aggregate view, and /api/board is designed for cross-client aggregation \u2014 which invalidates the round 3 'just three copy-paste mistakes' proposal and reshapes the solution to require both client-side scoping and server-side merge semantics.",
+      "rounds_completed": 4
+    },
+    {
+      "cycle": 2,
+      "verdict": "consensus",
+      "reason": "Rounds 6, 7, and 8 all agree on the same three-line fix (replace unfiltered list_all() with _load_features(self.active_board) at lines 2093, 2137, 2636) and removal of the misleading comment; round 8 adds only a minor async hardening suggestion, not a new substantive critique or alternative approach.",
+      "rounds_completed": 8
+    }
+  ],
+  "Ideation": "The webui flicker bug \u2014 items load initially then clear \u2014 is caused by inconsistent push payloads from the same TUI client. Three code paths (periodic push at tui.py:2093, auto-mode toggle at tui.py:2137, and auto-refresh at tui.py:2636) call `FeatureFile.list_all()` without a board filter, sending cross-board feature snapshots to the server. Meanwhile, other push paths (lines 2119 and ~3330) correctly use `self._load_features(self.active_board)`. Because hub.go:354 unconditionally replaces `client.state.Features` on every `state_update` message, the server oscillates between holding a full cross-board snapshot and a single-board snapshot for the same client. The webui polls `/api/board` (api.go:409-417), which aggregates features across all clients \u2014 so when a filtered push lands, the webui sees fewer items; when the next periodic unfiltered push fires, items return. This produces the observed load-then-clear pattern.\n\nThe fix is mechanical: replace the three bare `FeatureFile.list_all()` calls with `self._load_features(self.active_board)` at lines 2093, 2137, and 2636. This makes all push paths consistently board-scoped. The `/api/board` aggregate view is not broken by this change \u2014 it is designed to aggregate across clients, so client A pushing board-X features and client B pushing board-Y features produces the correct multi-board aggregate. The misleading comment at line 2634 ('push ALL features for aggregate view') reflects a misunderstanding that caused the unfiltered calls to be written in the first place and should be removed to prevent future regression.\n\nA secondary concern raised in round 8 is that `_periodic_server_push` may not be properly async, meaning the `await` inside `push_state` could behave unexpectedly under Textual's `set_interval` dispatch, potentially allowing interleaved pushes. Making the periodic push method async (or dispatching via `call_later`/`run_worker`) would serialize pushes and eliminate any residual race. This is a hardening step rather than a root cause fix, but worth addressing to prevent edge-case flickering even after the primary fix.\n\nAlternative approaches considered and rejected: (1) server-side empty-list guard (stale-is-better-than-empty) \u2014 would suppress legitimate empty states and mask the real race; (2) sequence numbers on state_update messages \u2014 adds complexity without addressing why inconsistent payloads are sent; (3) making all pushes unfiltered \u2014 preserves the oscillation and introduces deduplication problems when multiple clients share a board. The consensus approach (board-filtered client-side pushes) is the minimal correct fix aligned with the existing architecture.\n\n[Ideation concluded by consensus after 8 rounds, 2 cycles.]",
+  "test_results": {
+    "ts": "2026-03-18T07:35:45.090147",
+    "verdict": "PASS",
+    "results": {
+      "passed": 112,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All required behaviors verified via code inspection: (1) _periodic_server_push uses board-filtered features via self._load_features(self.active_board) at line 2093, (2) _handle_set_auto_mode uses board-filtered features at line 2137, (3) _check_for_changes uses board-filtered features from existing variable at line 2635, (4) misleading comment 'push ALL features for aggregate view' removed (no grep match), (5) _periodic_server_push is async def at line 2090, (6) all push paths verified to use board-filtered features (lines 2094, 2138, 2635, 3329). No specific unit tests exist for this feature, but related tests (test_server_client.py: 94 passed, test_auto_mode.py: 18 passed) pass successfully."
+  }
+}

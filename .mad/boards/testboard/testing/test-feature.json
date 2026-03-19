@@ -1,9 +1,9 @@
 {
-  "id": "ea854bc0",
+  "id": "e0239acf",
   "board": "testboard",
   "title": "Test Feature",
   "type": "feature",
-  "created": "2026-03-17T18:15Z",
+  "created": "2026-03-18T14:33Z",
   "description": "Description",
   "done_script": "",
   "requires_human_approval": false,
@@ -17,17 +17,17 @@
   "ideation_prompt": "",
   "history": [
     {
-      "ts": "2026-03-17T18:15Z",
+      "ts": "2026-03-18T14:33Z",
       "stage": "IDEAS",
       "note": "Idea created"
     },
     {
-      "ts": "2026-03-17T18:15Z",
+      "ts": "2026-03-18T14:33Z",
       "stage": "FIX_FEEDBACK",
-      "note": "Fixed issues per review feedback via <MagicMock name='mock.for_phase().agent.name' id='1366634873..."
+      "note": "Fixed issues per review feedback via <MagicMock name='mock.for_phase().agent.name' id='1376483472..."
     },
     {
-      "ts": "2026-03-17T18:15Z",
+      "ts": "2026-03-18T14:33Z",
       "stage": "TESTING",
       "note": "Moved to testing phase after fixing feedback"
     }
@@ -36,7 +36,7 @@
   "plan_reviews": [],
   "impl_reviews": [
     {
-      "ts": "2026-03-17T18:15Z",
+      "ts": "2026-03-18T14:33Z",
       "verdict": "FAIL",
       "summary": "Bug in login function",
       "feedback": "Fix it"

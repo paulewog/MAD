@@ -22,7 +22,7 @@
     "rounds": [
       {
         "cli": "opencode",
-        "model": "minimax/MiniMax-M2.5"
+        "model": "minimax-coding-plan/MiniMax-M2.5"
       },
       {
         "cli": "claude",
@@ -30,7 +30,7 @@
       },
       {
         "cli": "opencode",
-        "model": "minimax/MiniMax-M2.5"
+        "model": "minimax-coding-plan/MiniMax-M2.5"
       },
       {
         "cli": "claude",
@@ -39,12 +39,14 @@
     ]
   },
   "default_agent": "claude",
-  "agent_defaults": {
+    "agent_defaults": {
     "opencode": {
-      "model": "minimax/MiniMax-M2.5"
+      "model": "minimax-coding-plan/MiniMax-M2.5",
+      "command": "/home/paulewog/.opencode/bin/opencode"
     },
     "claude": {
-      "model": "opus"
+      "model": "opus",
+      "command": "/home/paulewog/.local/bin/claude"
     }
   },
   "models": {

@@ -3,7 +3,7 @@
     "id": "deploy-web-app",
     "label": "Deploy Web App",
     "description": "Deploy the server binary",
-    "command": "cd /home/paule/MAD/server && ./deploy.sh",
+    "command": "cd /home/paulewog/MAD/server && ./deploy.sh",
     "confirm": true
   }
 ]

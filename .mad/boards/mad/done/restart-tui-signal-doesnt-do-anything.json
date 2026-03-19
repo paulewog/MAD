@@ -1,0 +1,347 @@
+{
+  "id": "5a4c8c39",
+  "board": "mad",
+  "title": "Restart TUI signal doesn't do anything",
+  "type": "bug",
+  "created": "2026-03-18T14:40Z",
+  "description": "I have TUI up as well as the service.  I tried the \"restart TUI\" from the webui and it doesn't do anything.  (and another note, it uses javascript prompts/alerts rather than modals; I would like modal windows instead.)",
+  "done_script": "",
+  "requires_human_approval": false,
+  "plan": "## Root Cause Analysis\n\nThe restart TUI signal is fully functional on the server side \u2014 the Go WebSocket server correctly receives the HTTP POST, constructs a `restart_tui` JSON message, and delivers it to the TUI's WebSocket connection. However, the TUI's WebSocket client is instantiated without wiring the restart callback. The callback parameter exists in the client class constructor and the message handler checks for it, but since it's never provided, the handler silently does nothing when the message arrives. This is a straightforward wiring omission.\n\n## Impact Assessment\n\n- **Primary impact**: The \"Restart TUI\" button in the webui is completely non-functional \u2014 it appears to succeed (the server returns 200) but nothing actually happens on the TUI side.\n- **Secondary UX issue**: The restart flow (and several other actions) in the client-specific webui page use native browser `confirm()` and `alert()` dialogs instead of the custom modal pattern already established throughout the same page. The dashboard page already uses toast notifications for restart feedback, but the client detail page does not have the toast utility at all.\n- **No data loss risk**: The restart signal is a clean operational command; no user data is at stake.\n\n## Fix Strategy\n\nThis is a two-part fix:\n\n**Part 1 \u2014 Wire the restart callback in the TUI:**\n- Implement a restart handler method in the TUI class that performs graceful pre-restart cleanup (releasing locks, signaling active agents to stop) and then triggers a systemd restart of the TUI service.\n- The handler should first verify the systemd service is actually installed by checking for the unit file; if not installed, it should report an error back through the WebSocket so the webui can inform the user.\n- The restart command must be issued in a way that survives the parent process being killed by systemd (using process group detachment). The existing unit file uses `Restart=always`, but an explicit `systemctl restart` performs an atomic stop+start that suppresses the auto-restart during the stop phase, so there should be no race condition.\n- Pass this handler as the `on_restart` callback when constructing the WebSocket client.\n\n**Part 2 \u2014 Modernize the webui restart UX:**\n- Replace the native `confirm()` dialog with a confirmation modal following the existing modal-overlay pattern already used for script confirmation, rejection reasons, and move confirmations on the same page.\n- Replace all `alert()` calls in the restart flow with toast notifications, adding the toast utility function to the client detail page (it already exists on the dashboard page).\n- After restart is confirmed and the HTTP request succeeds, show immediate feedback via toast rather than blocking on an alert. Since the TUI process will be restarting, the WebSocket connection will drop \u2014 the close handler should recognize this as an intentional restart and show reconnecting status rather than treating it as an error.\n\n## Risks\n\n- **Agent cancellation timing**: If long-running agents are mid-operation when SIGTERM arrives, there's a brief window where cleanup may not complete. The cooperative cancellation with a short timeout before triggering restart mitigates this, but the exact timing depends on agent responsiveness.\n- **WebSocket reconnection UX**: After restart, the webui needs to handle the dropped connection gracefully. If reconnection polling is too aggressive or the restart takes longer than expected, the user may see confusing error states. This frontend state management is the most complex part of the fix.\n- **Service not installed path**: If the user is running the TUI directly (not via systemd), the restart button should clearly communicate that the service must be installed first, rather than failing silently.\n\n## Scope\n\n**In scope:**\n- Wiring the restart callback in the TUI WebSocket client\n- Implementing graceful pre-restart cleanup and systemd restart logic\n- Converting restart-related native dialogs to modals and toasts in the client detail webui page\n- Adding toast notification support to the client detail page\n- Handling the post-restart WebSocket reconnection state in the webui\n\n**Out of scope:**\n- Moving restart logic to the Go server (considered but too invasive for this fix)\n- Refactoring other native dialogs unrelated to the restart flow\n- Changes to the systemd unit file configuration\n- Adding new API endpoints (the existing restart endpoint works correctly)",
+  "plan_exploration_summary": "",
+  "impl_spec": "## Task 1: Add `_handle_remote_restart` async method to `PipelineApp` in `pipeline/tui.py`\n\n**File:** `pipeline/tui.py`\n**Action:** Add new method + add import\n\n**Add import** near line 46 (where `from lock import PipelineLock` is):\n```python\nfrom service import service_name_for_dir\n```\n\n**Add method** to `PipelineApp` class (after the existing `action_restart_agent` method around line 3377):\n\n```python\nasync def _handle_remote_restart(self) -> None:\n    \"\"\"Handle restart_tui signal from the server. Performs graceful cleanup then triggers systemd service restart.\"\"\"\n    import subprocess\n    from pathlib import Path\n\n    logger.info(\"Handling remote restart request\")\n\n    # Determine project directory from config\n    # mad_dir is .mad/ \u2014 parent is the project root\n    project_dir = self._config.mad_dir.parent\n    svc_name = service_name_for_dir(project_dir)\n    unit_path = Path.home() / \".config\" / \"systemd\" / \"user\" / f\"{svc_name}.service\"\n\n    # Check if systemd service is installed\n    if not unit_path.exists():\n        logger.warning(f\"Systemd service unit not found at {unit_path}, cannot restart\")\n        # Send error back to server so webui can inform user\n        if self._server_client and self._server_client._connected and self._server_client._ws:\n            import json as _json\n            try:\n                err_msg = _json.dumps({\"type\": \"restart_error\", \"error\": \"Service not installed. Install the systemd service first (pipeline service install).\"})\n                await self._server_client._ws.send(err_msg)\n            except Exception:\n                pass\n        return\n\n    # Graceful pre-restart cleanup:\n    # 1. Signal running agents to stop\n    if self._plan_agent_status and self._plan_agent_status.running:\n        self._plan_agent_status.kill_requested = True\n        logger.info(\"Requested plan agent kill for restart\")\n    if self._implement_agent_status and self._implement_agent_status.running:\n        self._implement_agent_status.kill_requested = True\n        logger.info(\"Requested implement agent kill for restart\")\n    if self._script_status and self._script_status.running:\n        logger.info(\"Script is running during restart \u2014 it will be terminated by SIGTERM\")\n\n    # 2. Release pipeline locks so the restarted instance can acquire them cleanly\n    try:\n        self._pipeline_lock.release('plan')\n    except Exception:\n        pass\n    try:\n        self._pipeline_lock.release('impl')\n    except Exception:\n        pass\n\n    # 3. Brief delay to allow cooperative agent cancellation\n    import asyncio\n    await asyncio.sleep(1.0)\n\n    # 4. Issue systemd restart with start_new_session=True so the subprocess\n    #    survives the parent TUI being killed by systemd's SIGTERM\n    logger.info(f\"Issuing systemctl --user restart {svc_name}\")\n    try:\n        subprocess.Popen(\n            ['systemctl', '--user', 'restart', svc_name],\n            start_new_session=True,\n            stdout=subprocess.DEVNULL,\n            stderr=subprocess.DEVNULL,\n        )\n    except Exception as e:\n        logger.error(f\"Failed to issue systemctl restart: {e}\")\n```\n\n**Dependencies:** None (service.py already exists with `service_name_for_dir`)\n\n---\n\n## Task 2: Wire `on_restart` callback in ServerClient instantiation in `pipeline/tui.py`\n\n**File:** `pipeline/tui.py`\n**Action:** Modify the `ServerClient(...)` constructor call at lines 2069-2086\n\n**Change:** Add `on_restart=self._handle_remote_restart` parameter to the ServerClient instantiation:\n\n```python\nself._server_client = ServerClient(\n    url=server_cfg.url,\n    api_key=server_cfg.api_key,\n    client_id=server_cfg.client_id,\n    on_connect=self._on_server_connected,\n    on_answers_received=self._handle_server_answers,\n    on_set_auto_mode=self._handle_set_auto_mode,\n    on_start_agent=self._handle_start_agent,\n    on_idea_created=self._handle_create_idea,\n    on_move_requested=self._on_move_requested,\n    on_edit_description=self._handle_edit_description,\n    on_edit_done_script=self._handle_edit_done_script,\n    on_edit_title=self._handle_edit_title,\n    on_edit_item_type=self._handle_edit_item_type,\n    on_edit_ideation_prompt=self._handle_edit_ideation_prompt,\n    on_run_script=self._handle_run_script,\n    on_set_agent_for_phase=self._handle_set_agent_for_phase,\n    on_restart=self._handle_remote_restart,\n)\n```\n\n**Dependencies:** Task 1 (the `_handle_remote_restart` method must exist)\n\n---\n\n## Task 3: Add restart confirmation modal to `server/templates/client.html`\n\n**File:** `server/templates/client.html`\n**Action:** Add modal HTML and replace `confirm()`/`alert()` calls\n\n**3a. Add modal HTML** \u2014 Insert after the Move Confirmation Modal (after line 492):\n\n```html\n<!-- Restart Confirmation Modal -->\n<div class=\"modal-overlay\" id=\"restart-confirm-modal\" onclick=\"closeRestartModal(event)\">\n    <div class=\"modal\" onclick=\"event.stopPropagation()\" style=\"max-width:400px\">\n        <h3>Restart TUI</h3>\n        <p id=\"restart-confirm-message\" style=\"color:#c9d1d9;margin:0 0 1rem;font-size:0.9rem\"></p>\n        <div style=\"display:flex;gap:0.5rem;justify-content:flex-end\">\n            <button onclick=\"closeRestartModal()\" style=\"padding:0.5rem 1rem;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer\">Cancel</button>\n            <button id=\"restart-confirm-btn\" onclick=\"confirmRestart()\" style=\"padding:0.5rem 1rem;background:#d29922;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600\">Restart</button>\n        </div>\n    </div>\n</div>\n```\n\n**3b. Add `showToast()` function** \u2014 Add to the `<script>` section (after variable declarations, around line 500):\n\n```javascript\nfunction showToast(message, isError) {\n    var toast = document.createElement('div');\n    toast.style.cssText = 'position:fixed;bottom:20px;right:20px;background:' + (isError ? '#da3633' : '#238636') + ';color:#fff;padding:10px 20px;border-radius:6px;z-index:9999';\n    toast.textContent = message;\n    document.body.appendChild(toast);\n    setTimeout(function() { toast.remove(); }, 3000);\n}\n```\n\n**3c. Replace `restartClient()` function** (lines 632-648) with modal-based version:\n\n```javascript\nvar _restartClientID = null;\n\nfunction restartClient(clientID) {\n    _restartClientID = clientID;\n    document.getElementById('restart-confirm-message').textContent = \n        'Restart TUI instance ' + clientID + '? Running agents will be killed.';\n    document.getElementById('restart-confirm-modal').classList.add('active');\n}\n\nfunction closeRestartModal(e) {\n    if (e && e.target !== e.currentTarget) return;\n    document.getElementById('restart-confirm-modal').classList.remove('active');\n    _restartClientID = null;\n}\n\nfunction confirmRestart() {\n    var clientID = _restartClientID;\n    closeRestartModal();\n    if (!clientID) return;\n    \n    fetch('/api/clients/' + encodeURIComponent(clientID) + '/restart?key=' + encodeURIComponent(_dashKey), {\n        method: 'POST',\n        headers: {'Content-Type': 'application/json'}\n    })\n    .then(function(r) { return r.json(); })\n    .then(function(data) {\n        if (data.error) {\n            showToast('Restart failed: ' + data.error, true);\n        } else {\n            showToast('Restart signal sent \u2014 TUI will restart shortly');\n        }\n    })\n    .catch(function(err) { showToast('Error: ' + err, true); });\n}\n```\n\n**Dependencies:** None\n\n---\n\n## Task 4: Add restart confirmation modal to `server/templates/index.html`\n\n**File:** `server/templates/index.html`\n**Action:** Replace `confirm()`/`alert()` calls with modal and toast\n\n**4a. Add modal HTML** \u2014 Insert before the `<script>` section (find the appropriate location near other modal elements, or at end of body before scripts):\n\n```html\n<!-- Restart Confirmation Modal -->\n<div class=\"modal-overlay\" id=\"restart-confirm-modal\" onclick=\"closeRestartModal(event)\">\n    <div class=\"modal\" onclick=\"event.stopPropagation()\" style=\"max-width:400px\">\n        <h3>Restart TUI</h3>\n        <p id=\"restart-confirm-message\" style=\"color:#c9d1d9;margin:0 0 1rem;font-size:0.9rem\"></p>\n        <div style=\"display:flex;gap:0.5rem;justify-content:flex-end\">\n            <button onclick=\"closeRestartModal()\" style=\"padding:0.5rem 1rem;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;cursor:pointer\">Cancel</button>\n            <button onclick=\"confirmRestart()\" style=\"padding:0.5rem 1rem;background:#d29922;color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600\">Restart</button>\n        </div>\n    </div>\n</div>\n```\n\n**4b. Replace `restartClient()` function** (lines 1085-1102) with modal-based version:\n\n```javascript\nvar _restartClientID = null;\n\nfunction restartClient(clientID) {\n    _restartClientID = clientID;\n    document.getElementById('restart-confirm-message').textContent = \n        'Restart TUI instance ' + clientID + '? Running agents will be killed.';\n    document.getElementById('restart-confirm-modal').classList.add('active');\n}\n\nfunction closeRestartModal(e) {\n    if (e && e.target !== e.currentTarget) return;\n    document.getElementById('restart-confirm-modal').classList.remove('active');\n    _restartClientID = null;\n}\n\nfunction confirmRestart() {\n    var clientID = _restartClientID;\n    closeRestartModal();\n    if (!clientID) return;\n    var key = getKey();\n    \n    fetch('/api/clients/' + encodeURIComponent(clientID) + '/restart?key=' + encodeURIComponent(key), {\n        method: 'POST',\n        headers: {'Content-Type': 'application/json'}\n    })\n    .then(function(r) { return r.json(); })\n    .then(function(data) {\n        if (data.error) {\n            showToast('Restart failed: ' + data.error, true);\n        } else {\n            showToast('Restart signal sent \u2014 TUI will restart shortly');\n        }\n    })\n    .catch(function(err) { showToast('Error: ' + err, true); });\n}\n```\n\n**4c. Update `showToast()` to support error styling** (line 1104-1109) \u2014 replace with:\n\n```javascript\nfunction showToast(message, isError) {\n    var toast = document.createElement('div');\n    toast.style.cssText = 'position:fixed;bottom:20px;right:20px;background:' + (isError ? '#da3633' : '#238636') + ';color:#fff;padding:10px 20px;border-radius:6px;z-index:9999';\n    toast.textContent = message;\n    document.body.appendChild(toast);\n    setTimeout(function() { toast.remove(); }, 3000);\n}\n```\n\n**Dependencies:** None\n\n---\n\n## Task 5: Handle `restart_error` messages from TUI in the Go server\n\n**File:** `server/api.go` (or the WebSocket hub message handler)\n**Action:** Forward `restart_error` messages from the TUI client to the webui. \n\nThis depends on how the server currently forwards messages from TUI clients to webui clients. Investigate the Hub's message routing:\n- If the server already forwards all messages from TUI clients to webui subscribers, no changes needed.\n- If not, add handling for `restart_error` message type so it reaches the webui.\n\n**Likely approach:** The server's Hub already broadcasts TUI state to webui clients. The `restart_error` message sent by the TUI on the WebSocket will arrive at the server. Check if the server's `Hub.handleMessage()` or equivalent forwards unknown message types, or if it needs explicit routing.\n\n**Fallback:** If wiring this through the server is complex, the webui can simply rely on the HTTP response from the restart API endpoint (which already returns errors like \"client not found or disconnected\"). The `restart_error` from the TUI is a nice-to-have for the \"service not installed\" case, but the primary feedback loop (HTTP 200 \u2192 toast) works without it. Mark this as optional/best-effort.\n\n**Dependencies:** Task 1 (the TUI sends the `restart_error` message)\n\n---\n\n## Summary of files modified:\n\n1. **`pipeline/tui.py`** \u2014 Add `from service import service_name_for_dir`, add `_handle_remote_restart()` method, wire `on_restart=` in ServerClient instantiation\n2. **`server/templates/client.html`** \u2014 Add restart confirmation modal HTML, add `showToast()` function, replace `restartClient()` with modal-based flow\n3. **`server/templates/index.html`** \u2014 Add restart confirmation modal HTML, replace `restartClient()` with modal-based flow, update `showToast()` to support error styling\n4. **`server/api.go`** \u2014 (Optional) Route `restart_error` messages from TUI to webui clients\n\n## Execution order:\n\nTasks 1-2 are sequential (1 before 2). Tasks 3 and 4 are independent of each other and of Tasks 1-2. Task 5 is optional and depends on Task 1.",
+  "test_spec": "# Test Specification: Restart TUI Signal Doesn't Do Anything\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Restart Callback Wiring\n- **Behavior:** The ServerClient instantiation in tui.py passes `on_restart=self._handle_remote_restart` as a constructor argument.\n- **Success criteria:** When a `restart_tui` WebSocket message arrives at the TUI client, the `_handle_remote_restart` method is invoked (not silently ignored as before).\n- **Expected output:** The callback fires; log output includes \"Handling remote restart request\".\n\n### 1.2 Systemd Service Detection\n- **Behavior:** `_handle_remote_restart` checks for the systemd unit file at `~/.config/systemd/user/<service_name>.service` before attempting restart.\n- **Success criteria (service installed):** When the unit file exists, the method proceeds to graceful cleanup and issues `systemctl --user restart`.\n- **Success criteria (service NOT installed):** When the unit file does not exist, the method does NOT call systemctl. Instead it logs a warning and sends a `restart_error` JSON message back through the WebSocket with an error string containing \"Service not installed\".\n- **Expected output:** Log message \"Systemd service unit not found at <path>, cannot restart\" when not installed; no subprocess spawned.\n\n### 1.3 Graceful Pre-Restart Cleanup\n- **Behavior:** Before issuing the systemctl restart, the handler performs cleanup steps.\n- **Success criteria:**\n  - If a plan agent is running (`_plan_agent_status.running` is True), its `kill_requested` flag is set to True.\n  - If an implement agent is running (`_implement_agent_status.running` is True), its `kill_requested` flag is set to True.\n  - Pipeline locks for both 'plan' and 'impl' are released (via `_pipeline_lock.release()`).\n  - A brief delay (~1 second) occurs after cleanup to allow cooperative agent cancellation before the systemctl command is issued.\n- **Expected output:** Log messages confirming agent kill requests; lock files are released; asyncio.sleep is awaited.\n\n### 1.4 Systemctl Restart Invocation\n- **Behavior:** The handler spawns `systemctl --user restart <service_name>` via `subprocess.Popen` with `start_new_session=True`.\n- **Success criteria:** The Popen call uses the correct service name derived from `service_name_for_dir(project_dir)`, passes `start_new_session=True`, and redirects stdout/stderr to DEVNULL.\n- **Expected output:** Log message \"Issuing systemctl --user restart <service_name>\"; the subprocess is created in its own session group so it survives the parent TUI process being killed.\n\n### 1.5 Restart Confirmation Modal in client.html\n- **Behavior:** Clicking the restart button in the client detail page opens a styled confirmation modal (not a native `confirm()` dialog).\n- **Success criteria:**\n  - A modal overlay with class `modal-overlay` and id `restart-confirm-modal` is present in the DOM.\n  - Clicking the restart button calls `restartClient(clientID)` which sets the modal's message text to include the client ID and activates the modal by adding the `active` class.\n  - The modal has Cancel and Restart buttons.\n  - Clicking Cancel (or clicking the overlay background) closes the modal without making any API call.\n  - Clicking Restart triggers the fetch POST to `/api/clients/<id>/restart` and closes the modal.\n- **Expected output:** No native browser `confirm()` dialog appears; the custom modal is displayed and functional.\n\n### 1.6 Restart Confirmation Modal in index.html\n- **Behavior:** Clicking the restart button on the dashboard page opens a styled confirmation modal (not a native `confirm()` dialog).\n- **Success criteria:** Same as 1.5 but for the dashboard template. The modal uses the same pattern and classes. The fetch call uses `getKey()` for the API key parameter.\n- **Expected output:** No native browser `confirm()` dialog appears; the custom modal is displayed and functional.\n\n### 1.7 Toast Notifications Replace alert() in client.html\n- **Behavior:** After confirming restart, success and error feedback is shown via toast notifications, not native `alert()` dialogs.\n- **Success criteria:**\n  - A `showToast(message, isError)` function exists in client.html's script section.\n  - On successful API response (no error in data), a green toast appears with text \"Restart signal sent \u2014 TUI will restart shortly\".\n  - On API error response (data.error is truthy), a red toast appears with \"Restart failed: <error message>\".\n  - On fetch/network error, a red toast appears with \"Error: <error details>\".\n  - No `alert()` calls remain in the restart flow.\n- **Expected output:** Transient toast notification elements appear at bottom-right of the page and auto-dismiss after ~3 seconds.\n\n### 1.8 Toast Notifications Replace alert() in index.html\n- **Behavior:** Same as 1.7 but for the dashboard template. The existing `showToast()` function is updated to support an `isError` parameter for red error styling.\n- **Success criteria:**\n  - `showToast(message, isError)` accepts an optional second parameter.\n  - When `isError` is true, the toast background is red (#da3633); when false/omitted, it is green (#238636).\n  - All `alert()` calls in the restart flow are replaced with `showToast()` calls.\n- **Expected output:** No `alert()` calls in the restart-related code path.\n\n### 1.9 Error Feedback for Service Not Installed\n- **Behavior:** When the TUI receives a restart signal but the systemd service is not installed, an error message is sent back through the WebSocket.\n- **Success criteria:** The `restart_error` message is a valid JSON object with keys `type` (value: \"restart_error\") and `error` (value: a human-readable string mentioning service installation).\n- **Expected output:** The WebSocket receives a JSON message: `{\"type\": \"restart_error\", \"error\": \"Service not installed. Install the systemd service first (pipeline service install).\"}`\n\n## 2. Edge Cases\n\n### 2.1 No Running Agents at Restart Time\n- **Scenario:** Restart is triggered when no agents are running (`_plan_agent_status` is None or not running, `_implement_agent_status` is None or not running).\n- **Expected behavior:** The cleanup phase skips agent kill requests without error. Lock release is still attempted. The systemctl restart proceeds normally.\n\n### 2.2 Lock Release Fails\n- **Scenario:** `_pipeline_lock.release('plan')` or `_pipeline_lock.release('impl')` raises an exception (e.g., lock was never acquired).\n- **Expected behavior:** The exception is caught silently (bare except). The restart still proceeds \u2014 lock release failure should not block the restart.\n\n### 2.3 Script Running During Restart\n- **Scenario:** A done-script is actively running (`_script_status.running` is True) when restart is triggered.\n- **Expected behavior:** The handler logs that a script is running but does not attempt to kill it directly \u2014 systemd's SIGTERM will handle termination. The restart proceeds.\n\n### 2.4 WebSocket Disconnected When Sending Error\n- **Scenario:** The TUI detects service not installed and tries to send `restart_error` back, but the WebSocket is already disconnected.\n- **Expected behavior:** The send attempt fails silently (caught by the try/except). No crash, no unhandled exception.\n\n### 2.5 Popen Fails to Spawn systemctl\n- **Scenario:** `subprocess.Popen(['systemctl', '--user', 'restart', ...])` raises an exception (e.g., systemctl binary not found, permission denied).\n- **Expected behavior:** The exception is caught and logged as an error. The TUI continues running (it does not crash). No toast or feedback reaches the webui in this case (the HTTP response already returned 200 from the server before the TUI attempted the restart).\n\n### 2.6 Multiple Rapid Restart Clicks\n- **Scenario:** User clicks restart multiple times quickly in the webui before the modal closes or API responds.\n- **Expected behavior:** The modal pattern prevents this \u2014 the first click opens the modal, and subsequent clicks on the restart button while the modal is open do nothing meaningful. The confirmRestart function clears `_restartClientID` after use, so a second invocation with null clientID returns early without making an API call.\n\n### 2.7 Cancel Button on Restart Modal\n- **Scenario:** User opens the restart modal then clicks Cancel.\n- **Expected behavior:** The modal closes (removes `active` class), `_restartClientID` is reset to null, and no API request is made.\n\n### 2.8 Overlay Click to Dismiss Modal\n- **Scenario:** User clicks the dark overlay background (outside the modal content area).\n- **Expected behavior:** The modal closes, same as clicking Cancel. The `onclick` handler on the overlay checks `e.target !== e.currentTarget` to avoid closing when clicking inside the modal content.\n\n### 2.9 Concurrent Restart and Agent Operation\n- **Scenario:** An agent is mid-API-call (e.g., waiting on Claude response) when restart is triggered.\n- **Expected behavior:** The `kill_requested` flag is set, but the agent may not check it until its current API call returns. The 1-second delay provides a brief window for cooperative cancellation. If the agent doesn't stop in time, systemd's SIGTERM will forcibly terminate it. This is acceptable \u2014 no data corruption should occur since pipeline state is persisted to disk before agent operations.\n\n## 3. What Constitutes Failure\n\n### 3.1 Restart Callback Not Firing\n- **Failure:** A `restart_tui` WebSocket message arrives but `_handle_remote_restart` is never called. This means the callback is still not wired.\n- **How to detect:** No \"Handling remote restart request\" log entry after sending restart signal.\n\n### 3.2 Silent Failure When Service Not Installed\n- **Failure:** The restart is attempted on a system without the systemd service installed, and no error feedback reaches the user (no log, no WebSocket error, no toast).\n- **How to detect:** Restart button appears to succeed but nothing happens and no error is shown.\n\n### 3.3 Native Dialogs Still Present\n- **Failure:** Any `confirm()` or `alert()` calls remain in the restart flow in either client.html or index.html.\n- **How to detect:** Code inspection shows `confirm(` or `alert(` in restart-related functions; or a native browser dialog appears when testing the restart flow.\n\n### 3.4 TUI Crash on Restart\n- **Failure:** The `_handle_remote_restart` method raises an unhandled exception that crashes the TUI or the WebSocket event loop.\n- **How to detect:** TUI process dies unexpectedly with a traceback; WebSocket connection drops without systemctl being called.\n\n### 3.5 Lock File Left Behind After Restart\n- **Failure:** The `.pipeline-lock.tui` lock file is not released before the restart, causing the new TUI instance to fail to acquire the lock on startup.\n- **How to detect:** After restart, the new TUI instance logs errors about being unable to acquire the pipeline lock.\n\n### 3.6 Toast Not Appearing\n- **Failure:** After confirming restart in the modal, no visual feedback is shown to the user (no toast notification).\n- **How to detect:** The page shows no transient notification element after the API call completes or fails.\n\n### 3.7 Modal Does Not Close After Confirmation\n- **Failure:** After clicking the Restart button in the modal, the modal remains visible/active on screen.\n- **How to detect:** The `active` class is still present on `restart-confirm-modal` after `confirmRestart()` executes.\n\n### 3.8 Systemctl Subprocess Not Detached\n- **Failure:** The systemctl process is spawned without `start_new_session=True`, causing it to be killed along with the parent TUI when systemd sends SIGTERM to the process group.\n- **How to detect:** The restart signal is sent but the TUI never actually restarts \u2014 systemctl is killed before it can complete the restart.\n\n## 4. Out of Scope\n\n- **Visual/CSS testing:** Exact styling, positioning, colors, or animations of modals and toasts are not verified. Only the presence and functional behavior of these elements matters.\n- **Timing assertions:** Exact duration of the asyncio.sleep delay, toast auto-dismiss timing, or systemd restart timing are not tested. Only the ordering of operations matters.\n- **Performance benchmarks:** How fast the restart completes, WebSocket reconnection latency, or agent cancellation responsiveness are not measured.\n- **WebSocket reconnection UI:** The post-restart reconnection experience (detecting the dropped connection, showing a reconnecting indicator, polling for the new instance) is noted in the plan as non-trivial frontend work but is NOT part of this test spec \u2014 it's a UX enhancement that can be tested separately.\n- **Go server message routing:** Whether the Go server forwards `restart_error` messages from the TUI to webui clients (Task 5 in the impl spec) is marked as optional/best-effort and is not a required test.\n- **Other native dialogs:** Only restart-related `confirm()` and `alert()` calls are in scope. Other native dialogs elsewhere in the templates are not tested.\n- **Systemd unit file configuration:** No changes to the unit file are expected; its `Restart=always` and `RestartSec` settings are not verified.\n- **End-to-end restart cycle:** A full integration test where the TUI actually restarts via systemd and the webui reconnects is out of scope \u2014 this would require a running systemd user session and is better suited for manual testing.\n- **Cross-browser compatibility:** Modal and toast behavior across different browsers is not tested.\n- **Mobile/responsive layout:** How modals and toasts render on small screens is not tested.",
+  "impl_notes": "Fixed the critical issue where async Python tests did not test the actual _handle_remote_restart method from tui.py. Rewrote all 8 Python tests in test_restart_tui_signal.py to import and test the real PipelineApp._handle_remote_restart method using proper mocking of dependencies (Path.home, subprocess.Popen, asyncio.sleep, server_client). Also fixed the import path issue in test_on_restart_parameter_exists by adding sys.path manipulation. All 14 tests (8 Python + 6 frontend) now pass. The actual implementation in tui.py (Tasks 1-2) and frontend templates (Tasks 3-4) was already complete.",
+  "ideation_summaries": [
+    "The TUI restart signal from the webui does nothing because the `on_restart` callback is never registered when ServerClient is instantiated in tui.py \u2014 the WebSocket handler in server_client.py (around line 403-409) receives the `restart_tui` message type and checks for an `on_restart` callback, but it's None since tui.py doesn't pass one during initialization (around line 2085). The fix requires: (1) wiring up the `on_restart` callback in tui.py's ServerClient instantiation to call the existing `action_restart()` logic (or a suitable variant that doesn't require a selected feature), and (2) the webui's restart confirmation and result feedback currently uses native JavaScript `confirm()` and `alert()` (in client.html lines 632-648 and index.html lines 1086-1102), but the codebase already has a well-established custom modal system (`.modal-overlay` with `.active` class toggling, dark themed dialogs) used for idea creation, script confirmation, rejection reasons, and move confirmations \u2014 the restart flow should be converted to use this existing modal pattern for UI consistency.",
+    "The previous proposal correctly identifies the root cause (on_restart callback not wired up in tui.py's ServerClient instantiation) and the JS confirm/alert issue, but it has several gaps: (1) It overlooks that action_restart() is synchronous while ServerClient expects on_restart to be async (Callable[[], Awaitable[None]]) \u2014 a naive wiring would fail or block the event loop, so an async wrapper method (e.g., _handle_restart) is needed that dispatches to the sync action_restart via call_from_thread or similar. (2) action_restart() requires self.selected_feature to be set or it silently returns with a warning \u2014 a remote restart from the webui has no concept of a 'selected feature', so the proposal needs to clarify what the restart actually restarts when triggered remotely (the entire TUI process? the pipeline for a specific item? all running agents?). Without resolving this ambiguity, the fix could wire up the callback but still effectively do nothing. (3) The proposal mentions client.html and index.html both need modal conversion but doesn't note that index.html already uses showToast() for success while client.html uses alert() \u2014 the two files have diverged, and the modal implementation needs to account for both templates having different existing modal infrastructure. (4) There's no consideration of race conditions: if the user triggers restart from the webui while the TUI is mid-pipeline-run, action_restart's _run_restart_async spawns a new AgentRunner without canceling the existing one, potentially causing conflicting concurrent pipeline operations.",
+    "The previous critiques correctly identify the root cause (on_restart callback not wired in tui.py line 2086) and the sync/async mismatch, but the proposed fix needs sharper scoping. The 'restart TUI' button should mean 'restart the TUI process itself' (os.execv or app.exit with auto-relaunch), not 'restart a pipeline for some feature' \u2014 action_restart() is the wrong target because it requires a selected_feature and restarts a pipeline phase, not the TUI. A new async _handle_remote_restart method should be added that (1) cancels any running agents by setting kill_requested on both _plan_agent_status and _implement_agent_status, (2) calls app.exit() or os.execv(sys.executable, ...) to cleanly restart the entire TUI process, and (3) is passed as on_restart=self._handle_remote_restart in the ServerClient instantiation at line 2086. For the modal conversion, both client.html (line 632-648) and index.html (line 1085-1099) should replace confirm()/alert() with the existing .modal-overlay pattern already used for idea creation and move confirmations \u2014 but note that the two templates have diverged (index.html uses showToast for success, client.html uses alert), so the modal implementation should standardize both to use the modal for confirmation and showToast for the success/error result. The race condition concern from the previous round is valid but largely moot if restart means 'restart the whole TUI process' rather than 'start a new pipeline run' \u2014 killing the process inherently cancels everything.",
+    "The round-3 proposal to use os.execv or app.exit() for a full TUI process restart has several unaddressed gaps: (1) os.execv(sys.executable, ...) must preserve sys.argv to correctly relaunch with the same arguments/board/config, but no proposal mentions this \u2014 a bare os.execv(sys.executable, [sys.executable]) would restart Python with no arguments, losing the user's session context entirely. (2) app.exit() alone does NOT restart anything \u2014 it just terminates the Textual app; there is no auto-relaunch wrapper or supervisor mentioned, so calling app.exit() from the webui would simply kill the TUI with no recovery, which is worse than the current no-op behavior. If app.exit() is the approach, the TUI's entry point (the script that calls app.run()) needs a restart loop that detects a restart exit code vs. a normal exit, and this architectural change hasn't been scoped. (3) The kill logic only addresses _plan_agent_status and _implement_agent_status but ignores _script_status \u2014 if a done-script is running when restart is triggered, it would be orphaned or killed uncleanly. (4) For the modal conversion: client.html has .modal-overlay infrastructure but lacks a showToast() function, while index.html has showToast but uses it inconsistently. The standardization proposal ('modal for confirmation, showToast for success') requires adding showToast to client.html as well, which should be explicitly noted. (5) A simpler and more robust alternative to os.execv that nobody has proposed: have _handle_remote_restart kill all running agents, clear state, and call the existing app refresh/reconnect logic \u2014 effectively a 'soft restart' that reloads features and re-initializes the display without killing the process. This avoids the os.execv argument-preservation problem and the app.exit supervisor-loop problem, and is more aligned with what the user likely means by 'restart' (refresh stale state) rather than a literal process restart.",
+    "The user's direction to use a service-level restart is the cleanest approach. The current `on_restart` callback is never wired in tui.py's ServerClient instantiation (line 2086 \u2014 no `on_restart=` kwarg is passed), so the WebSocket handler at server_client.py line 403-409 receives the `restart_tui` message but the callback is None and nothing happens. The fix has two parts: (1) Wire up `on_restart` in tui.py to call `systemctl --user restart <service_name>` via the existing `service.py` module \u2014 specifically, `_handle_remote_restart` should import `service_name_for_dir` from service.py, compute the service name from the project directory (available via `self._config`), and run `subprocess.Popen(['systemctl', '--user', 'restart', service_name])` (using Popen, not run, so the call is non-blocking and the process can die gracefully while systemd restarts it). Since the service has `Restart=always` and `RestartSec=3` in its unit file, systemd will automatically bring the TUI back up in a new tmux session \u2014 no supervisor loop, no argument preservation, no soft-restart state management needed. This is far simpler and more robust than os.execv or soft-restart approaches. (2) For the webui modal issue: both `client.html` (lines 632-648) and `index.html` (lines 1085-1102) use native `confirm()` and `alert()` for the restart flow. These should be converted to use the existing `.modal-overlay` pattern (used elsewhere in both templates) for the confirmation dialog, and `showToast()` for success/error feedback. Note that `client.html` lacks `showToast()` while `index.html` has it at line 1104 \u2014 `showToast` needs to be added to `client.html` as well, and the `alert()` calls in client.html's success path (line 645) should become `showToast()` calls to match index.html's pattern.",
+    "The service-level restart via systemctl is the right direction, but the proposal has several critical gaps: (1) No detection of whether the TUI is actually running as a systemd service \u2014 if the user started `pipeline tui` directly (not via `systemctl`), the service may not be installed and `systemctl --user restart` would fail silently or restart a non-existent unit. The implementation must check for the service unit file's existence (via `service_status` or checking `~/.config/systemd/user/<name>.service`) and provide a clear error back through the WebSocket if the service isn't installed. (2) The process calling `subprocess.Popen(['systemctl', '--user', 'restart', ...])` is itself running inside the tmux session that systemd will kill \u2014 the restart signal sends SIGTERM to the tmux session, which kills the TUI process mid-execution. This creates a race where in-progress file writes (JSON state files, pipeline locks like `.pipeline-lock.tui`) could be left in a corrupted or incomplete state. The proposal needs a graceful shutdown sequence: the `_handle_remote_restart` callback should first clean up state (release locks, flush pending writes, cancel running agents), then issue the systemctl restart \u2014 or better yet, have the Go server issue the systemctl restart directly rather than asking the TUI to kill itself, since the server already knows the project directory and could compute the service name. (3) The proposal doesn't address feedback to the webui \u2014 after sending the restart signal, the WebSocket connection will drop when the process dies, so the `.then()` success handler in the fetch response may never fire or may get a connection error. The webui should anticipate this: show 'Restart initiated' immediately on 202/success from the API, then detect the WebSocket disconnect and poll for reconnection rather than relying on the fetch promise chain. (4) For the modal conversion: the proposal correctly identifies `confirm()` and `alert()` usage but doesn't note that index.html lines 1097 and 1102 also use `alert()` for error paths \u2014 these need conversion too. Also, the confirmation modal needs to handle the async nature properly (the current `confirm()` is synchronous/blocking; a modal-based confirmation requires restructuring the `restartClient` function to be callback/promise-based).",
+    "Refined the service-level restart approach: wire `on_restart` in tui.py's ServerClient instantiation to an async `_handle_remote_restart` method that (1) checks if the systemd service unit exists at `~/.config/systemd/user/<service_name>.service` using `service_name_for_dir` from service.py \u2014 if not installed, send an error back via WebSocket so the webui can display 'Service not installed, cannot restart' rather than failing silently; (2) if installed, performs a minimal graceful shutdown (release `.pipeline-lock.tui`, set `kill_requested` on any active agent statuses to abort in-progress work) before calling `subprocess.Popen(['systemctl', '--user', 'restart', service_name], start_new_session=True)` \u2014 the `start_new_session=True` is critical so the systemctl process survives the parent TUI being killed by the restart. The previous proposals correctly identified that the Go server doing the restart would be cleaner (it's a separate process), but the server's Config struct has no project directory field and clients don't send their project path \u2014 adding that plumbing is more invasive than the TUI self-restart approach and not worth it for this fix. For the webui: the fetch response will likely never arrive since the TUI (and thus WebSocket) dies during restart, so the JS should show 'Restart initiated...' immediately on fetch success (HTTP 200 from the Go server confirming the signal was sent), then detect the WebSocket disconnect and show a reconnecting indicator rather than relying on the .then() chain. Convert both client.html and index.html from native confirm()/alert() to the existing `.modal-overlay` pattern for the confirmation dialog, and use showToast() for feedback (adding showToast to client.html which currently lacks it). The error-path alert() calls at index.html line 1097 and client.html line 643/648 must also be converted.",
+    "The refined proposal is solid on the core mechanism but has three critical weaknesses: (1) The `Restart=always` + `start_new_session=True` approach has a subtle race \u2014 systemd's `Restart=always` triggers on *any* exit, so when `systemctl --user restart` sends SIGTERM to the tmux session, systemd sees the stop and immediately tries to restart *before* the explicit restart command completes, potentially spawning two instances or entering a rapid restart loop. The unit file likely needs `RestartPreventExitStatus=` or the restart should use `systemctl --user restart` (which handles stop+start atomically) rather than relying on Restart=always behavior \u2014 but the proposal conflates these two restart mechanisms without clarifying which one actually drives the restart. (2) The graceful shutdown sequence (release lock, kill agents, then systemctl restart) is underspecified on timing \u2014 there's no guarantee that cancelling agents via `kill_requested` flags actually completes before systemctl sends SIGTERM. Agent cancellation is cooperative (the agent checks the flag in its next iteration), so a long-running Claude API call could keep the agent alive well past the systemctl restart signal. The proposal should either add a short `await` with timeout after setting kill flags before issuing systemctl, or accept that agents may be forcibly killed mid-operation and ensure the lock file cleanup happens in a signal handler or atexit hook rather than in the restart callback itself. (3) The webui feedback model ('show Restart initiated immediately, then detect WebSocket disconnect and poll for reconnection') is correct in principle but neither template currently has any reconnection detection or UI indicator. The proposal treats this as a minor frontend tweak, but it actually requires: a WebSocket `onclose` handler that distinguishes intentional restart from network failure, a reconnecting spinner/banner in the UI, and a polling mechanism to detect when the new TUI instance reconnects. This is non-trivial frontend work that should be scoped explicitly rather than hand-waved as 'detect the WebSocket disconnect.' Additionally, the confirmation modal conversion is straightforward since the `.modal-overlay` pattern is well-established in both templates, but `client.html` still needs a `showToast()` implementation added \u2014 the proposal mentions this but doesn't note that the error-path `alert()` at client.html line 643 and the catch-path `alert()` at line 648 also need conversion, not just the success path."
+  ],
+  "ideation": "",
+  "ideation_prompt": "I think that the restart should actually just do a service level restart; we have the service now, we can just restart that and that will effectively - or should - restart the whole pipeline app",
+  "history": [
+    {
+      "ts": "2026-03-18T14:40Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-18T14:40Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-18T14:40Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-18T14:40Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T14:43Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-18T14:45Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T14:46Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-18T14:48Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 1)"
+    },
+    {
+      "ts": "2026-03-18T14:49Z",
+      "stage": "IDEATING",
+      "note": "Stall detected after 4 rounds"
+    },
+    {
+      "ts": "2026-03-18T14:49Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-18T15:00Z",
+      "stage": "IDEAS",
+      "note": "Title edited"
+    },
+    {
+      "ts": "2026-03-18T15:00Z",
+      "stage": "IDEAS",
+      "note": "Type edited"
+    },
+    {
+      "ts": "2026-03-18T15:00Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-18T15:00Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-18T15:00Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T15:01Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-18T15:02Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T15:04Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-18T15:05Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 1)"
+    },
+    {
+      "ts": "2026-03-18T15:06Z",
+      "stage": "IDEATING",
+      "note": "Stall detected after 4 rounds"
+    },
+    {
+      "ts": "2026-03-18T15:06Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-18T15:07Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-18T15:08Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T15:10Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T15:10Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T15:11Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-18T15:11Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-18T15:11Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-18T15:11Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-18T15:18Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-18T15:20Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-18T15:20Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-18T15:26Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-18T15:26Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-18T15:26Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-18T15:30Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-18T15:30Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-18T15:31Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation code is correct and complete across tui.py, client.html, and index..."
+    },
+    {
+      "ts": "2026-03-18T15:31Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-18T15:40Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-18T15:40Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-18T15:40Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-18T15:41Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-18T15:41Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-18T15:42Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation is correct and complete. However, all 7 async Python tests are fak..."
+    },
+    {
+      "ts": "2026-03-18T15:42Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-18T15:48Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-18T15:48Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-18T15:48Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-18T15:49Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-18T15:49Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-18T15:52Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - All 14 tests pass (8 Python backend + 6 frontend). The critical previous feedback..."
+    },
+    {
+      "ts": "2026-03-18T15:52Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-18T18:16Z",
+      "stage": "DONE",
+      "note": "Moved via web UI"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-18T15:11Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-18T15:31Z",
+      "verdict": "FAIL",
+      "summary": "Implementation code is correct and complete across tui.py, client.html, and index.html. However, test coverage is severely inadequate \u2014 only 2 of 9+ required behaviors are tested, and zero edge cases are covered. No frontend behavior verification exists.",
+      "feedback": "The implementation itself is well-done and addresses all plan items. The FAIL is due to inadequate test coverage identified in the verification phase:\n\nMissing Python tests (must add):\nSystemd service detection (1.2): Test that when unit file doesn't exist, no subprocess is spawned and a restart_error JSON message is sent via WebSocket.\nGraceful pre-restart cleanup (1.3): Test that running plan/implement agents get kill_requested=True, pipeline locks are released, and asyncio.sleep(1.0) is awaited before systemctl.\nSystemctl restart invocation (1.4): Test that subprocess.Popen is called with correct args including start_new_session=True and stdout/stderr=DEVNULL.\nError feedback message format (1.9): Test the exact JSON format of the restart_error message.\nEdge case 2.1 (no running agents): Test cleanup skips agent kill when agents are None or not running.\nEdge case 2.2 (lock release fails): Test that exception from lock.release() is caught and restart still proceeds.\nEdge case 2.4 (WebSocket disconnected): Test that sending restart_error when WS is disconnected doesn't crash.\nEdge case 2.5 (Popen fails): Test that subprocess.Popen exception is caught and logged, TUI continues.\n\nFrontend tests (HTML inspection-based, at minimum):\nVerify no confirm( or alert( calls remain in restart flow in either template (can be a simple grep/string assertion).\nVerify restart-confirm-modal element exists in both templates.\nVerify showToast function exists in both templates with isError parameter support.\n\nAll of these are testable with mocking (mock subprocess.Popen, mock WebSocket, mock Path.exists, mock pipeline_lock, etc.). The _handle_remote_restart method has clear seams for unit testing."
+    },
+    {
+      "ts": "2026-03-18T15:42Z",
+      "verdict": "FAIL",
+      "summary": "Implementation is correct and complete. However, all 7 async Python tests are fake \u2014 each defines its own inline _handle_remote_restart method inside a MockPipelineApp class, testing the mock rather than the actual tui.py code. Additionally, test_on_restart_parameter_exists fails with ModuleNotFoundError. Frontend tests are valid.",
+      "feedback": "Critical issue: None of the async Python tests (test_systemctl_restart_invoked, test_graceful_pre_restart_cleanup, test_no_running_agents, test_lock_release_fails, test_popen_fails, test_service_not_installed_sends_error, test_websocket_disconnected_no_crash) test the actual _handle_remote_restart method from tui.py. Each test creates an inline MockPipelineApp class with its own _handle_remote_restart static method that contains hardcoded logic. This means:\n\nIf someone breaks the real _handle_remote_restart in tui.py, all tests will still pass.\nThe tests are self-referential \u2014 they verify that the test code works, not the production code.\n\nTo fix: Import the actual PipelineApp class (or at minimum the _handle_remote_restart method) and mock its dependencies (Path.home, subprocess.Popen, asyncio.sleep, self._server_client, etc.) rather than rewriting the method logic in each test. Use unittest.mock.patch to replace external calls while exercising the real method.\n\nFor example, create a PipelineApp instance (or a partial mock of one) and call its actual _handle_remote_restart method, patching Path.home().exists(), subprocess.Popen, and asyncio.sleep.\n\nAdditionally:\ntest_on_restart_parameter_exists fails because from server_client import ServerClient cannot resolve the module. The test needs to either add the pipeline directory to sys.path or use the correct import path.\nThe 6 frontend tests are valid and pass \u2014 no changes needed there.\n\nAll 8 Python tests must be rewritten to test the real implementation code."
+    },
+    {
+      "ts": "2026-03-18T15:52Z",
+      "verdict": "PASS",
+      "summary": "All 14 tests pass (8 Python backend + 6 frontend). The critical previous feedback is fully addressed: tests now import and exercise the real PipelineApp._handle_remote_restart method with proper dependency mocking, and the import path issue is fixed. Implementation is complete and correct across tui.py, server_client.py, client.html, and index.html.",
+      "feedback": null
+    }
+  ],
+  "ideation_cycle_verdicts": [
+    {
+      "cycle": 1,
+      "verdict": "stall",
+      "reason": "Round 4 is primarily elaborating and sub-splitting concerns already raised in Rounds 2 and 3 (race conditions, graceful shutdown timing, reconnection detection). The core approach has been agreed upon since Round 1 and no genuinely new alternative mechanisms or arguments emerged.",
+      "rounds_completed": 4
+    }
+  ],
+  "Ideation": "The bug is that `on_restart` is never wired in tui.py's ServerClient instantiation, so when the WebSocket handler at server_client.py receives the `restart_tui` message, the callback is None and nothing happens. The fix has two parts: TUI-side restart logic and webui modal/feedback improvements.\n\nFor the TUI restart: Wire `on_restart` in tui.py's ServerClient call to a `_handle_remote_restart` method. This method should (1) check whether the systemd unit file exists at `~/.config/systemd/user/<service_name>.service` using `service_name_for_dir` from service.py \u2014 if not installed, send an error back via WebSocket so the webui can surface a clear 'Service not installed' message; (2) if installed, perform minimal graceful cleanup (release `.pipeline-lock.tui`, set `kill_requested` flags on active agent statuses with a short await/timeout to allow cooperative cancellation), then call `subprocess.Popen(['systemctl', '--user', 'restart', service_name], start_new_session=True)`. The `start_new_session=True` is critical so the systemctl child process survives the parent TUI being killed by systemd. One subtle risk: `Restart=always` in the unit file triggers on any exit, so the explicit `systemctl restart` (which sends SIGTERM) could race with the automatic restart policy. Using `systemctl restart` (which does stop+start atomically) is still the right mechanism \u2014 it suppresses the auto-restart during the stop phase \u2014 but this interaction should be verified against the actual unit file configuration.\n\nFor the webui: Both `client.html` and `index.html` use native `confirm()` and `alert()` for the restart flow. These should be converted to use the existing `.modal-overlay` pattern for the confirmation dialog (making the confirm callback/promise-based instead of synchronous) and `showToast()` for all success/error feedback paths \u2014 including the error-path `alert()` calls at index.html lines 1097/1102 and client.html lines 643/648. `client.html` currently lacks `showToast()` and needs it added. After the user confirms and the restart is triggered, the webui should show 'Restart initiated...' immediately on HTTP 200 from the server (not waiting on the fetch promise chain, since the WebSocket will die during restart). The `onclose` handler needs to distinguish intentional restart from network failure and show a reconnecting indicator, with polling to detect when the new TUI instance comes back up \u2014 this is non-trivial frontend work requiring a reconnecting UI state.\n\nAlternative approach considered: having the Go server issue the systemctl restart directly (it's a separate process and won't be killed by the restart). This would be cleaner and avoid the self-restart race entirely, but requires adding project directory to the server's Config struct and client registration, which is more invasive plumbing than warranted for this fix. The TUI self-restart with `start_new_session=True` and early cleanup is the pragmatic choice. Key uncertainties: exact timing of agent cancellation before SIGTERM arrives, and whether the Restart=always behavior interacts cleanly with an explicit `systemctl restart` call.\n\n[Ideation concluded by stall detection after 4 rounds, 1 cycles. Full convergence was not achieved.]",
+  "test_results": {
+    "ts": "2026-03-18T08:49:54.000658",
+    "verdict": "PASS",
+    "results": {
+      "passed": 14,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 14 tests pass. Coverage verified: 1.1 Restart callback wiring (test_on_restart_parameter_exists), 1.2 Systemd service detection (test_service_not_installed_sends_error), 1.3 Graceful cleanup (test_graceful_pre_restart_cleanup, test_no_running_agents), 1.4 Systemctl invocation (test_systemctl_restart_invoked), 1.5/1.6 Modal in client/index.html (test_restart_confirm_modal_exists_), 1.7/1.8 Toast notifications (test_showToast_exists_), 1.9 Error feedback (test_service_not_installed_sends_error). Edge cases covered: 2.1, 2.2, 2.4, 2.5. Native dialogs removed: test_no_confirm_alert_* tests pass."
+  }
+}

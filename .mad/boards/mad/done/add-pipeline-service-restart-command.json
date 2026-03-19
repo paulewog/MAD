@@ -1,0 +1,188 @@
+{
+  "id": "aae5baf2",
+  "board": "mad",
+  "title": "add pipeline service restart command",
+  "type": "feature",
+  "created": "2026-03-18T15:54Z",
+  "description": "I would like to restart the systemd service using \"pipeline service restart\"",
+  "done_script": "",
+  "requires_human_approval": false,
+  "plan": "## What\n\nAdd a `pipeline service restart` CLI subcommand that restarts the MAD TUI systemd service. When invoked, it should restart the systemd user service (which in turn restarts the tmux session running the TUI).\n\n## Why\n\nCurrently, restarting the service requires either manually running systemctl commands or using the web UI's remote restart signal. A dedicated CLI command provides a simple, discoverable way to restart the service \u2014 consistent with the existing install/uninstall/stop/status command set.\n\n## Impact\n\n- Extends the existing `pipeline service` command group with one new subcommand\n- No impact on existing commands or behavior\n- Follows the identical pattern used by stop, install, uninstall, and status\n- The systemd service already has `Restart=always` configured, so a restart via systemctl is well-supported\n\n## Risks\n\n- Minimal risk \u2014 this follows established patterns exactly\n- The restart will briefly interrupt any running TUI session and pipeline agents, same as the existing remote restart mechanism in the web UI\n- systemctl restart handles the stop-then-start atomically, so there is no window where the service is partially running\n\n## Scope\n\n**Included:**\n- A new `restart_service()` function in the service management module that calls `systemctl --user restart` on the derived service name\n- A new `restart` subcommand under the `pipeline service` CLI group\n- Basic validation that the service exists before attempting restart (consistent with existing commands)\n\n**Excluded:**\n- No changes to the remote restart mechanism in the web UI\n- No changes to the TUI's internal restart logic\n- No graceful agent shutdown before restart (systemd handles the stop signal, and the TUI already handles SIGTERM cleanup)\n- No new configuration options or flags",
+  "plan_exploration_summary": "Explored the full CLI and service management architecture. The CLI (pipeline/pipeline.py) uses Click with a 'service_group' containing install, uninstall, stop, and status subcommands. Service lifecycle is managed in pipeline/service.py, which provides functions for each operation (install_service, uninstall_service, stop_service, service_status). Each CLI command delegates to its corresponding service.py function. The systemd service runs a tmux session hosting the TUI. A restart pattern already exists in tui.py's _handle_remote_restart() method, which calls 'systemctl --user restart {service_name}' \u2014 confirming this is the correct approach. The stop_service() function provides the pattern to follow: it derives the service name, runs systemctl stop, and kills the tmux session. No 'restart' subcommand currently exists under 'pipeline service'.",
+  "impl_spec": "## Implementation Spec: Add `pipeline service restart` Command\n\n### Task 1: Add `restart_service()` function to `pipeline/service.py`\n\n**File:** `pipeline/service.py`\n**Location:** After `stop_service()` (after line 155)\n**Dependencies:** None\n\nAdd a new function `restart_service(project_dir: Path) -> None` that:\n\n1. Derives the service name via `service_name_for_dir(project_dir)`\n2. Derives the tmux session name via `tmux_session_name(project_dir)` (for display)\n3. Checks that the unit file exists at `~/.config/systemd/user/{service_name}.service` \u2014 if not, prints \"Service not installed. Run: pipeline service install\" and returns (consistent with `service_status()` pattern)\n4. Calls `subprocess.run([\"systemctl\", \"--user\", \"restart\", service_name], check=True)` wrapped in a try/except for `CalledProcessError`\n5. On success, prints `f\"Service restarted: {service_name}\"`\n6. On failure, prints the error and suggests manual restart command\n\nNote: Unlike `stop_service()`, we do NOT separately kill the tmux session \u2014 `systemctl restart` handles stop+start atomically, and the ExecStop in the unit file already kills the tmux session as part of the stop phase.\n\n```python\ndef restart_service(project_dir: Path) -> None:\n    \"\"\"Restart the systemd user service for this project.\"\"\"\n    service_name = service_name_for_dir(project_dir)\n    \n    unit_file_path = Path.home() / \".config\" / \"systemd\" / \"user\" / f\"{service_name}.service\"\n    if not unit_file_path.exists():\n        print(f\"Service not installed. Run: pipeline service install\")\n        return\n    \n    try:\n        subprocess.run([\"systemctl\", \"--user\", \"restart\", service_name], check=True)\n    except subprocess.CalledProcessError as e:\n        print(f\"Error: Failed to restart service: {e}\")\n        print(f\"You can try manually: systemctl --user restart {service_name}\")\n        sys.exit(1)\n    \n    print(f\"Service restarted: {service_name}\")\n```\n\n### Task 2: Add `restart` CLI subcommand to `pipeline/pipeline.py`\n\n**File:** `pipeline/pipeline.py`\n**Location:** After the `service_stop` command (after line 560, before `service_status_cmd`)\n**Dependencies:** Task 1 must be complete\n\nAdd a new Click command following the exact pattern of `service_stop`:\n\n```python\n@service_group.command('restart')\ndef service_restart():\n    \"\"\"Restart the systemd user service for this project.\"\"\"\n    from service import restart_service\n    config = get_config()\n    project_dir = config.code_path or Path.cwd()\n    restart_service(project_dir)\n```\n\nAlso update the module docstring at the top of `pipeline/pipeline.py` (line 9) to include `restart` in the service usage line:\n\n```\n    pipeline service install|uninstall|restart|stop|status\n```\n\n### Summary\n\n- **Files modified:** 2 (`pipeline/service.py`, `pipeline/pipeline.py`)\n- **Functions added:** 1 (`restart_service` in service.py)\n- **CLI commands added:** 1 (`pipeline service restart`)\n- **Lines of code:** ~20 new lines total\n- **Risk:** Minimal \u2014 follows established patterns exactly",
+  "test_spec": "# Test Specification: `pipeline service restart` Command\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 `restart_service()` function in `pipeline/service.py`\n\n**Behavior: Service name derivation**\n- When `restart_service(project_dir)` is called, it must derive the service name using `service_name_for_dir(project_dir)` \u2014 the same function used by all other service commands.\n- Success criteria: The systemctl restart command targets the correct service name (e.g., `mad-tui-<hash>`).\n\n**Behavior: Unit file existence check**\n- When the unit file `~/.config/systemd/user/{service_name}.service` does NOT exist, the function must print \"Service not installed. Run: pipeline service install\" and return without calling systemctl.\n- Success criteria: No subprocess calls are made; the message is printed to stdout; the function returns normally (no sys.exit).\n\n**Behavior: Successful restart**\n- When the unit file exists and `systemctl --user restart {service_name}` succeeds (exit code 0), the function must print \"Service restarted: {service_name}\".\n- Success criteria: `subprocess.run` is called with `[\"systemctl\", \"--user\", \"restart\", service_name]` and `check=True`. The success message is printed.\n\n**Behavior: Failed restart**\n- When the unit file exists but `systemctl --user restart` fails (raises `CalledProcessError`), the function must print an error message and a manual retry hint, then call `sys.exit(1)`.\n- Success criteria: Error output includes the exception details and a suggestion like \"You can try manually: systemctl --user restart {service_name}\". Process exits with code 1.\n\n**Behavior: No tmux kill on restart**\n- Unlike `stop_service()`, `restart_service()` must NOT separately kill the tmux session. The systemd unit's ExecStop handles session cleanup during the restart cycle.\n- Success criteria: No call to `tmux kill-session` is made by the function.\n\n### 1.2 `restart` CLI subcommand in `pipeline/pipeline.py`\n\n**Behavior: Command is registered under service group**\n- `pipeline service restart` must be a valid CLI command.\n- Success criteria: Running `pipeline service --help` lists `restart` as a subcommand.\n\n**Behavior: Command delegates to restart_service()**\n- When `pipeline service restart` is invoked, it must call `restart_service()` with the project directory derived from the config's `code_path` (or `Path.cwd()` as fallback).\n- Success criteria: The function `restart_service` is called with the correct project directory path.\n\n**Behavior: Docstring updated**\n- The module docstring at the top of `pipeline/pipeline.py` must include `restart` in the service usage line (e.g., `pipeline service install|uninstall|restart|stop|status`).\n- Success criteria: The docstring reflects the new subcommand.\n\n## 2. Edge Cases\n\n### 2.1 Service not installed\n- If no unit file exists for the current project directory, `restart_service()` should print a helpful message and return cleanly \u2014 no crash, no traceback, no sys.exit.\n\n### 2.2 Service already stopped\n- If the service exists (unit file present) but is currently stopped/inactive, `systemctl --user restart` should still work (it starts the service). Verify this does not produce an error.\n\n### 2.3 systemctl not available\n- Note: Unlike `install_service()`, the current plan does NOT include a pre-check for `systemctl` availability in `restart_service()`. If `systemctl` is missing, the `subprocess.run` call will raise `FileNotFoundError`, not `CalledProcessError`. Verify behavior: this should either be caught or documented as expected to fail hard.\n\n### 2.4 Permission errors\n- If the user lacks permission to restart the service (e.g., running as wrong user), `systemctl` returns a non-zero exit code. Verify the `CalledProcessError` handler catches this and provides the manual retry hint.\n\n### 2.5 Concurrent restart calls\n- If two `pipeline service restart` commands run simultaneously, systemd handles serialization. Verify the function does not introduce its own locking or race conditions (it should not \u2014 it's a simple subprocess call).\n\n### 2.6 Project directory does not exist\n- If `config.code_path` points to a nonexistent directory, `service_name_for_dir()` still produces a hash. The unit file check will fail (file not found), and the function should print the \"not installed\" message. Verify no crash.\n\n## 3. What Constitutes Failure\n\n- **Function not found:** `restart_service` is not importable from `pipeline/service.py`.\n- **CLI not registered:** `pipeline service restart` returns an error like \"No such command 'restart'\".\n- **Wrong systemctl verb:** The function calls `systemctl --user start` or `systemctl --user stop` instead of `systemctl --user restart`.\n- **Crashes on missing service:** The function raises an unhandled exception when the unit file does not exist, instead of printing the \"not installed\" message.\n- **Kills tmux session:** The function includes a `tmux kill-session` call, which would conflict with systemd's atomic restart.\n- **Silent failure:** The function swallows errors without printing any message or exiting with a non-zero code.\n- **Wrong project directory:** The CLI command passes a hardcoded or incorrect path instead of deriving it from config.\n\n## 4. Out of Scope\n\n- **Actual systemd integration testing:** We do not test against a real systemd instance. All subprocess calls should be mocked in unit tests.\n- **TUI behavior during restart:** We do not verify what the TUI does when receiving SIGTERM during a restart cycle \u2014 that is existing behavior.\n- **Web UI remote restart:** The web UI's restart mechanism is unrelated and must not be tested here.\n- **Timing/performance:** We do not measure how long the restart takes or assert any timing guarantees.\n- **tmux session state:** We do not verify the tmux session is actually running after restart \u2014 that is systemd's responsibility.\n- **Visual/terminal output formatting:** We verify message content, not terminal formatting or colors.\n- **Other service commands:** We do not re-test install, uninstall, stop, or status \u2014 only that restart does not break them (no regressions in CLI registration).",
+  "impl_notes": "Added test coverage for the existing restart_service() function in pipeline/test_service.py. Added restart_service to imports and created TestRestartService class with 5 test methods covering: service not installed case, successful restart, restart failure handling, no tmux kill-session call, and correct service name derivation. All 34 tests in test_service.py pass.",
+  "ideation_summaries": [],
+  "ideation": "",
+  "ideation_prompt": "",
+  "history": [
+    {
+      "ts": "2026-03-18T15:54Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-18T15:54Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-18T15:55Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T15:57Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T15:57Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T15:58Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-18T15:58Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-18T15:58Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-18T15:58Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-18T15:59Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-18T16:01Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-18T16:01Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-18T16:03Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-18T16:03Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-18T16:03Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-18T16:05Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-18T16:05Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-18T16:06Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation of restart_service() and CLI command is correct and follows existi..."
+    },
+    {
+      "ts": "2026-03-18T16:06Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-18T16:09Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-18T16:09Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-18T16:09Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-18T16:10Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-18T16:10Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-18T16:11Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - All previous review feedback addressed: restart_service is imported in test_servi..."
+    },
+    {
+      "ts": "2026-03-18T16:11Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-18T17:25Z",
+      "stage": "DONE",
+      "note": "Approved as complete (TUI)"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-18T15:58Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-18T16:06Z",
+      "verdict": "FAIL",
+      "summary": "Implementation of restart_service() and CLI command is correct and follows existing patterns exactly. However, there are ZERO tests for restart_service() \u2014 the test spec requires verification of 5 distinct behaviors (service name derivation, unit file check, successful restart, failed restart, no tmux kill) and none are tested.",
+      "feedback": "The implementation code is solid \u2014 the issue is entirely missing test coverage for restart_service(). The test file pipeline/test_service.py does not import restart_service and contains no tests for it.\n\nRequired additions to pipeline/test_service.py:\n\nAdd restart_service to the imports (line 14-22):\n   \n\nAdd a TestRestartService class with these test methods:\n\n   a. test_restart_not_installed \u2014 Mock Path.exists to return False, verify print says 'not installed', verify subprocess.run is NOT called, verify no sys.exit.\n\n   b. test_restart_success \u2014 Mock Path.exists to return True, mock subprocess.run to succeed, verify subprocess.run called with ['systemctl', '--user', 'restart', service_name] and check=True, verify 'Service restarted' printed.\n\n   c. test_restart_failure \u2014 Mock Path.exists to return True, mock subprocess.run to raise CalledProcessError, verify sys.exit(1) is called, verify error message and manual retry hint are printed.\n\n   d. test_restart_no_tmux_kill \u2014 Mock Path.exists to return True, mock subprocess.run to succeed, verify subprocess.run was called exactly ONCE (only systemctl restart, no tmux kill-session call).\n\n   e. test_restart_uses_correct_service_name \u2014 Call with a known project_dir, verify the service name passed to systemctl matches service_name_for_dir(project_dir).\n\nFollow the exact mocking pattern used by TestInstallService and TestServiceStatus (mock Path.home, Path.exists, subprocess.run). All 5 tests should be straightforward \u2014 each is ~10 lines."
+    },
+    {
+      "ts": "2026-03-18T16:11Z",
+      "verdict": "PASS",
+      "summary": "All previous review feedback addressed: restart_service is imported in test_service.py and TestRestartService class contains all 5 required test methods. Implementation in service.py follows established patterns correctly. CLI command registered under service_group. All 34 tests pass.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-18T09:10:58.112872",
+    "verdict": "PASS",
+    "results": {
+      "passed": 34,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 34 tests pass. Test coverage is complete for all required behaviors: (1) restart_service() correctly derives service name using service_name_for_dir(), (2) prints 'not installed' message when unit file doesn't exist without calling subprocess, (3) successful restart calls systemctl --user restart with check=True and prints confirmation, (4) failed restart handles CalledProcessError with error message, manual retry hint, and sys.exit(1), (5) no tmux kill-session call is made, (6) CLI command 'pipeline service restart' is registered under service group, (7) CLI delegates to restart_service() with correct project directory from config.code_path, (8) module docstring includes restart in service usage line."
+  }
+}

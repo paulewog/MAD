@@ -1,0 +1,243 @@
+{
+  "id": "521467b8",
+  "board": "mad",
+  "title": "Webui item creation doesn't allow script",
+  "type": "bug",
+  "created": "2026-03-13T19:20Z",
+  "description": "Creating an item in the webui doesn't allow selection of an on-done script still.",
+  "done_script": "",
+  "plan": "## Root Cause Analysis\n\nThe bug is a classic JavaScript event-handling issue. When the \"Create New Idea\" modal opens, it fetches the list of connected clients and populates a dropdown. If there is exactly one connected client, the code auto-selects it by programmatically setting the select element's `.value` property. However, programmatically setting `.value` does **not** fire the `onchange` event. The scripts dropdown is populated by a function that only runs in response to the `onchange` event on the client selector. As a result, when a client is auto-selected, the scripts fetch never happens and the done-script dropdown remains empty with only the \"(none)\" option.\n\nIf the user manually re-selects the same client from the dropdown (triggering `onchange`), scripts would load correctly. The bug only manifests when auto-selection occurs.\n\n## Impact Assessment\n\n- **Severity:** Medium \u2014 users cannot select a done-script when creating items if only one client is connected (the most common scenario)\n- **Scope:** Only affects the web UI item creation modal; existing items can still have their done-script edited via the item detail view\n- **Related risk:** None \u2014 the server-side handling of `done_script` in the create-idea endpoint is correct and already forwards the value to the client\n\n## Fix Strategy\n\nAfter auto-selecting the client in the modal's initialization logic, explicitly invoke the script-fetching function so the done-script dropdown gets populated. This is a one-line addition in the client auto-selection code path.\n\n## Risks\n\n- Very low risk \u2014 this is a trivial frontend-only change\n- No regression concerns since the script-fetching function is already designed to be called independently and handles edge cases (empty client, fetch errors)\n\n## Scope\n\n- The fix should only touch the modal initialization logic in the web UI template\n- No server-side changes needed\n- No changes to the script-fetching function itself",
+  "plan_exploration_summary": "",
+  "impl_spec": "## Implementation Spec: Webui item creation doesn't allow script\n\n### Task 1: Add fetchScriptsForNewIdea() call after client auto-selection in index.html\n\n**File:** `server/templates/index.html`\n**Location:** Lines 472-474, inside the auto-select block within `openNewIdeaModal()`\n\n**Current code (line 472-474):**\n```javascript\nif (connected.length === 1) {\n    select.value = connected[0].client_id;\n}\n```\n\n**Change:** Add a call to `fetchScriptsForNewIdea()` immediately after setting `select.value`, inside the `if` block:\n```javascript\nif (connected.length === 1) {\n    select.value = connected[0].client_id;\n    fetchScriptsForNewIdea();\n}\n```\n\n**Why:** Setting `.value` programmatically does not fire the `onchange` event on the `<select>` element. The `onchange` handler is what normally calls `fetchScriptsForNewIdea()`. By explicitly calling it after auto-selection, the done-script dropdown will be populated with the available scripts for the auto-selected client.\n\n**Dependencies:** None. The `fetchScriptsForNewIdea()` function is already defined (line 479) and reads the client ID from the select element's current value, so it will correctly use the auto-selected client.\n\n**No other files need changes.** The `client_full.html` and `client_full2.html` templates already call `fetchScriptsForNewIdea()` directly since they have the client ID from the page context and don't use a client dropdown.",
+  "test_spec": "# Test Specification: Webui item creation doesn't allow script\n\n## 1. Behaviors That MUST Be Verified\n\n### Behavior 1: Scripts dropdown populates on auto-selection (single connected client)\n- **Scenario:** The \"Create New Idea\" modal opens when exactly one client is connected.\n- **Expected:** The client dropdown auto-selects that client AND the done-script dropdown is populated with available scripts from that client.\n- **Success criteria:** The done-script dropdown contains options beyond just \"(none)\" when the auto-selected client has scripts registered.\n\n### Behavior 2: Scripts dropdown populates on manual selection (multiple connected clients)\n- **Scenario:** The modal opens with multiple connected clients. The user manually selects a client from the dropdown.\n- **Expected:** The done-script dropdown is populated with scripts for the selected client.\n- **Success criteria:** The onchange handler fires and scripts load correctly (this is existing behavior that should not regress).\n\n### Behavior 3: Selected done-script is submitted with the new idea\n- **Scenario:** A done-script is selected and the user submits the new idea form.\n- **Expected:** The created idea includes the selected done_script value in the API request.\n- **Success criteria:** The POST to /api/boards/{board}/ideas includes the correct done_script field.\n\n### Behavior 4: Auto-selected client with no scripts shows only \"(none)\"\n- **Scenario:** The modal opens with one connected client that has zero registered scripts.\n- **Expected:** The done-script dropdown contains only the \"(none)\" option.\n- **Success criteria:** No errors occur; the dropdown gracefully shows the default empty option.\n\n## 2. Edge Cases\n\n### Edge Case 1: No connected clients\n- **Scenario:** The modal opens but no clients are connected (or no clients exist).\n- **Expected:** The client dropdown shows only the placeholder \"Select a client...\" option. The done-script dropdown remains at \"(none)\". No fetch for scripts is attempted.\n\n### Edge Case 2: Single client that is disconnected\n- **Scenario:** One client exists but is disconnected.\n- **Expected:** No auto-selection occurs (the filter for connected clients returns empty). The done-script dropdown stays at \"(none)\".\n\n### Edge Case 3: Scripts API returns an empty array\n- **Scenario:** A client is auto-selected but the /api/clients/{id}/scripts endpoint returns an empty list.\n- **Expected:** The done-script dropdown contains only \"(none)\". No errors.\n\n### Edge Case 4: Scripts API fetch fails (network error)\n- **Scenario:** The scripts fetch request fails (server error or network issue).\n- **Expected:** The done-script dropdown remains at \"(none)\". No unhandled errors or UI crashes. The existing .catch(function() {}) handler absorbs the error.\n\n### Edge Case 5: Modal opened, closed, and reopened\n- **Scenario:** The user opens the modal (triggering auto-select and script fetch), closes it, then opens it again.\n- **Expected:** Scripts are fetched again on reopen. The dropdown reflects the current state, not stale data.\n\n## 3. What Constitutes Failure\n\n- The done-script dropdown remains empty (only \"(none)\") after auto-selection of a client that has scripts. This is the core bug.\n- The done-script dropdown shows scripts from a different client than the one selected.\n- An unhandled JavaScript error is thrown during modal initialization or script fetching.\n- The fetchScriptsForNewIdea() function is called when no client is selected (clientID is empty), leading to an unnecessary or malformed API call.\n- A submitted new idea has a missing or incorrect done_script value when one was selected in the UI.\n\n## 4. Out of Scope\n\n- Visual/CSS assertions (dropdown styling, modal layout, animation timing)\n- Performance benchmarks (how fast scripts load)\n- Testing the client_full.html or client_full2.html templates (confirmed unaffected)\n- Server-side handling of the done_script field in the create-idea endpoint (already correct per plan)\n- Testing the fetchScriptsForNewIdea() function internals (no changes to this function)\n- Browser compatibility testing\n- Authentication/authorization of the API endpoints\n- Editing done-script on existing items (separate feature, not affected by this bug)",
+  "impl_notes": "Fixed the web UI item creation modal not allowing scripts. The index.html fix was already in place (calling fetchScriptsForNewIdea() after auto-selecting a client). The main issue was client.html (the client-specific page) which was missing the done-script dropdown entirely. Added: (1) done-script dropdown to the modal HTML, (2) fetchScriptsForNewIdea() function, (3) call to fetchScriptsForNewIdea() in showNewIdeaModal(), (4) reset of done-script dropdown on modal open, (5) done_script included in the API request body.",
+  "ideation_summaries": [],
+  "Ideation": "",
+  "history": [
+    {
+      "ts": "2026-03-13T19:20Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-13T19:20Z",
+      "stage": "PLAN-INBOX",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-13T19:20Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-13T19:22Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-13T19:22Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-13T19:23Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-13T19:23Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-13T19:32Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-13T19:32Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-13T19:33Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T19:34Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-13T19:34Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T19:35Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T19:35Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T19:35Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T19:40Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-13T19:40Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T19:41Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - The one-line fix at index.html:474 correctly calls fetchScriptsForNewIdea() after..."
+    },
+    {
+      "ts": "2026-03-13T19:41Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-13T20:35Z",
+      "stage": "REJECTED",
+      "note": "Sent back to implementing: Hmmm, I still don't see any area in the creation modal (in the client-..."
+    },
+    {
+      "ts": "2026-03-13T21:32Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T21:34Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T21:34Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T21:34Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T21:37Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-13T21:37Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T21:38Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - The fix only addressed index.html but the human feedback specifically says the cl..."
+    },
+    {
+      "ts": "2026-03-13T21:38Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-13T21:42Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-13T21:42Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-13T21:42Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-13T21:46Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-13T21:46Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-13T21:47Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - All previous feedback addressed. client.html now has a done-script dropdown in th..."
+    },
+    {
+      "ts": "2026-03-13T21:47Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-18T05:44Z",
+      "stage": "DONE",
+      "note": "Moved via web UI"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-13T19:23Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-13T19:41Z",
+      "verdict": "PASS",
+      "summary": "The one-line fix at index.html:474 correctly calls fetchScriptsForNewIdea() after auto-selecting the single connected client, resolving the core bug. The submitNewIdea function properly reads and submits the done_script value. Test verification passed (56/68, 12 failures are pre-existing test signature mismatches unrelated to this change).",
+      "feedback": null
+    },
+    {
+      "ts": "2026-03-13T20:35Z",
+      "verdict": "FAIL",
+      "summary": "Human rejected from final-human-approval: Hmmm, I still don't see any area in the creation modal (in the client-specific page) to add a script.",
+      "feedback": "Human rejection: Hmmm, I still don't see any area in the creation modal (in the client-specific page) to add a script.\n\nPrevious review feedback:\nNo previous feedback available."
+    },
+    {
+      "ts": "2026-03-13T21:38Z",
+      "verdict": "FAIL",
+      "summary": "The fix only addressed index.html but the human feedback specifically says the client-specific page is missing script selection. client.html's Create New Idea modal has no done-script dropdown and submitNewIdea() doesn't send done_script.",
+      "feedback": "The previous human rejection said: 'I still don't see any area in the creation modal (in the client-specific page) to add a script.' This was NOT addressed.\n\nThe root cause: server/templates/client.html is the client-specific page and its 'Create New Idea' modal (lines 488-519) has no done-script dropdown at all. The modal only has Title, Board, Type, and Description fields. Additionally, the submitNewIdea() function in client.html (line 1323) does not include done_script in the JSON body sent to the API.\n\nRequired fixes for client.html:\nAdd a done-script <select> element (id='new-idea-done-script') to the modal HTML, between the Description field and the buttons (around line 512).\nAdd a fetchScriptsForNewIdea() function that fetches scripts from /api/clients/{clientID}/scripts and populates the dropdown. Since client.html already knows its client ID (_clientID), this can be called directly in showNewIdeaModal().\nUpdate submitNewIdea() to read the done-script value and include done_script in the JSON body (line 1323).\nReset the done-script dropdown in showNewIdeaModal() when the modal opens.\n\nThe index.html fix (line 474 calling fetchScriptsForNewIdea after auto-select) is correct but insufficient \u2014 the client-specific page was the one the human was looking at."
+    },
+    {
+      "ts": "2026-03-13T21:47Z",
+      "verdict": "PASS",
+      "summary": "All previous feedback addressed. client.html now has a done-script dropdown in the Create New Idea modal (line 513-518), fetchScriptsForNewIdea() function (line 1304), dropdown reset and fetch call in showNewIdeaModal() (lines 1296, 1302), and done_script included in submitNewIdea() POST body (line 1344). index.html auto-select fix also correct (line 474).",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-13T14:46:19.438846",
+    "verdict": "PASS",
+    "results": {
+      "passed": 25,
+      "failed": 12,
+      "errors": 0
+    },
+    "feedback": "Python tests: 12 failures due to pre-existing test code bugs (callback signature mismatch - tests use 3-parameter callbacks (title, board, description) but implementation passes 5 parameters (title, board, description, item_type, done_script)). Go tests for create_idea API all pass (25 tests). The test spec requires JavaScript/web UI behavior verification (auto-selection, manual selection, dropdown population) which cannot be tested via Python unit tests. Implementation verified correct via code inspection: index.html:474 calls fetchScriptsForNewIdea() after auto-select, submitNewIdea() includes done_script in POST body (index.html:527, client.html:1344, client_full.html:606, client_full2.html:661)."
+  }
+}

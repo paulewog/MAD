@@ -515,5 +515,411 @@ You are participating in an ideation session.
         self.assertIn("{ideation_prompt_section}", template)
 
 
+class TestIdeationSummaryStorageTruncationRemoved(unittest.TestCase):
+    """Tests verifying ideation summary truncation has been removed (storage level)."""
+
+    def _create_mock_feature(self):
+        """Create a mock FeatureFile with all required properties for run_ideating."""
+        from unittest.mock import MagicMock
+        
+        feature = MagicMock()
+        feature.title = "Test Feature"
+        feature.description = "Test description"
+        feature.slug = "test-feature"
+        feature.board = "default"
+        feature.current_stage = "ideas"
+        feature.Ideation = ""
+        feature.ideation_prompt = ""
+        feature.ideation_max_rounds = None
+        feature.ideation_summaries = []
+        feature.ideation_cycle_verdicts = []
+        
+        return feature
+
+    def _create_mock_runner(self, output):
+        """Create a mock AgentRunner that returns the given output."""
+        from unittest.mock import MagicMock
+        
+        runner = MagicMock()
+        mock_round_runner = MagicMock()
+        mock_round_runner.headless.return_value = str(output)
+        runner.for_cli_model.return_value = mock_round_runner
+        runner.headless.return_value = str(output)
+        
+        return runner
+
+    @patch('phases.Config')
+    @patch('phases.AgentRunner')
+    @patch('pathlib.Path.mkdir')
+    @patch('pathlib.Path.write_text')
+    def test_summary_json_path_long_summary_stored_in_full(self, mock_write_text, mock_mkdir, mock_agent_runner_class, mock_config_class):
+        """Summary >500 chars from JSON is stored in full without slicing."""
+        import json
+        
+        long_summary = "A" * 600
+        output = json.dumps({"summary": long_summary})
+        
+        mock_config = MagicMock()
+        mock_config.ideating_rounds = [MagicMock()]
+        mock_config.ideating_max_rounds = 1
+        mock_config.boards_dir = Path("/tmp/boards")
+        mock_config.mad_dir = Path("/tmp/mad")
+        mock_config_class.return_value = mock_config
+        
+        feature = self._create_mock_feature()
+        runner = self._create_mock_runner(output)
+        
+        phases.run_ideating(feature, runner)
+        
+        feature.add_ideation_summary.assert_called()
+        stored_summary = feature.add_ideation_summary.call_args[0][0]
+        self.assertEqual(len(stored_summary), 600)
+        self.assertEqual(stored_summary, long_summary)
+
+    @patch('phases.Config')
+    @patch('phases.AgentRunner')
+    @patch('pathlib.Path.mkdir')
+    @patch('pathlib.Path.write_text')
+    def test_summary_fallback_path_long_raw_output_stored_in_full(self, mock_write_text, mock_mkdir, mock_agent_runner_class, mock_config_class):
+        """Raw output >500 chars (non-JSON) stored in full without slicing."""
+        long_output = "B" * 600
+        
+        mock_config = MagicMock()
+        mock_config.ideating_rounds = [MagicMock()]
+        mock_config.ideating_max_rounds = 1
+        mock_config.boards_dir = Path("/tmp/boards")
+        mock_config.mad_dir = Path("/tmp/mad")
+        mock_config_class.return_value = mock_config
+        
+        feature = self._create_mock_feature()
+        runner = self._create_mock_runner(long_output)
+        
+        phases.run_ideating(feature, runner)
+        
+        feature.add_ideation_summary.assert_called()
+        stored_summary = feature.add_ideation_summary.call_args[0][0]
+        self.assertEqual(len(stored_summary), 600)
+        self.assertEqual(stored_summary, long_output)
+
+    @patch('phases.Config')
+    @patch('phases.AgentRunner')
+    @patch('pathlib.Path.mkdir')
+    @patch('pathlib.Path.write_text')
+    def test_summary_json_path_short_summary_stored_as_is(self, mock_write_text, mock_mkdir, mock_agent_runner_class, mock_config_class):
+        """Short summary (<300 chars) stored as-is."""
+        import json
+        
+        short_summary = "C" * 100
+        output = json.dumps({"summary": short_summary})
+        
+        mock_config = MagicMock()
+        mock_config.ideating_rounds = [MagicMock()]
+        mock_config.ideating_max_rounds = 1
+        mock_config.boards_dir = Path("/tmp/boards")
+        mock_config.mad_dir = Path("/tmp/mad")
+        mock_config_class.return_value = mock_config
+        
+        feature = self._create_mock_feature()
+        runner = self._create_mock_runner(output)
+        
+        phases.run_ideating(feature, runner)
+        
+        feature.add_ideation_summary.assert_called()
+        stored_summary = feature.add_ideation_summary.call_args[0][0]
+        self.assertEqual(len(stored_summary), 100)
+        self.assertEqual(stored_summary, short_summary)
+
+
+class TestTerminalStagePipeline(unittest.TestCase):
+    """Tests for terminal_stage feature in run_pipeline."""
+
+    def _create_mock_feature(self, board="default", current_stage="reviewing-plan",
+                             requires_human_approval=False):
+        """Create a mock FeatureFile for testing pipeline behavior."""
+        from unittest.mock import MagicMock
+        
+        feature = MagicMock()
+        feature.title = "Test Feature"
+        feature.slug = "test-feature"
+        feature.board = board
+        feature.requires_human_approval = requires_human_approval
+        feature.plan_reviews = []
+        feature.spec_reviews = []
+        feature.history_entries = []
+        feature.plan = "test plan"
+        feature.impl_spec = "test spec"
+        feature.test_spec = "test test spec"
+        
+        stage_storage = [current_stage]
+        
+        def move_to_stage(stage):
+            stage_storage[0] = stage
+            feature.move_to_stage_calls.append(stage)
+        
+        def add_history(stage, note):
+            feature.history_entries.append({"stage": stage, "note": note})
+            feature.add_history_calls.append((stage, note))
+        
+        feature.move_to_stage_calls = []
+        feature.add_history_calls = []
+        
+        feature.move_to_stage = MagicMock(side_effect=move_to_stage)
+        feature.add_history = MagicMock(side_effect=add_history)
+        feature.save = MagicMock()
+        
+        type(feature).current_stage = property(lambda self: stage_storage[0])
+        
+        return feature
+
+    @patch('phases.run_plan_review')
+    @patch('phases.run_spec_writing')
+    @patch('phases.run_implementing')
+    @patch('phases._git_commit')
+    @patch('phases.Config')
+    def test_terminal_stage_plan_stops_after_plan_review(
+            self, mock_config_class, mock_git_commit, mock_run_implementing,
+            mock_run_spec_writing, mock_run_plan_review):
+        """spec 1.8: terminal_stage='plan' stops after plan review passes."""
+        mock_feature = self._create_mock_feature(board="planning", current_stage="reviewing-plan")
+        
+        mock_config = MagicMock()
+        mock_config.get_terminal_stage.return_value = "plan"
+        mock_config_class.return_value = mock_config
+        
+        mock_run_plan_review.return_value = ("PASS", "")
+        
+        from phases import _run_pipeline_impl
+        from runner import AgentRunner
+        runner = MagicMock(spec=AgentRunner)
+        
+        _run_pipeline_impl(mock_feature, runner)
+        
+        self.assertEqual(mock_feature.move_to_stage.call_count, 1)
+        final_call = mock_feature.move_to_stage.call_args[0][0]
+        self.assertEqual(final_call, "final-human-approval")
+        
+        history_calls = mock_feature.add_history.call_args_list
+        terminal_history = [c for c in history_calls if c[0][0] == "TERMINAL_STAGE"]
+        self.assertEqual(len(terminal_history), 1)
+        self.assertIn("plan", terminal_history[0][0][1])
+        self.assertIn("final-human-approval", terminal_history[0][0][1])
+        
+        mock_run_spec_writing.assert_not_called()
+        mock_run_implementing.assert_not_called()
+
+    @patch('phases.run_plan_review')
+    @patch('phases.run_spec_writing')
+    @patch('phases.run_spec_review')
+    @patch('phases.run_implementing')
+    @patch('phases._git_commit')
+    @patch('phases.Config')
+    def test_terminal_stage_spec_stops_after_spec_review(
+            self, mock_config_class, mock_git_commit, mock_run_implementing,
+            mock_run_spec_review, mock_run_spec_writing, mock_run_plan_review):
+        """spec 1.9: terminal_stage='spec' stops after spec review passes."""
+        mock_feature = self._create_mock_feature(board="spec", current_stage="approved")
+        
+        mock_config = MagicMock()
+        mock_config.get_terminal_stage.return_value = "spec"
+        mock_config_class.return_value = mock_config
+        
+        mock_run_plan_review.return_value = ("PASS", "")
+        mock_run_spec_review.return_value = ("PASS", "")
+        
+        from phases import _run_pipeline_impl
+        from runner import AgentRunner
+        runner = MagicMock(spec=AgentRunner)
+        
+        _run_pipeline_impl(mock_feature, runner)
+        
+        self.assertEqual(mock_feature.move_to_stage.call_count, 1)
+        final_call = mock_feature.move_to_stage.call_args[0][0]
+        self.assertEqual(final_call, "final-human-approval")
+        
+        history_calls = mock_feature.add_history.call_args_list
+        terminal_history = [c for c in history_calls if c[0][0] == "TERMINAL_STAGE"]
+        self.assertEqual(len(terminal_history), 1)
+        self.assertIn("spec", terminal_history[0][0][1])
+        self.assertIn("final-human-approval", terminal_history[0][0][1])
+        
+        mock_run_spec_writing.assert_called_once()
+        mock_run_implementing.assert_not_called()
+
+    @patch('phases.run_plan_review')
+    @patch('phases.run_spec_writing')
+    @patch('phases.run_spec_review')
+    @patch('phases.run_implementing')
+    @patch('phases.run_verify_tests')
+    @patch('phases.run_review_impl')
+    @patch('phases._git_commit')
+    @patch('phases.Config')
+    def test_no_terminal_stage_runs_full_pipeline(
+            self, mock_config_class, mock_git_commit, mock_run_review_impl,
+            mock_run_verify_tests, mock_run_implementing, mock_run_spec_review,
+            mock_run_spec_writing, mock_run_plan_review):
+        """spec 1.10: No terminal_stage runs full pipeline."""
+        mock_feature = self._create_mock_feature(board="default", current_stage="reviewing-plan")
+        
+        mock_config = MagicMock()
+        mock_config.get_terminal_stage.return_value = None
+        mock_config_class.return_value = mock_config
+        
+        mock_run_plan_review.return_value = ("PASS", "")
+        mock_run_spec_review.return_value = ("PASS", "")
+        mock_run_verify_tests.return_value = ("PASS", "")
+        mock_run_review_impl.return_value = ("PASS", "")
+        
+        from phases import _run_pipeline_impl
+        from runner import AgentRunner
+        runner = MagicMock(spec=AgentRunner)
+        
+        _run_pipeline_impl(mock_feature, runner)
+        
+        mock_run_plan_review.assert_called()
+        mock_run_spec_writing.assert_called()
+        mock_run_spec_review.assert_called()
+        mock_run_implementing.assert_called()
+        
+        history_calls = mock_feature.add_history.call_args_list
+        terminal_history = [c for c in history_calls if c[0][0] == "TERMINAL_STAGE"]
+        self.assertEqual(len(terminal_history), 0)
+
+    @patch('phases.run_plan_review')
+    @patch('phases.run_spec_writing')
+    @patch('phases._git_commit')
+    @patch('phases.Config')
+    def test_stage_guard_prevents_spec_fallthrough(
+            self, mock_config_class, mock_git_commit,
+            mock_run_spec_writing, mock_run_plan_review):
+        """spec 1.11: Stage guard prevents spec writing when requires_human_approval."""
+        mock_feature = self._create_mock_feature(
+            board="default", current_stage="reviewing-plan", requires_human_approval=True)
+        
+        mock_config = MagicMock()
+        mock_config.get_terminal_stage.return_value = None
+        mock_config_class.return_value = mock_config
+        
+        mock_run_plan_review.return_value = ("PASS", "")
+        
+        from phases import _run_pipeline_impl
+        from runner import AgentRunner
+        runner = MagicMock(spec=AgentRunner)
+        
+        _run_pipeline_impl(mock_feature, runner)
+        
+        self.assertEqual(mock_feature.move_to_stage.call_count, 1)
+        final_call = mock_feature.move_to_stage.call_args[0][0]
+        self.assertEqual(final_call, "awaiting-human-approval")
+        
+        history_calls = mock_feature.add_history.call_args_list
+        approval_history = [c for c in history_calls if c[0][0] == "AWAITING_HUMAN_APPROVAL"]
+        self.assertEqual(len(approval_history), 1)
+        
+        mock_run_spec_writing.assert_not_called()
+
+    @patch('phases.run_plan_review')
+    @patch('phases.run_spec_writing')
+    @patch('phases.run_implementing')
+    @patch('phases._git_commit')
+    @patch('phases.Config')
+    def test_terminal_stage_plan_priority_over_human_approval(
+            self, mock_config_class, mock_git_commit, mock_run_implementing,
+            mock_run_spec_writing, mock_run_plan_review):
+        """spec 1.12: terminal_stage='plan' takes priority over requires_human_approval."""
+        mock_feature = self._create_mock_feature(
+            board="planning", current_stage="reviewing-plan", requires_human_approval=True)
+        
+        mock_config = MagicMock()
+        mock_config.get_terminal_stage.return_value = "plan"
+        mock_config_class.return_value = mock_config
+        
+        mock_run_plan_review.return_value = ("PASS", "")
+        
+        from phases import _run_pipeline_impl
+        from runner import AgentRunner
+        runner = MagicMock(spec=AgentRunner)
+        
+        _run_pipeline_impl(mock_feature, runner)
+        
+        final_call = mock_feature.move_to_stage.call_args[0][0]
+        self.assertEqual(final_call, "final-human-approval")
+        
+        history_calls = mock_feature.add_history.call_args_list
+        terminal_history = [c for c in history_calls if c[0][0] == "TERMINAL_STAGE"]
+        self.assertEqual(len(terminal_history), 1)
+        
+        approval_history = [c for c in history_calls if c[0][0] == "AWAITING_HUMAN_APPROVAL"]
+        self.assertEqual(len(approval_history), 0)
+        
+        mock_run_spec_writing.assert_not_called()
+        mock_run_implementing.assert_not_called()
+
+    @patch('phases.run_plan_review')
+    @patch('phases.run_spec_writing')
+    @patch('phases.run_spec_review')
+    @patch('phases.run_implementing')
+    @patch('phases._git_commit')
+    @patch('phases.Config')
+    def test_terminal_stage_spec_plan_review_normal(
+            self, mock_config_class, mock_git_commit, mock_run_implementing,
+            mock_run_spec_review, mock_run_spec_writing, mock_run_plan_review):
+        """spec 1.13: terminal_stage='spec' allows plan review to proceed normally."""
+        mock_feature = self._create_mock_feature(board="spec", current_stage="reviewing-plan")
+        
+        mock_config = MagicMock()
+        mock_config.get_terminal_stage.return_value = "spec"
+        mock_config_class.return_value = mock_config
+        
+        mock_run_plan_review.return_value = ("PASS", "")
+        mock_run_spec_review.return_value = ("PASS", "")
+        
+        from phases import _run_pipeline_impl
+        from runner import AgentRunner
+        runner = MagicMock(spec=AgentRunner)
+        
+        _run_pipeline_impl(mock_feature, runner)
+        
+        mock_run_plan_review.assert_called_once()
+        
+        mock_run_spec_writing.assert_called_once()
+        mock_run_spec_review.assert_called_once()
+        
+        final_call = mock_feature.move_to_stage.call_args[0][0]
+        self.assertEqual(final_call, "final-human-approval")
+
+    @patch('phases.run_plan_review')
+    @patch('phases.run_spec_writing')
+    @patch('phases.run_implementing')
+    @patch('phases._git_commit')
+    @patch('phases.Config')
+    def test_terminal_stage_history_entries(
+            self, mock_config_class, mock_git_commit, mock_run_implementing,
+            mock_run_spec_writing, mock_run_plan_review):
+        """spec 1.14: Verify TERMINAL_STAGE history entries are descriptive."""
+        mock_feature = self._create_mock_feature(board="planning", current_stage="reviewing-plan")
+        
+        mock_config = MagicMock()
+        mock_config.get_terminal_stage.return_value = "plan"
+        mock_config_class.return_value = mock_config
+        
+        mock_run_plan_review.return_value = ("PASS", "")
+        
+        from phases import _run_pipeline_impl
+        from runner import AgentRunner
+        runner = MagicMock(spec=AgentRunner)
+        
+        _run_pipeline_impl(mock_feature, runner)
+        
+        history_calls = mock_feature.add_history.call_args_list
+        terminal_history = [c for c in history_calls if c[0][0] == "TERMINAL_STAGE"]
+        
+        self.assertEqual(len(terminal_history), 1)
+        tag, message = terminal_history[0][0]
+        
+        self.assertEqual(tag, "TERMINAL_STAGE")
+        self.assertIn("plan", message)
+        self.assertIn("final-human-approval", message)
+
+
 if __name__ == '__main__':
     unittest.main()

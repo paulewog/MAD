@@ -1,0 +1,990 @@
+{
+  "id": "9c5c0666",
+  "board": "mad",
+  "title": "ideation round summaries in tui are truncated",
+  "type": "bug",
+  "created": "2026-03-18T00:23Z",
+  "description": "Seems to be truncation in ideation round summaries in tui",
+  "done_script": "",
+  "requires_human_approval": false,
+  "plan": "## Root Cause Analysis\n\nThe truncation occurs at **two levels**, with the primary cause being at the data storage layer:\n\n1. **Primary cause (storage-level truncation):** When ideation rounds complete, the summary extracted from each round's JSON output is sliced to 500 characters before being stored in the feature file. This means the truncation is baked into the persisted data \u2014 no downstream renderer (TUI or web UI) can show more than what was stored. Both the JSON-parsed path and the fallback (raw output) path apply the same 500-char slice.\n\n2. **Secondary cause (TUI display truncation):** The TUI's feature markdown rendering function applies an additional truncation to 300 characters when displaying ideation round summaries. This means even if the storage limit were raised, the TUI would still show only 300 characters. This is actively used code \u2014 it is called when rendering the feature detail view.\n\n## Impact Assessment\n\n- Ideation round summaries in both the TUI and web UI are limited to 500 characters, losing potentially valuable context from AI-generated round summaries.\n- The TUI further truncates to 300 characters, making the display even more limited than what is stored.\n- The truncation is lossy \u2014 once stored, the original full summary cannot be recovered for existing features (only the full conversation output files retain the complete text).\n- The web UI appears to show summaries without additional truncation, but it too is limited by the 500-char storage cap.\n\n## Fix Strategy\n\n1. **Remove the storage-level truncation:** The 500-character slice applied to summaries during ideation round processing should be removed entirely. Summaries are relatively short text (a few paragraphs at most) and don't need aggressive truncation for storage or display. Both the JSON-parsed path and the raw-output fallback path need to be updated.\n\n2. **Remove the TUI display truncation:** The 300-character truncation in the TUI's feature markdown rendering should be removed so that the full stored summary is displayed.\n\n3. **Keep the full output files as-is:** The full conversation output files already store complete round outputs \u2014 this is good and should not change.\n\n4. **Note on review verdict truncation:** The review verdict parsing also truncates review summaries to 500 characters, but that is a separate concern from ideation round summaries and should not be changed as part of this fix.\n\n## Risks\n\n- Removing the truncation limit could result in very large summaries if the AI produces unexpectedly verbose output, but this is unlikely since the summarization prompt controls output length.\n- Existing features already have truncated summaries stored \u2014 the fix will only apply to future ideation rounds. Existing data would need to be re-generated from the full conversation output files if recovery is desired.\n- The change is low-risk since it only removes artificial limits on a text field.\n- No existing tests were found that assert on the 500-char or 300-char truncation behavior specifically, so no test updates are needed.\n\n## Scope\n\n- The fix should address the storage-level truncation in the ideation round processing logic (both JSON and fallback paths).\n- The TUI's feature markdown rendering function should be updated to remove the 300-character truncation of ideation summaries.\n- No changes needed to the server/Go code \u2014 it passes summaries through without modification.\n- No test changes required \u2014 no tests currently assert on these truncation limits.",
+  "plan_exploration_summary": "",
+  "impl_spec": "## Task 1: Remove storage-level 500-char truncation in ideation round processing\n\n**File:** `pipeline/phases.py`\n**Lines:** 852, 854\n**Function:** `run_ideating()`\n\n**Current code (lines 850-854):**\n```python\ntry:\n    result = json.loads(output)\n    summary = result.get(\"summary\", \"\")[:500]\nexcept json.JSONDecodeError:\n    summary = output[:500]\n```\n\n**Change:** Remove the `[:500]` slice from both paths.\n\n**New code:**\n```python\ntry:\n    result = json.loads(output)\n    summary = result.get(\"summary\", \"\")\nexcept json.JSONDecodeError:\n    summary = output\n```\n\n**Details:**\n- Line 852: Change `result.get(\"summary\", \"\")[:500]` to `result.get(\"summary\", \"\")`\n- Line 854: Change `output[:500]` to `output`\n- No other lines in this function need to change \u2014 `feature.add_ideation_summary(summary)` on line 856 and `summaries.append(summary)` on line 857 will simply receive the full-length summary.\n- Do NOT touch the review verdict truncation elsewhere in this file (that is a separate concern per the plan).\n\n**Dependencies:** None\n\n---\n\n## Task 2: Remove TUI display 300-char truncation in feature markdown rendering\n\n**File:** `pipeline/tui.py`\n**Line:** 215\n**Function:** `_build_feature_header_markdown()`\n\n**Current code (line 215):**\n```python\nlines += [f\"### Round {i+1}\", \"\", summary[:300] + \"...\" if len(summary) > 300 else summary, \"\"]\n```\n\n**Change:** Remove the truncation logic \u2014 display the full summary.\n\n**New code:**\n```python\nlines += [f\"### Round {i+1}\", \"\", summary, \"\"]\n```\n\n**Details:**\n- Replace the ternary expression `summary[:300] + \"...\" if len(summary) > 300 else summary` with just `summary`.\n- This removes the 300-char display limit so the full stored summary is shown in the TUI.\n\n**Dependencies:** None (independent of Task 1, but both should be done together)\n\n---\n\n## Verification\n\n- No tests currently assert on the 500-char or 300-char truncation limits, so no test updates are needed.\n- No Go/server code changes needed \u2014 the server passes summaries through without modification.\n- After these changes, future ideation rounds will store and display full summaries. Existing truncated summaries in feature files are unrecoverable from the feature JSON alone (full outputs are preserved in conversation files).",
+  "test_spec": "# Test Specification: Ideation Round Summaries Truncation Removal\n\n## 1. Behaviors That MUST Be Verified\n\n### 1a. Storage-Level Truncation Removed (phases.py \u2014 JSON-parsed path)\n- **Behavior:** When an ideation round completes and its output is valid JSON with a \"summary\" field, the full summary text should be stored in the feature file without any character limit.\n- **Success Criteria:** A summary longer than 500 characters is stored in its entirety via `feature.add_ideation_summary()`. The stored summary matches the original `result.get(\"summary\", \"\")` value exactly, with no slicing.\n- **Expected Output:** `feature.ideation_summaries` contains the complete summary string, regardless of length.\n\n### 1b. Storage-Level Truncation Removed (phases.py \u2014 fallback/raw output path)\n- **Behavior:** When an ideation round completes and its output is NOT valid JSON (triggers `json.JSONDecodeError`), the full raw output text should be stored as the summary without any character limit.\n- **Success Criteria:** A raw output string longer than 500 characters is stored in its entirety. The stored summary matches the original `output` value exactly, with no slicing.\n- **Expected Output:** `feature.ideation_summaries` contains the complete raw output string.\n\n### 1c. TUI Display Truncation Removed (tui.py)\n- **Behavior:** When rendering the feature detail view in the TUI, ideation round summaries should be displayed in full without any character truncation.\n- **Success Criteria:** A summary longer than 300 characters is rendered completely without appending \"...\" or slicing. The rendered markdown line for each round summary equals the full stored summary string.\n- **Expected Output:** The rendered line for each round is exactly `summary`, not `summary[:300] + \"...\"`.\n\n### 1d. Short Summaries Still Work Correctly\n- **Behavior:** Summaries shorter than the old limits (under 300 characters, under 500 characters) should continue to be stored and displayed identically to before.\n- **Success Criteria:** A short summary (e.g., 100 characters) is stored and displayed without any modification or added ellipsis.\n- **Expected Output:** The summary is stored and rendered as-is.\n\n### 1e. Summaries Appended to Feature Correctly\n- **Behavior:** After removing truncation, `feature.add_ideation_summary(summary)` and `summaries.append(summary)` should still be called with the (now full-length) summary.\n- **Success Criteria:** Both the feature's persisted ideation_summaries list and the local summaries list contain the full summary.\n- **Expected Output:** The summary appears in both lists, unmodified.\n\n## 2. Edge Cases\n\n### 2a. Empty Summary from JSON\n- **Input:** Valid JSON output where `result.get(\"summary\", \"\")` returns an empty string `\"\"`.\n- **Expected:** Empty string is stored and displayed without error. No crash or unexpected behavior.\n\n### 2b. Missing \"summary\" Key in JSON\n- **Input:** Valid JSON output that does not contain a \"summary\" key (e.g., `{\"other_field\": \"value\"}`).\n- **Expected:** The default empty string `\"\"` is stored via `result.get(\"summary\", \"\")`. No crash.\n\n### 2c. Null/None Summary Value in JSON\n- **Input:** Valid JSON output where `\"summary\"` is `null`.\n- **Expected:** `result.get(\"summary\", \"\")` returns `None`. Verify this is handled (either stored as `None` or converted to empty string). If the code does not explicitly handle `None`, this is an existing behavior \u2014 the fix should not regress it.\n\n### 2d. Very Long Summary (e.g., 10,000+ characters)\n- **Input:** A summary string that is 10,000 characters or more.\n- **Expected:** The full string is stored and displayed without truncation. No memory issues or crashes for reasonable summary lengths.\n\n### 2e. Summary Containing Special Characters\n- **Input:** Summary with newlines, markdown formatting, unicode characters, or special symbols.\n- **Expected:** The full string is stored and displayed as-is. No corruption or unintended truncation at special character boundaries.\n\n### 2f. Empty Raw Output (Fallback Path)\n- **Input:** Raw output string that is empty `\"\"` and also fails JSON parsing.\n- **Expected:** Empty string is stored as the summary. No crash.\n\n### 2g. Multiple Ideation Rounds with Mixed Lengths\n- **Input:** Feature with multiple ideation rounds \u2014 some with short summaries (under 300 chars), some with medium summaries (300-500 chars), and some with long summaries (over 500 chars).\n- **Expected:** Each summary is stored and displayed at its full length independently. No cross-contamination between rounds.\n\n## 3. What Constitutes Failure\n\n### 3a. Any Truncation Still Present\n- **Failure:** If any summary is sliced or truncated (e.g., `[:500]` or `[:300]` still applied), the fix has not been properly applied.\n- **Detection:** Compare stored/displayed summary length against original input length. They must be equal for all inputs.\n\n### 3b. Ellipsis Appended\n- **Failure:** If `\"...\"` is appended to any summary during display, the TUI truncation logic has not been fully removed.\n- **Detection:** Check that no summary in the rendered output ends with `\"...\"` that was not part of the original summary text.\n\n### 3c. Regression in Summary Storage\n- **Failure:** If `feature.add_ideation_summary()` is not called, or is called with a modified (truncated) summary.\n- **Detection:** Verify the argument passed to `add_ideation_summary` matches the full extracted summary.\n\n### 3d. Crash on Edge Case Inputs\n- **Failure:** If the code throws an unhandled exception for empty strings, None values, or very long strings.\n- **Detection:** Exercise edge cases and verify no exceptions are raised.\n\n### 3e. Review Verdict Truncation Accidentally Changed\n- **Failure:** If the review verdict parsing's 500-character truncation is also removed as a side effect.\n- **Detection:** Verify that review verdict truncation code elsewhere in the file remains unchanged.\n\n## 4. Out of Scope\n\n- **UI timing/rendering performance:** Do not test how quickly the TUI renders long summaries.\n- **Visual assertions:** Do not test pixel-level or terminal-level rendering of the TUI display.\n- **Existing truncated data recovery:** Do not test whether previously truncated summaries can be recovered from conversation output files.\n- **Web UI display:** The web UI is not being changed; do not test its rendering behavior.\n- **Go/server code:** The server passes summaries through without modification and is not being changed.\n- **Review verdict truncation:** This is explicitly out of scope per the plan; do not test or change it.\n- **AI output content quality:** Do not test whether the AI-generated summaries are good or well-formatted.\n- **Performance benchmarks:** Do not measure storage size impact or memory usage of larger summaries.\n- **Concurrent ideation rounds:** The pipeline processes rounds sequentially within a feature; concurrency is not a concern for this fix.",
+  "impl_notes": "Fixed the test files to properly verify that ideation round summaries are not truncated. The production code (phases.py and tui.py) already had the truncation removed. The storage-level tests in test_phases_unit.py were rewritten to actually call the production run_ideating function with proper mocking of AgentRunner, Config, and filesystem operations. The TUI tests in test_tui_ideation_summaries.py were fixed by extracting the _feature_markdown function to a separate module (tui_markdown.py) that doesn't require textual imports. All 13 tests pass.",
+  "ideation_summaries": [],
+  "ideation": "",
+  "ideation_prompt": "",
+  "history": [
+    {
+      "ts": "2026-03-18T00:23Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-18T00:23Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-18T00:26Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T00:28Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T00:28Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T00:28Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T00:28Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T00:28Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T00:29Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T00:30Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T00:30Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T00:30Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T00:30Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T00:30Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T00:30Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T00:31Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T00:31Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T00:31Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T00:31Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T00:31Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T00:31Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T00:33Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T00:33Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T00:33Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T00:33Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T00:33Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T00:33Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T00:38Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T00:48Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T00:50Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T00:50Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T00:50Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T00:50Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T00:50Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T00:50Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T00:51Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T00:51Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T00:51Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T00:51Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T00:51Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T00:51Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T00:53Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T00:53Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T00:53Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T00:53Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T00:53Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T00:53Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T00:54Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T00:54Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T00:54Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T00:54Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T00:54Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T00:54Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T00:56Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T00:56Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T00:56Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): (no stdout)"
+    },
+    {
+      "ts": "2026-03-18T00:56Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): (no stdout)"
+    },
+    {
+      "ts": "2026-03-18T00:56Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T00:56Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T00:58Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T00:58Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T00:58Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T00:58Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T00:58Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T00:58Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T00:59Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T00:59Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T00:59Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T00:59Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T00:59Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T00:59Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T01:02Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T01:02Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T01:02Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T01:02Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T01:02Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T01:02Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T01:05Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T01:05Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T01:05Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T01:05Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T01:05Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T01:05Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T01:06Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T01:06Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T01:06Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T01:06Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T01:06Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T01:06Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T01:08Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T01:08Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T01:08Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T01:08Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T01:08Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T01:08Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T01:10Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T01:10Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T01:10Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T01:10Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T01:10Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T01:10Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T01:12Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T01:12Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T01:12Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T01:12Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T01:12Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T01:12Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T01:14Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T01:14Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T01:14Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T01:14Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T01:14Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T01:14Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T01:15Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T01:15Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T01:15Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T01:15Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T01:15Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T01:15Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T01:19Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T01:19Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T01:19Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T01:19Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T01:19Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T01:19Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-18T01:20Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-18T01:20Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T01:20Z",
+      "stage": "PLAN_REVIEW",
+      "note": "FAILED: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue   ..."
+    },
+    {
+      "ts": "2026-03-18T01:20Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "System error: opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --conti..."
+    },
+    {
+      "ts": "2026-03-18T01:20Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)..."
+    },
+    {
+      "ts": "2026-03-18T01:26Z",
+      "stage": "MOVED",
+      "note": "Manual move: plan-inbox -> reviewing-plan"
+    },
+    {
+      "ts": "2026-03-18T01:26Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-18T01:26Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-18T01:26Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-18T01:26Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-18T01:26Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-18T01:29Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-18T01:30Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-18T01:30Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-18T01:32Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-18T01:32Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-18T01:32Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-18T01:36Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-18T01:36Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-18T01:38Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation changes are correct \u2014 both truncations properly removed from phase..."
+    },
+    {
+      "ts": "2026-03-18T01:38Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-18T01:44Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-18T01:44Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-18T01:44Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-18T01:47Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-18T01:47Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-18T01:48Z",
+      "stage": "REVIEW",
+      "note": "Verdict: FAIL - Implementation code is correct (truncation removed from both storage and TUI path..."
+    },
+    {
+      "ts": "2026-03-18T01:48Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-18T02:06Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-18T02:06Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-18T02:06Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-18T02:09Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-18T02:09Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-18T02:11Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation correctly removes ideation summary truncation at both storage (pha..."
+    },
+    {
+      "ts": "2026-03-18T02:11Z",
+      "stage": "PROMOTED",
+      "note": "Implementation approved"
+    },
+    {
+      "ts": "2026-03-18T18:15Z",
+      "stage": "DONE",
+      "note": "Moved via web UI"
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-18T00:28Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T00:30Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T00:31Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T00:33Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T00:50Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T00:51Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T00:53Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T00:54Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T00:56Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): (no stdout). This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T00:58Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T00:59Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T01:02Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T01:05Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T01:06Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T01:08Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T01:10Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T01:12Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T01:14Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T01:15Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T01:19Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T01:20Z",
+      "verdict": "FAIL",
+      "summary": "System error during review",
+      "feedback": "SYSTEM ERROR: Agent execution failed - opencode exited with code 1.\nstderr: (no stderr)\nstdout (last 500 chars): , --continue     continue the last session                                             [boolean]\n  -s, --session      session id to continue                                                 [string]\n      --fork         fork the session when continuing (use with --continue or --session)   [boolean]\n      --prompt       prompt to use                                                          [string]\n      --agent        agent to use                                                           [string]. This is not a plan issue. Review should be retried."
+    },
+    {
+      "ts": "2026-03-18T01:26Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-18T01:38Z",
+      "verdict": "FAIL",
+      "summary": "Implementation changes are correct \u2014 both truncations properly removed from phases.py and tui.py with no unintended side effects. However, verification phase found zero new tests were written to cover the test spec requirements (storage truncation removal, TUI display truncation removal, edge cases). Existing 135 tests pass but none validate the specific fix behaviors.",
+      "feedback": "The code changes are correct and complete per the plan. The FAIL is solely due to missing test coverage. The following tests must be added:\n\nStorage-level truncation removed (JSON path): Test that a summary >500 chars passed through json.loads output is stored in full via feature.add_ideation_summary() without slicing.\n\nStorage-level truncation removed (fallback path): Test that raw output >500 chars (non-JSON) is stored in full without slicing.\n\nTUI display truncation removed: Test that _feature_markdown() renders summaries >300 chars in full without appending '...'.\n\nShort summaries still work: Test that summaries <300 chars are stored and displayed as-is.\n\nEdge cases: Empty summary from JSON, missing 'summary' key, None summary value, very long summary (10k+ chars), special characters (newlines, unicode, markdown), empty raw output fallback, multiple rounds with mixed lengths.\n\nAll tests should be added to the existing test files (test_phases_unit.py for storage tests, and a new or existing test file for TUI rendering tests). The implementation code itself does NOT need changes \u2014 only tests are missing."
+    },
+    {
+      "ts": "2026-03-18T01:48Z",
+      "verdict": "FAIL",
+      "summary": "Implementation code is correct (truncation removed from both storage and TUI paths, review verdict truncation preserved). However, all tests are ineffective: storage tests don't test actual production code, and TUI tests fail to import due to missing textual module.",
+      "feedback": "The storage-level tests in TestIdeationSummaryStorageTruncationRemoved are fundamentally flawed \u2014 they only test json.loads/json.dumps (standard library behavior), never calling any production code from phases.py. They need to actually verify that run_ideating (or the relevant code path) calls feature.add_ideation_summary() with the full untruncated summary. The correct approach is to mock AgentRunner and FeatureFile, call the actual production function (or extract and test the summary-handling logic), and assert that add_ideation_summary receives the complete string.\n\nThe TUI tests in test_tui_ideation_summaries.py cannot run at all because import tui triggers from textual import work at module level, and textual is not installed. The tests need to either: (1) mock/patch the textual import so the module can load, or (2) use pytest.importorskip with a fallback, or (3) only import the _feature_markdown function in a way that avoids the top-level textual import. Since the previous review explicitly required TUI tests, they must actually execute.\n\nSpecific fixes needed:\n\nStorage tests: Rewrite to use unittest.mock to patch AgentRunner, create a mock FeatureFile with add_ideation_summary as a MagicMock, and call the actual ideation processing code path. Assert that add_ideation_summary.call_args[0][0] equals the full summary string (not truncated). Test both the JSON-parsed path and the fallback path by controlling what the mocked runner returns.\n\nTUI tests: Fix the import issue. One approach: create a mock textual module before importing tui, e.g.:\n   \n   Then import tui and call _feature_markdown. Alternatively, extract _feature_markdown into a separate module without textual dependencies.\n\nVerify the tests actually pass after the fixes by running them in this environment."
+    },
+    {
+      "ts": "2026-03-18T02:11Z",
+      "verdict": "PASS",
+      "summary": "Implementation correctly removes ideation summary truncation at both storage (phases.py:850-857) and TUI display (tui.py:214-215, tui_markdown.py:35-36) levels. Review verdict truncation preserved. All 13 tests pass, covering JSON path, fallback path, short/long/empty/unicode/multiline summaries, and multiple rounds.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-17T19:09:18.682917",
+    "verdict": "PASS",
+    "results": {
+      "passed": 66,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 66 tests pass. Test coverage is adequate for the required behaviors: (1a) storage-level truncation removed for JSON path - tested; (1b) storage-level truncation removed for fallback path - tested; (1c) TUI display truncation removed - tested; (1d) short summaries work - tested; (1e) summaries appended correctly - implicitly tested via storage tests. Edge cases: empty summary (tested), very long 10k+ chars (tested), newlines/unicode/markdown (tested), mixed lengths (tested). Review verdict truncation test still exists and passes - confirms out-of-scope item was not changed. Minor gaps: missing explicit tests for edge cases 2b (missing summary key), 2c (null summary value), 2f (empty fallback output) but these are non-critical."
+  }
+}

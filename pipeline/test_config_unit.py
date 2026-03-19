@@ -656,5 +656,146 @@ class TestBoardManagement(unittest.TestCase):
             self.assertTrue((self.boards_dir / "default" / stage).exists())
 
 
+class TestGetTerminalStage(unittest.TestCase):
+    """Tests for get_terminal_stage method."""
+
+    def setUp(self):
+        self.temp_dir = Path("/tmp/test-config-terminal-stage")
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        self.mad_dir = self.temp_dir / ".mad"
+        self.mad_dir.mkdir(parents=True, exist_ok=True)
+        self.boards_dir = self.mad_dir / "boards"
+        self.config_file = self.mad_dir / "config.json"
+        self.config_file.write_text(json.dumps({"boards": ["default", "planning"], "default_agent": "claude"}))
+
+    def tearDown(self):
+        import shutil
+        if self.temp_dir.exists():
+            shutil.rmtree(self.temp_dir)
+
+    def test_get_terminal_stage_valid_plan(self):
+        """Returns 'plan' when config has terminal_stage: 'plan'."""
+        board_dir = self.boards_dir / "planning"
+        board_dir.mkdir(parents=True, exist_ok=True)
+        (board_dir / "config.json").write_text(json.dumps({"terminal_stage": "plan"}))
+
+        config = Config(self.config_file)
+        result = config.get_terminal_stage("planning")
+
+        self.assertEqual(result, "plan")
+
+    def test_get_terminal_stage_valid_spec(self):
+        """Returns 'spec' when config has terminal_stage: 'spec'."""
+        board_dir = self.boards_dir / "planning"
+        board_dir.mkdir(parents=True, exist_ok=True)
+        (board_dir / "config.json").write_text(json.dumps({"terminal_stage": "spec"}))
+
+        config = Config(self.config_file)
+        result = config.get_terminal_stage("planning")
+
+        self.assertEqual(result, "spec")
+
+    def test_get_terminal_stage_missing_field(self):
+        """Returns None when field is absent."""
+        board_dir = self.boards_dir / "planning"
+        board_dir.mkdir(parents=True, exist_ok=True)
+        (board_dir / "config.json").write_text(json.dumps({"other_field": "value"}))
+
+        config = Config(self.config_file)
+        result = config.get_terminal_stage("planning")
+
+        self.assertIsNone(result)
+
+    def test_get_terminal_stage_null_value(self):
+        """Returns None when terminal_stage is null."""
+        board_dir = self.boards_dir / "planning"
+        board_dir.mkdir(parents=True, exist_ok=True)
+        (board_dir / "config.json").write_text(json.dumps({"terminal_stage": None}))
+
+        config = Config(self.config_file)
+        result = config.get_terminal_stage("planning")
+
+        self.assertIsNone(result)
+
+    def test_get_terminal_stage_empty_string(self):
+        """Returns None when terminal_stage is empty string."""
+        board_dir = self.boards_dir / "planning"
+        board_dir.mkdir(parents=True, exist_ok=True)
+        (board_dir / "config.json").write_text(json.dumps({"terminal_stage": ""}))
+
+        config = Config(self.config_file)
+        result = config.get_terminal_stage("planning")
+
+        self.assertIsNone(result)
+
+    def test_get_terminal_stage_invalid_value(self):
+        """Returns None and logs warning for invalid values."""
+        board_dir = self.boards_dir / "planning"
+        board_dir.mkdir(parents=True, exist_ok=True)
+        (board_dir / "config.json").write_text(json.dumps({"terminal_stage": "planning"}))
+
+        with patch('config.logger') as mock_logger:
+            config = Config(self.config_file)
+            result = config.get_terminal_stage("planning")
+
+            self.assertIsNone(result)
+            mock_logger.warning.assert_called_once()
+            warning_msg = mock_logger.warning.call_args[0][0]
+            self.assertIn("planning", warning_msg)
+            self.assertIn("plan", warning_msg)
+            self.assertIn("spec", warning_msg)
+
+    def test_get_terminal_stage_non_string_value(self):
+        """Returns None without crashing for non-string values."""
+        board_dir = self.boards_dir / "planning"
+        board_dir.mkdir(parents=True, exist_ok=True)
+        (board_dir / "config.json").write_text(json.dumps({"terminal_stage": 123}))
+
+        config = Config(self.config_file)
+        result = config.get_terminal_stage("planning")
+
+        self.assertIsNone(result)
+
+    def test_get_terminal_stage_missing_board_config(self):
+        """Returns None when board has no config.json."""
+        config = Config(self.config_file)
+        result = config.get_terminal_stage("nonexistent")
+
+        self.assertIsNone(result)
+
+    def test_get_terminal_stage_case_insensitivity(self):
+        """Normalizes to lowercase - 'Plan' returns 'plan'."""
+        board_dir = self.boards_dir / "planning"
+        board_dir.mkdir(parents=True, exist_ok=True)
+        (board_dir / "config.json").write_text(json.dumps({"terminal_stage": "PLAN"}))
+
+        config = Config(self.config_file)
+        result = config.get_terminal_stage("planning")
+
+        self.assertEqual(result, "plan")
+
+    def test_get_terminal_stage_whitespace_handling(self):
+        """Strips whitespace - ' plan ' returns 'plan'."""
+        board_dir = self.boards_dir / "planning"
+        board_dir.mkdir(parents=True, exist_ok=True)
+        (board_dir / "config.json").write_text(json.dumps({"terminal_stage": " plan "}))
+
+        config = Config(self.config_file)
+        result = config.get_terminal_stage("planning")
+
+        self.assertEqual(result, "plan")
+
+    def test_get_terminal_stage_whitespace_only(self):
+        """Whitespace-only returns None after stripping."""
+        board_dir = self.boards_dir / "planning"
+        board_dir.mkdir(parents=True, exist_ok=True)
+        (board_dir / "config.json").write_text(json.dumps({"terminal_stage": "   "}))
+
+        config = Config(self.config_file)
+        result = config.get_terminal_stage("planning")
+
+        self.assertIsNone(result)
+
+
 if __name__ == '__main__':
     unittest.main()

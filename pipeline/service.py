@@ -46,12 +46,12 @@ Description=MAD TUI - {project_dir.name}
 After=network.target
 
 [Service]
-Type=forking
+Type=oneshot
+RemainAfterExit=yes
 WorkingDirectory={work_dir}
+ExecStartPre=/bin/bash -c '/usr/bin/tmux kill-session -t {session} 2>/dev/null; true'
 ExecStart=/usr/bin/tmux new-session -d -s {session} -x 200 -y 50 {exec_path} tui
 ExecStop=/usr/bin/tmux kill-session -t {session}
-Restart=always
-RestartSec=3
 Environment=HOME={home}
 Environment=TERM=xterm-256color
 
@@ -141,6 +141,62 @@ def uninstall_service(project_dir: Path) -> None:
     subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
     
     print(f"Service uninstalled: {service_name}")
+
+
+def stop_service(project_dir: Path) -> None:
+    """Stop the systemd user service for this project without removing it."""
+    service_name = service_name_for_dir(project_dir)
+    session_name = tmux_session_name(project_dir)
+    
+    subprocess.run(["systemctl", "--user", "stop", service_name], capture_output=True)
+    subprocess.run(["tmux", "kill-session", "-t", session_name], capture_output=True)
+    
+    print(f"Service stopped: {service_name}")
+
+
+def start_service(project_dir: Path) -> None:
+    """Start the systemd user service for this project."""
+    service_name = service_name_for_dir(project_dir)
+    
+    unit_file_path = Path.home() / ".config" / "systemd" / "user" / f"{service_name}.service"
+    if not unit_file_path.exists():
+        print(f"Service not installed. Run: pipeline service install")
+        return
+    
+    try:
+        subprocess.run(["systemctl", "--user", "start", service_name], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error: Failed to start service: {e}")
+        print(f"You can try manually: systemctl --user start {service_name}")
+        sys.exit(1)
+    
+    result = subprocess.run(
+        ["systemctl", "--user", "status", service_name],
+        capture_output=True,
+        text=True
+    )
+    
+    print(f"Service started: {service_name}")
+    print(result.stdout)
+
+
+def restart_service(project_dir: Path) -> None:
+    """Restart the systemd user service for this project."""
+    service_name = service_name_for_dir(project_dir)
+    
+    unit_file_path = Path.home() / ".config" / "systemd" / "user" / f"{service_name}.service"
+    if not unit_file_path.exists():
+        print(f"Service not installed. Run: pipeline service install")
+        return
+    
+    try:
+        subprocess.run(["systemctl", "--user", "restart", service_name], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error: Failed to restart service: {e}")
+        print(f"You can try manually: systemctl --user restart {service_name}")
+        sys.exit(1)
+    
+    print(f"Service restarted: {service_name}")
 
 
 def service_status(project_dir: Path) -> None:

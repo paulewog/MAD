@@ -1,9 +1,9 @@
 {
-  "id": "b9dfee1c",
+  "id": "3ea07c16",
   "board": "test-board",
   "title": "Test Feature",
   "type": "feature",
-  "created": "2026-03-17T18:15Z",
+  "created": "2026-03-18T15:27Z",
   "description": "Test desc",
   "done_script": "",
   "requires_human_approval": false,
@@ -17,7 +17,7 @@
   "ideation_prompt": "",
   "history": [
     {
-      "ts": "2026-03-17T18:15Z",
+      "ts": "2026-03-18T15:27Z",
       "stage": "IDEAS",
       "note": "Idea created"
     }

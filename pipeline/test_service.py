@@ -19,6 +19,7 @@ from service import (
     install_service,
     uninstall_service,
     service_status,
+    restart_service,
 )
 
 
@@ -325,6 +326,93 @@ class TestServiceStatus(unittest.TestCase):
             # Check that it suggests running install
             printed = [str(c) for c in mock_print.call_args_list]
             self.assertTrue(any("install" in p.lower() for p in printed))
+
+
+class TestRestartService(unittest.TestCase):
+    """Tests for restart_service() function."""
+
+    @patch("service.subprocess.run")
+    @patch("service.Path.exists")
+    @patch("service.Path.home")
+    def test_restart_not_installed(self, mock_home, mock_exists, mock_run):
+        """Prints 'not installed' message and does not call subprocess when service doesn't exist."""
+        mock_home.return_value = Path("/home/testuser")
+        mock_exists.return_value = False
+        
+        with patch("builtins.print") as mock_print:
+            restart_service(Path("/home/testuser/my-project"))
+            
+            printed = [str(c) for c in mock_print.call_args_list]
+            self.assertTrue(any("not installed" in p.lower() for p in printed))
+            
+            mock_run.assert_not_called()
+
+    @patch("service.subprocess.run")
+    @patch("service.Path.exists")
+    @patch("service.Path.home")
+    def test_restart_success(self, mock_home, mock_exists, mock_run):
+        """Successfully restarts service with correct systemctl call."""
+        mock_home.return_value = Path("/home/testuser")
+        mock_exists.return_value = True
+        
+        with patch("builtins.print") as mock_print:
+            restart_service(Path("/home/testuser/my-project"))
+            
+            mock_run.assert_called_once_with(
+                ["systemctl", "--user", "restart", "mad-tui-029bdb872059"],
+                check=True
+            )
+            
+            printed = [str(c) for c in mock_print.call_args_list]
+            self.assertTrue(any("restarted" in p.lower() for p in printed))
+
+    @patch("service.subprocess.run")
+    @patch("service.Path.exists")
+    @patch("service.Path.home")
+    def test_restart_failure(self, mock_home, mock_exists, mock_run):
+        """Handles restart failure with error message and sys.exit(1)."""
+        mock_home.return_value = Path("/home/testuser")
+        mock_exists.return_value = True
+        mock_run.side_effect = subprocess.CalledProcessError(1, "systemctl")
+        
+        with patch("builtins.print") as mock_print:
+            with self.assertRaises(SystemExit) as ctx:
+                restart_service(Path("/home/testuser/my-project"))
+            
+            self.assertEqual(ctx.exception.code, 1)
+            
+            printed = [str(c) for c in mock_print.call_args_list]
+            self.assertTrue(any("error" in p.lower() for p in printed))
+            self.assertTrue(any("manually" in p.lower() for p in printed))
+
+    @patch("service.subprocess.run")
+    @patch("service.Path.exists")
+    @patch("service.Path.home")
+    def test_restart_no_tmux_kill(self, mock_home, mock_exists, mock_run):
+        """Does not call tmux kill-session; only systemctl restart is called."""
+        mock_home.return_value = Path("/home/testuser")
+        mock_exists.return_value = True
+        
+        restart_service(Path("/home/testuser/my-project"))
+        
+        self.assertEqual(mock_run.call_count, 1)
+        call_args = mock_run.call_args[0][0]
+        self.assertEqual(call_args[0], "systemctl")
+        self.assertNotIn("kill-session", " ".join(call_args))
+
+    @patch("service.subprocess.run")
+    @patch("service.Path.exists")
+    @patch("service.Path.home")
+    def test_restart_uses_correct_service_name(self, mock_home, mock_exists, mock_run):
+        """Uses service_name_for_dir to derive correct service name."""
+        mock_home.return_value = Path("/home/testuser")
+        mock_exists.return_value = True
+        
+        restart_service(Path("/home/testuser/my-project"))
+        
+        call_args = mock_run.call_args[0][0]
+        expected_service_name = service_name_for_dir(Path("/home/testuser/my-project"))
+        self.assertEqual(call_args[3], expected_service_name)
 
 
 class TestServerClientRestartHandler(unittest.TestCase):

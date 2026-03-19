@@ -6,7 +6,7 @@ Usage:
     pipeline restart <feature_id> [--from PHASE]
     pipeline auto [--all]
     pipeline lock status|clear
-    pipeline service install|uninstall|status
+    pipeline service install|uninstall|restart|stop|status
     pipeline edit-feature <slug> set-field|get-field|set-test-results
     pipeline tui
     pipeline schedule add|list|show|pause|resume|delete|daemon
@@ -549,6 +549,33 @@ def service_uninstall():
     config = get_config()
     project_dir = config.code_path or Path.cwd()
     uninstall_service(project_dir)
+
+
+@service_group.command('stop')
+def service_stop():
+    """Stop the systemd user service for this project."""
+    from service import stop_service
+    config = get_config()
+    project_dir = config.code_path or Path.cwd()
+    stop_service(project_dir)
+
+
+@service_group.command('start')
+def service_start():
+    """Start the systemd user service for this project."""
+    from service import start_service
+    config = get_config()
+    project_dir = config.code_path or Path.cwd()
+    start_service(project_dir)
+
+
+@service_group.command('restart')
+def service_restart():
+    """Restart the systemd user service for this project."""
+    from service import restart_service
+    config = get_config()
+    project_dir = config.code_path or Path.cwd()
+    restart_service(project_dir)
 
 
 @service_group.command('status')

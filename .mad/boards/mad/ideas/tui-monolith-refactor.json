@@ -104,6 +104,166 @@
       "ts": "2026-03-13T21:35Z",
       "stage": "IDEATING",
       "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-18T01:28Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-18T01:30Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-18T01:30Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T01:31Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-18T01:32Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T01:33Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-18T01:34Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 1)"
+    },
+    {
+      "ts": "2026-03-18T01:35Z",
+      "stage": "IDEATING",
+      "note": "Cycle 1: progress, continuing"
+    },
+    {
+      "ts": "2026-03-18T01:35Z",
+      "stage": "IDEATING",
+      "note": "Starting round 5 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T01:36Z",
+      "stage": "IDEATING",
+      "note": "Starting round 6 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-18T01:37Z",
+      "stage": "IDEATING",
+      "note": "Starting round 7 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T01:38Z",
+      "stage": "IDEATING",
+      "note": "Starting round 8 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-18T01:39Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 2)"
+    },
+    {
+      "ts": "2026-03-18T01:41Z",
+      "stage": "IDEATING",
+      "note": "Stall detected after 8 rounds"
+    },
+    {
+      "ts": "2026-03-18T01:41Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-18T02:40Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-18T14:09Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-18T14:09Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T14:10Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-18T14:11Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T14:12Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-18T14:12Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 1)"
+    },
+    {
+      "ts": "2026-03-18T14:13Z",
+      "stage": "IDEATING",
+      "note": "Cycle 1: progress, continuing"
+    },
+    {
+      "ts": "2026-03-18T14:13Z",
+      "stage": "IDEATING",
+      "note": "Starting round 5 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T14:14Z",
+      "stage": "IDEATING",
+      "note": "Starting round 6 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-18T14:15Z",
+      "stage": "IDEATING",
+      "note": "Starting round 7 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-18T14:16Z",
+      "stage": "IDEATING",
+      "note": "Starting round 8 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-18T14:17Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 2)"
+    },
+    {
+      "ts": "2026-03-18T14:18Z",
+      "stage": "IDEATING",
+      "note": "Stall detected after 8 rounds"
+    },
+    {
+      "ts": "2026-03-18T14:18Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-18T18:37Z",
+      "stage": "IDEAS",
+      "note": "Description edited via web UI"
+    },
+    {
+      "ts": "2026-03-18T18:37Z",
+      "stage": "IDEAS",
+      "note": "Description edited via web UI"
     }
   ],
   "pipeline_log": [],
@@ -117,7 +277,37 @@
     "The existing ideation correctly identifies the decomposition axes and sequencing trap around modals, but overlooks a practical incremental approach that exploits the file's natural seams. The 4,298-line tui.py has five clear extraction layers visible in the line ranges: (1) Lines 84-481 are pure standalone functions (_feature_markdown, _escape_markup, _format_json_text, _build_feature_detail_widgets, handle_cli_commands, _handle_config_command, _handle_context_command) with zero PipelineApp coup",
     "The previous proposal's incremental extraction plan (helpers first, then free-function action modules) is pragmatically sound but underweights three structural risks that could make the refactor stall mid-way. First, the 'free async functions that accept a PipelineApp instance' pattern for action_* methods is essentially a God Object anti-pattern in disguise \u2014 passing the entire PipelineApp as a parameter means every extracted function still has implicit access to all 30+ reactive attributes, th",
     "The prior rounds correctly identify the decomposition axes and the modal-first sequencing trap, but both overarchitect the solution by proposing new abstractions (ActionDispatcher, BoardDataStore, PipelineOrchestrator, callback protocols) before exploiting the file's existing mechanical seams. A more pragmatic approach recognizes that the 4,298-line file has three extraction tiers of decreasing risk. Tier 1 (zero-risk, immediate): lines 84-481 are pure standalone functions with zero PipelineApp ",
-    "The prior rounds converge on a reasonable decomposition strategy but share a blind spot: they treat the refactor as a design problem when it's primarily a migration-safety problem. The real risk isn't choosing the wrong module boundaries\u2014all three proposals' boundaries are defensible\u2014it's that a mid-flight refactor of a 4,298-line file with no test coverage will silently break behavior. The file has zero unit tests for PipelineApp (test_unified_edit_modal.py tests one modal in isolation, and tes"
+    "The prior rounds converge on a reasonable decomposition strategy but share a blind spot: they treat the refactor as a design problem when it's primarily a migration-safety problem. The real risk isn't choosing the wrong module boundaries\u2014all three proposals' boundaries are defensible\u2014it's that a mid-flight refactor of a 4,298-line file with no test coverage will silently break behavior. The file has zero unit tests for PipelineApp (test_unified_edit_modal.py tests one modal in isolation, and tes",
+    "The existing ideation has strong consensus on the three-tier extraction strategy and the test-first sequencing, but underexplores two practical dimensions: (1) the _check_for_changes() polling scalability problem called out in the original description, and (2) the concrete mechanics of characterization testing a Textual app. On the polling problem: _check_for_changes() (line ~2596) stats every feature file on each refresh cycle and compares snapshots \u2014 this is O(n) per tick and will degrade noti",
+    "The proposal's three-tier extraction strategy and test-first sequencing are sound in principle, but the plan underestimates three practical risks. First, the characterization test suite is treated as a prerequisite but no concrete scope is defined\u2014Textual's async rendering, reactive attribute side effects, and modal lifecycle make snapshot-based testing brittle, and the effort to build a reliable harness could easily exceed the refactoring effort itself; a more pragmatic gate would be a smaller ",
+    "The previous rounds reach correct consensus on the three-tier extraction and test-first sequencing but keep circling on abstract architecture (BoardDataStore, ActionDispatcher, callback protocols) without confronting the simplest practical blocker: the refactor can start today with zero new abstractions by exploiting Python's import mechanics. Tier 1 (lines 85-490: _last_modified_key, handle_cli_commands, _handle_config_command, _handle_context_command, _feature_markdown, _escape_markup, _format",
+    "The previous rounds converge on a reasonable extraction taxonomy but suffer from a collective blind spot: none of them address the ordering problem created by Textual's reactive attribute system and the @work decorator. Specifically, 15+ methods decorated with @work (e.g., _run_plan_async, _run_implement_async, _run_script_async, _auto_plan_feature) are coroutines that Textual schedules on the app's worker thread pool \u2014 they can only be defined on App subclasses or widgets, not on extracted free",
+    "The previous rounds have converged on the right decomposition axes but keep debating extraction order without resolving the fundamental tension that makes this refactor genuinely hard: PipelineApp is not just a God Class \u2014 it is a God Class whose methods are non-extractable by design due to Textual's @work decorator constraint. Round 4 correctly identifies that @work(thread=True) methods must live on an App or Widget subclass, but then dismisses the problem by suggesting call_from_thread is suff",
+    "The previous rounds have reached reasonable consensus on decomposition strategy but share a critical blind spot: they treat the refactor as primarily a code organization problem when the actual blocking issue is the absence of a testable boundary between pipeline orchestration logic and Textual's runtime. Rounds 4 and 5 correctly identify that @work(thread=True) methods cannot simply be extracted to free functions, but the proposed workarounds (call_from_thread bridges, message buses, mixin clas",
+    "The previous six rounds have thoroughly mapped the decomposition space but remain stuck in an analysis-paralysis loop over abstraction boundaries (ActionContext protocols, BoardDataStore, PipelineController event buses) that are premature given the current zero-test-coverage state. The critical insight missing from all prior rounds is that the refactor's success metric is not architectural purity but mechanical safety \u2014 and the safest possible first move is one that changes zero runtime behavior",
+    "The seven prior rounds have converged on a sensible three-tier extraction strategy but share a collective blind spot that undermines the entire plan's premise: they treat the refactor as a single coherent project when it is actually three unrelated problems with different risk profiles, timelines, and payoffs \u2014 and bundling them guarantees the lowest-risk work gets blocked by analysis paralysis over the hardest parts. Specifically, Tier 1 (pure helper extraction) and Tier 3 (@work-decorated orch",
+    "The prior ideation rounds have thoroughly mapped the decomposition space and reached strong consensus on the three-tier strategy, but this fourth cycle should focus on what's been consistently underspecified: the concrete file-level extraction plan for Tier 1 and the exact interface contract for Tier 2. Tier 1 is genuinely zero-risk and can be executed mechanically today: lines 85-490 (7 pure functions: _last_modified_key, handle_cli_commands, _handle_config_command, _handle_context_command, _feature_markdown, _escape_markup, _format_json_text, _build_feature_detail_widgets) move to pipeline/tui_helpers.py with a single `from tui_helpers import *` in tui.py preserving all call sites. This is a 400-line reduction with zero behavioral change, testable with standard pytest, and should be committed independently. For Tier 2, the prior rounds correctly identify the @work constraint but haven't acknowledged a simpler middle ground: rather than a full event-bus/PipelineController redesign, the ~25 synchronous action_* methods (action_move, action_approve, action_reject, action_restore, action_new_feature, etc.) can be split into a decision/validation layer extracted as pure functions and a thin dispatch layer remaining on PipelineApp. For example, action_approve's logic of 'determine next stage, validate preconditions, move file' is pure data transformation that doesn't need @work or self access beyond reading feature state \u2014 extract that logic, keep only the self.push_screen/self.notify calls on PipelineApp. This avoids the God Object anti-pattern flagged in Round 6 because extracted functions receive narrow typed arguments (feature data dict, current stage string) rather than the full PipelineApp instance. The _check_for_changes() polling problem should remain a separate workstream as all prior rounds agree, but the simplest immediate fix is adding an mtime cache dict and short-circuiting when no file's mtime has changed \u2014 no external dependency needed, reduces the hot path from O(n) file reads to O(n) stat calls with early exit.",
+    "The previous proposal's Tier 1 claim of 'zero-risk, shippable today' is overstated in three ways. First, the line ranges cited are wrong \u2014 the proposal says lines 85-490 contain 7 pure functions (~400 lines), but _build_feature_detail_widgets (lines 310-483) is not a pure function: it imports and instantiates Textual widgets (Static, Collapsible), calls Config() and load_scripts(), and thus has side effects and framework dependencies that make it unsuitable for a 'pure helpers' module tested with plain pytest. Extracting it into tui_helpers.py would either pull Textual into that module (defeating the 'pure, framework-free' testing benefit) or require refactoring it to return data structures instead of widgets (which is no longer zero-risk). Second, the `from tui_helpers import *` re-export strategy papers over the extraction rather than completing it \u2014 star imports are a well-known anti-pattern that breaks IDE navigation, makes it impossible to determine where a name is defined without reading the import chain, and will be flagged by any linter configured with no-wildcard-imports. If the goal is zero call-site changes, use explicit re-exports (`from tui_helpers import _feature_markdown, _escape_markup, ...`) so the module boundary is visible and auditable. Third, the action_* decomposition into 'pure decision/validation' vs 'thin dispatch' underestimates the coupling: most action methods read multiple pieces of PipelineApp state (self.current_board, self.features, self.selected_feature, self.config) and call self.notify/self.push_screen/self._refresh_features in interleaved sequences, not in a clean 'compute then dispatch' pattern. Extracting the 'pure' part would require defining a data class capturing all the state the function needs as input and returning a result object describing all the side effects to perform \u2014 which is essentially inventing a command pattern. That's a valid architecture but far from the 'simple middle ground' it was pitched as, and it should be acknowledged as a design decision with its own complexity cost rather than presented as an obvious simplification.",
+    "The second contributor correctly identified that _build_feature_detail_widgets is not a pure function and that star imports are an anti-pattern, but overcorrected by implying Tier 1 is therefore risky. The pragmatic path is a revised Tier 1 that splits into two sub-moves: (a) extract the 5 genuinely pure functions (_last_modified_key, handle_cli_commands, _handle_config_command, _handle_context_command, _feature_markdown, _escape_markup, _format_json_text \u2014 ~190 lines) into tui_helpers.py with explicit re-exports, and (b) extract _build_feature_detail_widgets into a separate tui_widgets.py that is allowed to import Textual \u2014 this is still a testable improvement (Textual widgets can be unit-tested with textual's testing harness) even though it's not framework-free. Keeping these as two distinct, independently committable extractions preserves the 'zero call-site change' property while avoiding the star-import problem and honestly acknowledging the Textual dependency. For Tier 2, the command-pattern critique is valid but the conclusion is wrong: the complexity of a Result/Command return object is not gratuitous \u2014 it's the natural seam that enables testing action logic without instantiating PipelineApp. The key insight missing from prior rounds is that you don't need to extract all action_* methods at once; start with the 3-4 simplest ones (action_promote, action_restore, action_reject) where the compute-then-dispatch pattern is already nearly clean, prove the pattern works, then expand. For _check_for_changes, the existing code already uses mtime comparison (lines 2609-2621), so the 'add an mtime cache' suggestion from the previous round is already implemented \u2014 the actual scaling problem is _load_features re-reading and parsing every JSON file on each cycle regardless of whether mtimes changed. The fix is to cache parsed FeatureFile objects keyed by (path, mtime) and only re-parse files whose mtime has changed.",
+    "The prior rounds have converged well on the three-tier strategy but continue to undercount the actual extraction surface and overstate the simplicity of the 'revised Tier 1.' The five 'genuinely pure' functions total ~190 lines \u2014 a 4.5% reduction of a 4,252-line file \u2014 which is too marginal to justify the extraction overhead as a standalone commit unless it's explicitly framed as scaffolding for later tiers. More critically, the discussion keeps treating _build_feature_detail_widgets as the only impure function in the top section, but the code at lines 310-483 also reveals a pervasive pattern of inline `import re` and repeated manual Rich-markup escaping (replace '[', replace '{', re.sub for '%') that appears at least 8 times across _build_feature_detail_widgets alone. Before any extraction, this duplication should be consolidated into _escape_markup itself (which currently misses '{'/'}' escaping), which would shrink _build_feature_detail_widgets by ~30 lines and make the extraction boundary cleaner. The third contributor's suggestion to start Tier 2 with 'the 3-4 simplest action_* methods' is sound in principle but the actual code shows the modal cancel actions (there are 8 separate action_cancel methods on different ModalScreen subclasses at lines 631, 688, 942, 993, 1067, 1143, 1191, 1325) are far simpler candidates than action_promote/action_restore \u2014 they're one-liners that just dismiss the modal. These don't need a command-pattern extraction at all and could be consolidated via a shared base class, which is Tier 3 modal extraction work that's been consistently deprioritized despite being lower-risk than the @work Tier 2 methods. The sequencing should be: (1) fix _escape_markup to handle all Rich metacharacters and deduplicate inline escaping, (2) extract pure helpers, (3) introduce a BaseModal with shared action_cancel/styling, (4) then tackle action_* command pattern for PipelineApp methods. For _check_for_changes, the third contributor correctly identified that mtime caching is already present but _load_features re-parses every JSON \u2014 however the proposed fix of caching FeatureFile objects by (path, mtime) needs to account for the fact that FeatureFile.list_all() at line 2636 loads features across ALL boards for server push, not just the active board, so the cache must be global not per-board.",
+    "The discussion has over-indexed on extraction boundaries while neglecting the actual highest-leverage first move: consolidating the inline Rich-markup escaping duplication that makes every extraction boundary messier than it needs to be. The code at lines 310-483 (_build_feature_detail_widgets) contains 7 separate instances of the identical pattern `.replace('[', '\\\\[').replace(']', '\\\\]').replace('{', '\\\\{').replace('}', '\\\\}')` followed by `re.sub(r'([%])', r'\\\\\\1', ...)` \u2014 but _escape_markup at line 280 already handles all of these characters correctly (it was updated since earlier rounds claimed it missed '{'/'}' \u2014 it now handles them at lines 284-286). This means every inline escaping block in _build_feature_detail_widgets is dead duplication that can be replaced with a call to the existing _escape_markup function right now, with zero behavioral risk. This is a ~35-line reduction and, more importantly, it eliminates the tangled escaping logic that blurs the extraction boundary between 'pure helpers' and 'widget builders.' Once that cleanup is done, the Tier 1 split becomes cleaner: tui_helpers.py gets the 6 genuinely pure functions (_last_modified_key, handle_cli_commands, _handle_config_command, _handle_context_command, _feature_markdown, _escape_markup, _format_json_text \u2014 ~225 lines) with explicit named re-exports, and tui_widgets.py gets _build_feature_detail_widgets which now only depends on _escape_markup, _format_json_text, Textual, and Config/load_scripts. For Tier 2, the fourth contributor's resequencing to prioritize BaseModal with shared action_cancel is the right call \u2014 but the 8 ModalScreen subclasses also share duplicated compose() boilerplate (title Static + TextArea/Input + Button row pattern) that a BaseModal could template, yielding a larger reduction than just consolidating action_cancel. For _check_for_changes, the real problem revealed by the code (lines 2606-2637) is that _load_features calls FeatureFile.list_all() which does a full directory walk + JSON parse on every invocation, and then line 2636 calls FeatureFile.list_all() again without any board filter for server push \u2014 so every 10-second tick parses every JSON file twice. The minimal fix is a module-level LRU cache on FeatureFile.list_all keyed by (board, directory_mtime) that invalidates when the stage directory's mtime changes, avoiding individual file stats entirely.",
+    "The discussion has converged on the right tactical moves but keeps missing a concrete bug and a structural blind spot that undermine the proposed sequencing. First, the escaping inconsistency is worse than prior rounds acknowledge: _feature_markdown (line 271) only escapes '[' and ']' but not '{', '}', or '%', while _build_feature_detail_widgets (lines 336-389) escapes all five characters via inline duplication, and _escape_markup (line 280) also handles all five. This means _feature_markdown is actively buggy \u2014 any feature with '{' or '%' in its history will produce corrupted Rich markup in the Markdown detail view. The fifth contributor's claim that 'every inline escaping block can be replaced with a call to _escape_markup right now with zero behavioral risk' is therefore wrong for _feature_markdown specifically: replacing its partial escape with _escape_markup would change behavior (fixing the bug), which is good but must be tested, not assumed safe. This should be the actual first commit: fix _escape_markup coverage in _feature_markdown and deduplicate the 6 inline escaping blocks in _build_feature_detail_widgets, with a simple pytest parametrized test that round-trips strings containing all five metacharacters. Second, the discussion's fixation on line counts as a measure of extraction value misses the real payoff of Tier 1: not lines removed, but import graph simplification. Currently tui.py's module-level imports pull in 15 modules including Textual's entire widget tree, asyncio, subprocess, signal, and atexit \u2014 all at import time, making the module untestable in isolation and slow to load. Extracting pure helpers into tui_helpers.py doesn't just move 190 lines; it creates the first module in the pipeline package that can be imported and tested without importing Textual, which is the prerequisite for any CI integration. The prior rounds' dismissal of a '4.5% reduction' as 'too marginal' confuses line-count reduction with dependency-graph improvement, which is the actual bottleneck for testability. Third, the _check_for_changes double-parse problem (lines 2606 and 2636 both calling FeatureFile.list_all) is real, but the proposed LRU cache keyed by directory_mtime is fragile: on Linux, directory mtime only updates when entries are added/removed, not when file contents change, so editing a feature JSON in place would not invalidate the cache. The correct cache key is max(file.stat().st_mtime for file in directory), which requires the O(n) stat walk anyway \u2014 meaning the cache only saves the JSON parse cost, not the stat cost. A more honest framing is that the stat cost is negligible (sub-millisecond per file even at 1000 features) and the actual performance problem, if one exists, is the double JSON parse. Simply caching the FeatureFile.list_all result for the duration of a single _check_for_changes call (pass the already-loaded features list to the server push instead of calling list_all again) eliminates the duplication with zero new infrastructure.",
+    "The prior rounds have thoroughly debated extraction boundaries but have converged without resolving a key tension: the discussion treats Tier 1 as the obvious first move while simultaneously acknowledging it yields only a ~4.5% line reduction. The actual highest-value first commit is the one the sixth contributor identified \u2014 fixing the _feature_markdown escaping bug (line 271 only escapes '['/']', missing '{'/'}'/'\\'%) and deduplicating the 6 inline escaping blocks in _build_feature_detail_widgets (lines 336, 345, 354, 371, 380, 389) that replicate what _escape_markup already does. This is a concrete, testable bug fix that also cleans the extraction boundary for the subsequent Tier 1 split. However, the discussion has a blind spot about the actual module extraction mechanics: every prior round assumes tui_helpers.py can be a 'pure, framework-free' module, but _handle_config_command (line 111) instantiates Config() and _handle_context_command (line 156) calls view_context_file/edit_context_file which invoke subprocess/editor \u2014 these are not pure functions. They're CLI-path functions that happen to live at module scope. The honest Tier 1 split is not 'pure helpers' vs 'everything else' but 'functions that don't reference PipelineApp or Textual' vs 'methods on PipelineApp'. That's still a valuable separation (it isolates CLI entry points and formatting utilities from the UI class) but it should be named accurately \u2014 tui_cli.py or tui_utils.py, not tui_helpers.py \u2014 because the testing benefit is 'testable without Textual' not 'testable without any imports.' For _check_for_changes, the sixth contributor's suggestion to pass the already-loaded features list to the server push instead of calling list_all() again is the correct minimal fix \u2014 line 2636 can simply reuse the features variable from line 2606 filtered to the current board, plus a single FeatureFile.list_all() call for the server push that shares the same parsed cache. But more fundamentally, the double-call pattern reveals that _check_for_changes is doing two conceptually separate things (local UI refresh and server state sync) that should be decoupled: the server push should be on its own timer or triggered by the successful completion of a local refresh, not interleaved within the same method. This is a small structural improvement that naturally falls out of any Tier 2 extraction work and should be noted as a dependency.",
+    "The discussion has reached diminishing returns on extraction taxonomy and is now relitigating settled points (escaping dedup, Tier 1 naming, _check_for_changes caching) while missing two actionable observations from the actual code. First, the escaping dedup everyone agrees on is real but mechanically simpler than described: only 6 blocks in _build_feature_detail_widgets (lines 336, 345, 354, 371, 380, 389) use the inline pattern while 8 other callsites in the same function already use _escape_markup correctly (lines 326, 331, 396, 403, 431, 436, 449, 475), proving the function was refactored partway and left inconsistent \u2014 this is a 10-minute cleanup, not a design decision, and framing it as 'the highest-value first commit' is overthinking a mechanical fix. Second, _load_features (line 2506) is a one-liner delegating to FeatureFile.list_all(board=board), and the double-call at lines 2606/2636 calls it with different arguments (board-filtered vs. unfiltered) \u2014 so the 'pass already-loaded features to server push' suggestion from the seventh contributor would require loading all-boards features from the board-filtered set plus the remaining boards, which is not actually simpler than just calling list_all() twice. The honest fix is that FeatureFile.list_all() does a directory glob + JSON parse per call with no caching whatsoever (state.py line 557), so any caching strategy must live in FeatureFile itself \u2014 a simple TTL-based instance cache (cache parsed FeatureFile by path+mtime, expire after 10s matching the refresh interval) would halve the parse cost with zero API changes. The broader meta-observation is that this ideation has stalled twice and is now in its fourth cycle because participants keep proposing new sequencing frameworks instead of acknowledging that Tier 1 is a straightforward mechanical extraction that any competent developer can execute in an afternoon without further design discussion \u2014 the value of continued ideation on this item is near zero."
   ],
-  "Ideation": "The core problem is that tui.py has grown to ~4,300 lines as a monolithic PipelineApp class, making it difficult to navigate, test, and maintain. The file has natural seams that suggest a multi-tier extraction strategy: Tier 1 (zero-risk) extracts pure standalone helper functions (lines 84-481) with no PipelineApp dependencies into a tui_helpers.py module; Tier 2 (low-risk) extracts free async action functions that accept a PipelineApp instance into focused action modules (e.g., tui_item_actions.py, tui_board_actions.py); Tier 3 (higher-risk) tackles modal subclasses, which are tightly coupled to PipelineApp's reactive attributes and require careful interface design.\n\nThe primary risk is not choosing wrong module boundaries\u2014multiple defensible decompositions exist\u2014but rather migration safety when refactoring a file with minimal test coverage. Silently broken behavior is the real danger. Before any structural extraction, a behavioral characterization test suite should be added: snapshot tests for key screen renders, integration tests that drive the TUI through critical flows (item creation, phase transitions, modal interactions), and regression guards for the most common user paths. This test harness transforms the refactor from a risky rewrite into a verifiable series of safe moves.\n\nKey tradeoffs to consider: the 'free async functions accepting PipelineApp' pattern for action modules is pragmatic and minimizes immediate disruption, but risks recreating a God Object anti-pattern in disguise since every extracted function retains implicit access to all 30+ reactive attributes. A cleaner long-term architecture would define explicit data transfer objects or narrow interfaces (e.g., a BoardDataStore protocol) that each action module depends on\u2014but this level of abstraction should be deferred until after Tier 1 and Tier 2 extractions prove out the basic module boundaries. The modal subclasses (Tier 3) are genuinely the most complex because they mix UI widget construction, event handling, and business logic; these should be extracted last, only after the simpler tiers establish confidence in the refactoring approach.\n\nThe recommended sequencing is: (1) add characterization tests first, (2) extract pure helpers with no behavior changes and verify tests pass, (3) extract action free-functions one module at a time with continuous test validation, (4) revisit modal extraction only if the prior tiers demonstrate the approach is working cleanly. Each step should be committed independently so any regression is immediately attributable. The goal is a file structure where tui.py contains only the PipelineApp class wiring and Textual lifecycle methods, with domain logic distributed across purpose-specific modules."
+  "Ideation": "The core problem is that tui.py is a 4,252-line monolith combining CLI entry points, pure formatting utilities, widget builders, PipelineApp UI logic, and 8+ ModalScreen subclasses \u2014 all in one file \u2014 making it untestable in isolation and slow to navigate. The agreed-upon three-tier decomposition is: (1) extract functions that don't reference PipelineApp or Textual into tui_utils.py (named accurately, not tui_helpers.py, since these include subprocess-invoking CLI functions like _handle_config_command/_handle_context_command); (2) decompose action_* methods on PipelineApp using a command/result pattern starting with the 3-4 simplest ones; (3) introduce a BaseModal consolidating the duplicated compose() boilerplate and the 8 one-liner action_cancel methods across ModalScreen subclasses. The _build_feature_detail_widgets function belongs in a separate tui_widgets.py since it has Textual dependencies, not in tui_utils.py. The primary value of Tier 1 is not the ~190-line reduction (~4.5%) but the import-graph improvement: tui_utils.py becomes the first module in the pipeline package importable and testable without Textual, which is the prerequisite for CI integration.\n\nBefore any extraction, one concrete bug fix and one cleanup must land first: _feature_markdown (line 271) only escapes '[' and ']' but not '{', '}', or '%', causing corrupted Rich markup for features containing those characters \u2014 fixing it by delegating to _escape_markup is a behavioral change that requires a parametrized pytest covering all five metacharacters. Separately, _build_feature_detail_widgets was only partially refactored: 8 callsites already use _escape_markup correctly but 6 inline duplication blocks (lines 336, 345, 354, 371, 380, 389) were missed \u2014 replacing these with _escape_markup calls is a mechanical 10-minute cleanup that also clarifies the extraction boundary before Tier 1 begins.\n\nFor _check_for_changes, the double-call problem (lines 2606 and 2636 both invoke FeatureFile.list_all() independently, once board-filtered and once unfiltered) is real but the fix must live in FeatureFile itself since the two calls use different arguments. The correct approach is a TTL-based instance cache in FeatureFile.list_all() keyed by (path, mtime), expiring after ~10s to match the refresh interval \u2014 this halves the JSON parse cost with no API changes. The broader structural observation that _check_for_changes conflates local UI refresh with server state sync is valid but belongs to Tier 2 work, not a prerequisite for the cache fix.\n\nThe recommended commit sequence is: (1) fix _feature_markdown escaping bug with tests; (2) deduplicate the 6 inline escaping blocks in _build_feature_detail_widgets; (3) extract tui_utils.py with explicit named re-exports; (4) extract tui_widgets.py for _build_feature_detail_widgets; (5) introduce BaseModal with shared action_cancel and compose() template; (6) add TTL cache to FeatureFile.list_all(); (7) begin action_* command-pattern extraction starting with simplest methods.\n\n[Ideation concluded by stall detection after 8 rounds, 2 cycles. Full convergence was not achieved.]",
+  "ideation_cycle_verdicts": [
+    {
+      "cycle": 1,
+      "verdict": "progress",
+      "reason": "Round 4 contributed substantively new points not present in earlier rounds: quantified that Tier 1 alone is only 4.5% reduction (reframing it as scaffolding), identified the _escape_markup prerequisite fix with specific duplication evidence, proposed BaseModal for the 8 action_cancel consolidations as a lower-risk Tier 3 entry point, and clarified the global cache requirement for FeatureFile.list_all(). These exceed the 20% new-content threshold and materially sharpen the implementation plan.",
+      "rounds_completed": 4
+    },
+    {
+      "cycle": 2,
+      "verdict": "stall",
+      "reason": "Round 8 adds only mechanical clarifications (6 vs. 8 inline escaping blocks, TTL cache placement) that refine already-settled points rather than introducing new approaches or meaningful critiques; the round itself explicitly notes the ideation has stalled and further discussion yields near-zero value.",
+      "rounds_completed": 8
+    }
+  ]
 }

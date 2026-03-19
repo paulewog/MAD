@@ -47,6 +47,7 @@ from lock import PipelineLock, PipelineLockError
 from phases import run_pipeline, _load_prompt, update_design_doc, _get_latest_feedback
 from runner import AgentRunner, RateLimitError
 from scripts import ScriptConfig, ScriptStatus, load_scripts, run_script
+from service import service_name_for_dir
 from state import STAGES, STAGE_ACTIONS, FeatureFile
 
 from textual import work
@@ -212,7 +213,7 @@ def _feature_markdown(feature: FeatureFile) -> str:
     if feature.ideation_summaries:
         lines += ["## Ideation Rounds", ""]
         for i, summary in enumerate(feature.ideation_summaries):
-            lines += [f"### Round {i+1}", "", summary[:300] + "..." if len(summary) > 300 else summary, ""]
+            lines += [f"### Round {i+1}", "", summary, ""]
 
     if feature.plan:
         lines += ["## Plan", "", feature.plan, ""]
@@ -1811,6 +1812,64 @@ class PipelineApp(App):
         # Add stage actions in the middle, Quit always last
         return bindings + stage_bindings + [("ctrl+q", "quit", "Quit")]
 
+    def on_screen_resume(self) -> None:
+        """Fix terminal input on tmux reattach."""
+        # Only fix terminal if we've been running for at least 2 seconds (not on first startup)
+        if time.time() - self._start_time >= 2.0:
+            logger.info("ScreenResume event - fixing terminal input")
+            self._fix_terminal_input()
+        else:
+            logger.info("ScreenResume event - skipping (not initialized yet)")
+        self.refresh(repaint=True, layout=True)
+
+    def on_resize(self, event) -> None:
+        """Fix terminal input on resize/reattach."""
+        # Only fix terminal if we've been running for at least 2 seconds (not on first startup)
+        if time.time() - self._start_time >= 2.0:
+            logger.info(f"Resize event: {event.size} - fixing terminal input")
+            self._fix_terminal_input()
+        else:
+            logger.info(f"Resize event: {event.size} - skipping (not initialized yet)")
+        self.refresh(repaint=True, layout=True)
+
+    def _fix_terminal_input(self) -> None:
+        """Fix terminal input settings on tmux reattach."""
+        import termios
+        import tty
+        try:
+            # Get current terminal settings
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            # Set to sane defaults
+            new_settings = termios.tcgetattr(fd)
+            new_settings[0] = termios.ICRNL | termios.INLCR | termios.IXON | termios.IXANY | termios.IXOFF  # iflag
+            new_settings[1] = termios.OPOST | termios.ONLCR  # oflag
+            new_settings[2] = termios.CS8 | termios.CREAD  # cflag
+            new_settings[3] = termios.ICANON | termios.ECHO | termios.ECHOE | termios.ISIG | termios.IEXTEN  # lflag
+            new_settings[6][termios.VMIN] = 1
+            new_settings[6][termios.VTIME] = 0
+            termios.tcsetattr(fd, termios.TCSANOW, new_settings)
+            logger.info("termios settings applied")
+        except Exception as e:
+            logger.warning(f"termios fix failed: {e}")
+            # Fallback to stty
+            try:
+                subprocess.run(["stty", "-F", "/dev/tty", "sane", "echo", "icanon"], 
+                              capture_output=True, timeout=2)
+                logger.info("stty sane fallback completed")
+            except Exception as e2:
+                logger.warning(f"stty fallback also failed: {e2}")
+
+    async def action_quit(self) -> None:
+        """Override quit to detach from tmux instead of exiting."""
+        if os.environ.get("TMUX"):
+            subprocess.run(["tmux", "detach-client"], capture_output=True)
+            print("\nDetached from tmux. Run 'pipeline tui' to reconnect.")
+            while True:
+                time.sleep(3600)
+        else:
+            self.exit()
+
     CSS = """
     Screen {
         layout: vertical;
@@ -1952,6 +2011,8 @@ class PipelineApp(App):
         super().__init__()
         self._config = Config()
         self._config.setup_boards()
+        # Track start time for terminal reattach fix
+        self._start_time = time.time()
         # Track previous feature snapshot for change detection in auto-refresh
         self._prev_snapshot: dict[str, list[tuple[str, str]]] = {}
         self._prev_mtimes: dict[str, dict[str, float]] = {}
@@ -2083,14 +2144,15 @@ class PipelineApp(App):
                 on_edit_ideation_prompt=self._handle_edit_ideation_prompt,
                 on_run_script=self._handle_run_script,
                 on_set_agent_for_phase=self._handle_set_agent_for_phase,
+                on_restart=self._handle_remote_restart,
             )
             self._connect_server()
             self.set_interval(5.0, self._periodic_server_push)
 
-    def _periodic_server_push(self) -> None:
+    async def _periodic_server_push(self) -> None:
         """Push current state to server periodically (agent status may change without feature changes)."""
         if self._server_client and self._server_client.connected:
-            features = FeatureFile.list_all()
+            features = self._load_features(self.active_board)
             self._push_to_server(features[:])
 
     @work(thread=False)
@@ -2134,7 +2196,7 @@ class PipelineApp(App):
         self._update_status_bar(self.active_board, self._load_features(self.active_board))
         # Push updated state back to server
         if self._server_client and self._server_client.connected:
-            features = FeatureFile.list_all()
+            features = self._load_features(self.active_board)
             self._push_to_server(features[:])
 
     async def _handle_start_agent(self, feature_id: str, action: str) -> None:
@@ -2631,10 +2693,8 @@ class PipelineApp(App):
             self._refresh_kanban_widgets()
             self._update_status_bar(board, features)
 
-            # Push state to server if connected (push ALL features for aggregate view)
             if self._server_client and self._server_client.connected:
-                all_features = FeatureFile.list_all()
-                self._push_to_server(all_features[:])
+                self._push_to_server(features[:])
 
             # Always refresh selected feature from disk to show latest content
             if self.selected_feature:
@@ -3377,6 +3437,59 @@ class PipelineApp(App):
                     elapsed_secs = int(time.time() - self._implement_agent_status.started_at)
                     elapsed = f"{elapsed_secs // 60}m{elapsed_secs % 60}s"
                 feature.add_history("RESTARTED", f"Agent restarted by user after {elapsed}")
+
+    async def _handle_remote_restart(self) -> None:
+        """Handle restart_tui signal from the server. Performs graceful cleanup then triggers systemd service restart."""
+        import subprocess
+        from pathlib import Path
+
+        logger.info("Handling remote restart request")
+
+        project_dir = self._config.mad_dir.parent
+        svc_name = service_name_for_dir(project_dir)
+        unit_path = Path.home() / ".config" / "systemd" / "user" / f"{svc_name}.service"
+
+        if not unit_path.exists():
+            logger.warning(f"Systemd service unit not found at {unit_path}, cannot restart")
+            if self._server_client and self._server_client._connected and self._server_client._ws:
+                import json as _json
+                try:
+                    err_msg = _json.dumps({"type": "restart_error", "error": "Service not installed. Install the systemd service first (pipeline service install)."})
+                    await self._server_client._ws.send(err_msg)
+                except Exception:
+                    pass
+            return
+
+        if self._plan_agent_status and self._plan_agent_status.running:
+            self._plan_agent_status.kill_requested = True
+            logger.info("Requested plan agent kill for restart")
+        if self._implement_agent_status and self._implement_agent_status.running:
+            self._implement_agent_status.kill_requested = True
+            logger.info("Requested implement agent kill for restart")
+        if self._script_status and self._script_status.running:
+            logger.info("Script is running during restart — it will be terminated by SIGTERM")
+
+        try:
+            self._pipeline_lock.release('plan')
+        except Exception:
+            pass
+        try:
+            self._pipeline_lock.release('impl')
+        except Exception:
+            pass
+
+        await asyncio.sleep(1.0)
+
+        logger.info(f"Issuing systemctl --user restart {svc_name}")
+        try:
+            subprocess.Popen(
+                ['systemctl', '--user', 'restart', svc_name],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            logger.error(f"Failed to issue systemctl restart: {e}")
 
     @work(thread=True, exclusive=True, group="pipeline")
     def _run_restart_async(self, feature: FeatureFile, stage: str) -> None:
@@ -4231,14 +4344,29 @@ def _acquire_lock(force: bool = False) -> PipelineLock:
 
 
 def _release_lock(lock: PipelineLock):
-    """Release the lock if owned by current process."""
+    """Release the lock unless we're in tmux mode (keep for reattach)."""
+    if os.environ.get("TMUX"):
+        return
     try:
         lock.release('tui')
     except Exception as e:
         logger.error(f"Failed to release lock: {e}")
 
 
+def _tmux_signal_handler(signum, frame):
+    """Handle SIGTERM/SIGINT in tmux mode - detach instead of exit."""
+    if os.environ.get("TMUX"):
+        subprocess.run(["tmux", "detach-client"], capture_output=True)
+        print(f"\nDetached from tmux (signal {signum}). Run 'pipeline tui' to reconnect.")
+        while True:
+            time.sleep(3600)
+    else:
+        sys.exit(0)
+
+
 def run_tui(force: bool = False):
+    signal.signal(signal.SIGTERM, _tmux_signal_handler)
+    signal.signal(signal.SIGINT, _tmux_signal_handler)
     lock = _acquire_lock(force=force)
     atexit.register(_release_lock, lock)
     app = PipelineApp()
