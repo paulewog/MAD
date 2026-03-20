@@ -1,42 +1,29 @@
-Code Path: /home/paule/MAD
-Context File: /home/paule/MAD/.mad/CONTEXT.md
+Code Path: /home/paulewog/MAD
+Context File: /home/paulewog/MAD/.mad/CONTEXT.md
 
-**Feature Iteration: TUI refresg**
+**Feature Iteration: Shared context/memory file per board**
 
-The feature file is at: `tui-refresg.json`
+The feature file is at: `shared-contextmemory-file-per-board.json`
 
 **Current Description:**
-Add auto-reload to TUI so it picks up new pipeline Python code changes when idle. Use a file watcher on the pipeline/ directory to detect .py file changes, then trigger Textual's live reload to refresh the TUI without full restart.
+Add a persistent shared context file per board that accumulates architectural decisions and patterns discovered during feature development.
+
+Behavior:
+- Each board gets a .mad/boards/<board>/BOARD_CONTEXT.md file
+- After each feature completes (moves to done), the review/implementation agent appends a brief summary of:
+  - Key architectural decisions made
+  - New patterns introduced
+  - Important codebase conventions discovered
+  - Gotchas or lessons learned
+- This file is prepended to agent prompts (alongside CONTEXT.md) for all features in that board
+- Allows agents working on Feature B to benefit from what was learned during Feature A
+- Should have a size cap with automatic summarization when it gets too long
+- Human-editable (users can curate/trim the context)
+
+This creates institutional memory across features, reducing repeated mistakes and helping agents maintain consistency.
+
 
 **Current Plan:**
-## Auto-Reload TUI on Code Changes
-
-### Approach
-Use Textual's built-in live reload capability combined with a file watcher to detect changes to pipeline Python code.
-
-### Implementation
-
-1. **Add file watcher to TUI**
-   - Use Python's `watchdog` library or `aiofiles` glob watcher
-   - Watch `pipeline/` directory for `.py` file changes
-   - When change detected, trigger Textual's internal reload mechanism
-
-2. **Textual Live Reload**
-   - Textual has `--live` flag for development mode
-   - Or use `app.run(live=True)` in the run_tui() function
-   - This watches for file changes and reloads automatically
-
-3. **Runner Integration**
-   - The pipeline runner (which spawns the TUI) should start TUI with live reload enabled
-   - Option to configure reload delay to avoid too-frequent reloads
-
-### Alternative: Custom Watcher
-If Textual's built-in live reload doesn't work well:
-- Implement custom file watcher in runner.py that monitors pipeline/*.py
-- On change, gracefully shutdown TUI and restart it
-
-### Files to Modify
-- `pipeline/tui.py`: Enable live reload mode
-- `pipeline/runner.py`: Pass live reload flag when spawning TUI
+(no plan yet)
 
 Please discuss and iterate on this feature with the user. You can update the Description and Plan sections of the feature file based on your discussion. When finished, let the user know they're done.

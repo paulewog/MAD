@@ -28425,3 +28425,796 @@ Wrote file successfully.
 2026-03-19 14:34:53,744 INFO Resize event: Size(width=200, height=50) - skipping (not initialized yet)
 2026-03-19 14:34:53,883 INFO Resize event: Size(width=200, height=50) - skipping (not initialized yet)
 2026-03-19 14:34:54,179 INFO Connected to server as 'wsl-mad-cwd'
+2026-03-19 15:45:17,532 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 15:45:17,640 INFO [client] Connected to /tmp/pipeline.sock
+2026-03-19 15:45:17,648 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 15:45:17,751 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 15:45:27,671 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 15:45:27,778 INFO [client] Connected to /tmp/pipeline.sock
+2026-03-19 15:45:27,786 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 15:45:27,889 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 15:45:34,161 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 16:05:16,379 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 16:05:16,483 INFO [client] Connected to /tmp/pipeline.sock
+2026-03-19 16:05:16,491 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 16:05:16,585 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 16:05:21,524 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 16:05:21,637 INFO [client] Connected to /tmp/pipeline.sock
+2026-03-19 16:05:21,645 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 16:05:21,744 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 16:05:23,872 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 16:05:33,942 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 16:05:44,002 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 16:06:24,508 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 16:06:24,626 INFO [client] Connected to /tmp/pipeline.sock
+2026-03-19 16:06:24,639 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 16:06:24,799 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 16:06:34,252 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 16:06:35,288 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 16:06:43,326 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 16:06:44,306 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 16:06:44,576 INFO [auto-plan] Checking boards: ['mad']
+2026-03-19 16:06:44,576 INFO [auto-plan] mad: ideating=0, plan-inbox=0, reviewing-plan=0
+2026-03-19 16:06:44,576 INFO [auto-impl] Checking boards: ['mad']
+2026-03-19 16:06:44,576 INFO [auto-impl] Board 'mad', stage 'review': 0 features
+2026-03-19 16:06:44,576 INFO [auto-impl] Board 'mad', stage 'testing': 0 features
+2026-03-19 16:06:44,576 INFO [auto-impl] Board 'mad', stage 'implementing': 0 features
+2026-03-19 16:06:44,576 INFO [auto-impl] Board 'mad', stage 'spec-writing': 0 features
+2026-03-19 16:06:44,576 INFO [auto-impl] Board 'mad', stage 'approved': 1 features
+2026-03-19 16:06:44,576 INFO [auto-impl] Starting: MAD webui seems to go blank (approved)
+2026-03-19 16:06:44,584 INFO [bold blue]Spec Writing:[/bold blue] MAD webui seems to go blank
+2026-03-19 16:06:44,584 INFO [spec-writing] Starting: MAD webui seems to go blank
+2026-03-19 16:06:44,588 INFO [spec_writing] Running: MAD webui seems to go blank
+2026-03-19 16:06:44,588 INFO [runner] Wrote instructions for 'mad-webui-seems-to-go-blank': 7221 chars
+2026-03-19 16:06:44,588 INFO [runner] Instructions preview: Code Path: /home/paulewog/MAD
+Context File: /home/paulewog/MAD/.mad/CONTEXT.md
+
+You are an implementer breaking down a feature plan into concrete coding tasks.
+
+Feature: MAD webui seems to go blank
+
+*...
+2026-03-19 16:06:44,589 INFO Starting claude in cwd=/home/paulewog/MAD with cmd: ['/home/paulewog/.local/bin/claude', '-p', 'Read /home/paulewog/MAD/.tmp/mad-webui-seems-to-go-blank.instructions and follow the instructions exactly.', '--dangerously-skip-permissions', '--model', 'opus']
+2026-03-19 16:06:44,589 INFO status.feature_slug = 'mad-webui-seems-to-go-blank'
+2026-03-19 16:06:44,589 INFO Logging to: /home/paulewog/MAD/logs/claude-mad-webui-seems-to-go-blank-1773961604.log
+2026-03-19 16:06:48,696 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 16:06:54,441 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 16:06:54,624 INFO [auto-plan] Checking boards: ['mad']
+2026-03-19 16:06:54,624 INFO [auto-plan] mad: ideating=1, plan-inbox=0, reviewing-plan=0
+2026-03-19 16:06:54,624 INFO [auto-plan] Starting: MAD webui seems to go blank (ideating)
+2026-03-19 16:06:54,626 INFO [auto-impl] Skipping - impl lock held by another process
+2026-03-19 16:06:54,658 INFO [ideating] Starting ideation for: MAD webui seems to go blank
+2026-03-19 16:06:54,660 INFO [runner] Wrote instructions for 'mad-webui-seems-to-go-blank': 3312 chars
+2026-03-19 16:06:54,660 INFO [runner] Instructions preview: Code Path: /home/paulewog/MAD
+Context File: /home/paulewog/MAD/.mad/CONTEXT.md
+
+# Ideation: MAD webui seems to go blank
+
+**Description:** Maybe crashing?
+
+**Feature Data:** `/home/paulewog/MAD/.mad/bo...
+2026-03-19 16:06:54,660 INFO Starting claude in cwd=/home/paulewog/MAD with cmd: ['/home/paulewog/.local/bin/claude', '-p', 'Read /home/paulewog/MAD/.tmp/mad-webui-seems-to-go-blank.instructions and follow the instructions exactly.', '--dangerously-skip-permissions', '--model', 'opus']
+2026-03-19 16:06:54,660 INFO status.feature_slug = 'mad-webui-seems-to-go-blank'
+2026-03-19 16:06:54,661 INFO Logging to: /home/paulewog/MAD/logs/claude-mad-webui-seems-to-go-blank-1773961614.log
+2026-03-19 16:07:47,579 INFO [runner] Read 1327 chars from output file
+2026-03-19 16:07:47,579 INFO [runner] Log file closed
+2026-03-19 16:07:47,581 INFO [runner] Wrote instructions for 'mad-webui-seems-to-go-blank': 4672 chars
+2026-03-19 16:07:47,582 INFO [runner] Instructions preview: Code Path: /home/paulewog/MAD
+Context File: /home/paulewog/MAD/.mad/CONTEXT.md
+
+# Ideation: MAD webui seems to go blank
+
+**Description:** Maybe crashing?
+
+**Feature Data:** `/home/paulewog/MAD/.mad/bo...
+2026-03-19 16:07:47,582 INFO Starting claude in cwd=/home/paulewog/MAD with cmd: ['/home/paulewog/.local/bin/claude', '-p', 'Read /home/paulewog/MAD/.tmp/mad-webui-seems-to-go-blank.instructions and follow the instructions exactly.', '--dangerously-skip-permissions', '--model', 'opus']
+2026-03-19 16:07:47,582 INFO status.feature_slug = 'mad-webui-seems-to-go-blank'
+2026-03-19 16:07:47,582 INFO Logging to: /home/paulewog/MAD/logs/claude-mad-webui-seems-to-go-blank-1773961667.log
+2026-03-19 17:34:17,729 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 17:34:17,832 INFO [client] Connected to /tmp/pipeline.sock
+2026-03-19 17:34:17,840 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 17:34:17,943 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:34:20,274 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:34:22,746 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:34:25,825 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:34:30,475 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 17:34:30,593 INFO [client] Connected to /tmp/pipeline.sock
+2026-03-19 17:34:30,603 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 17:34:30,721 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:34:35,943 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:51:48,006 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 17:51:48,134 INFO [client] Connected to /tmp/pipeline.sock
+2026-03-19 17:51:48,142 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 17:51:48,264 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:51:52,150 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:52:02,228 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:52:12,314 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:52:22,396 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:52:32,479 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:52:42,666 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:52:52,763 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:53:02,843 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:53:12,920 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:53:22,999 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:53:33,083 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:53:43,164 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:53:53,284 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:54:03,359 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:54:13,392 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:54:23,467 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:54:33,542 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:54:43,616 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:54:53,698 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:55:03,771 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:55:13,853 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:55:23,931 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:55:34,010 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:55:44,084 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:55:54,168 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:56:04,242 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:56:14,321 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:56:24,397 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:56:34,471 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:56:44,551 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:56:54,623 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:57:04,699 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:57:14,769 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:57:24,842 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:57:34,916 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:57:45,020 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:57:55,141 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:58:05,136 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:58:15,251 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:58:25,287 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:58:35,362 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:58:45,469 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:58:55,541 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:59:05,582 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:59:15,653 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:59:25,723 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:59:35,793 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:59:45,862 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 17:59:55,942 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:00:06,012 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:00:16,085 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:00:26,162 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:00:36,237 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:00:46,312 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:00:56,384 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:01:06,462 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:01:16,530 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:01:26,603 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:01:36,673 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:01:46,746 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:01:56,823 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:02:06,889 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:02:16,964 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:02:27,039 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:02:37,111 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:02:47,189 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:02:57,263 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:03:07,338 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:03:17,412 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:03:27,493 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:03:37,566 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:03:47,639 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:03:57,708 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:04:07,788 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:04:17,864 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:04:27,937 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:04:38,010 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:04:48,087 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:04:58,163 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:05:08,235 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:05:18,391 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:05:28,383 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:05:38,453 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:05:48,523 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:05:58,591 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:06:08,668 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:06:18,735 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:06:28,803 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:06:38,872 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:06:48,944 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:06:59,017 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:07:09,089 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:07:19,162 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:07:29,242 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:07:39,319 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:07:49,399 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:07:59,485 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:08:09,588 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:08:19,665 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:08:29,739 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:08:39,809 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:08:49,882 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:08:59,955 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:09:10,032 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:09:20,105 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:09:30,181 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:09:40,255 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:09:50,327 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:10:00,406 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:10:10,482 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:10:20,554 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:10:30,628 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:10:40,705 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:10:50,780 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:11:00,854 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:11:10,927 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:11:21,004 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:11:31,078 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:11:41,151 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:11:51,223 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:12:01,299 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:12:11,382 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:12:21,462 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:12:31,539 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:12:41,612 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:12:51,686 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:13:01,767 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:13:11,837 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:13:21,912 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:13:31,984 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:13:42,064 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:13:52,209 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:14:02,215 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:14:12,297 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:14:22,375 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:14:32,448 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:14:42,520 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:14:52,591 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:15:02,667 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:15:12,745 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:15:22,825 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:15:32,899 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:15:42,975 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:15:53,051 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:16:03,128 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:16:13,208 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:16:23,287 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:16:33,367 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:16:43,441 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:16:53,520 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:17:03,597 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:17:13,670 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:17:23,744 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:17:33,816 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:17:43,890 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:17:53,963 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:18:04,036 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:18:14,125 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:18:24,275 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:18:34,279 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:18:44,362 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:18:54,474 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:19:04,508 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:19:14,583 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:19:24,657 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:19:34,729 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:19:44,804 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:19:54,881 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:20:04,952 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:20:15,035 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:20:25,108 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:20:35,187 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:20:45,262 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:20:55,337 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:21:05,414 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:21:15,486 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:21:25,566 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:21:35,638 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:21:45,710 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:21:55,793 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:22:05,866 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:22:15,951 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:22:26,023 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:22:36,099 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:22:46,183 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:22:56,270 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:23:06,445 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:23:16,434 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:23:26,514 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:23:36,599 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:23:46,683 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:23:56,757 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:24:06,831 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:24:16,918 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:24:27,002 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:24:37,082 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:24:47,170 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:24:57,259 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:25:07,335 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:25:17,413 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:25:27,531 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:25:37,602 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:25:47,646 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:25:57,729 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:26:07,813 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:26:17,893 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:26:27,977 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:26:38,050 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:26:48,134 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:26:58,215 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:27:08,288 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:27:18,376 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:27:28,455 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:27:38,533 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:27:48,619 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:27:58,690 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:28:08,763 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:28:18,848 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:28:28,931 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:28:39,017 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:28:49,088 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:28:59,170 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:29:09,246 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:29:19,325 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:29:29,398 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:29:39,479 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:29:49,558 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:29:59,636 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:30:09,717 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:30:19,799 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:30:29,877 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:30:39,950 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:30:50,030 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:31:00,101 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:31:10,178 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:31:20,250 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:31:30,325 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:31:40,393 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:31:50,463 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:32:00,537 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:32:10,615 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:32:20,702 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:32:30,779 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:32:40,857 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:32:50,939 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:33:01,024 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:33:11,102 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:33:21,174 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:33:31,248 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:33:41,324 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:33:51,398 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:34:01,472 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:34:11,550 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:34:21,638 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:34:31,716 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:34:41,790 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:34:51,864 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:35:01,943 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:35:12,020 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:35:22,098 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:35:32,176 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:35:42,255 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:35:52,329 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:36:02,401 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:36:12,488 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:36:22,568 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:36:32,653 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:36:42,732 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:36:52,815 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:37:02,920 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:37:13,016 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:37:23,093 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:37:33,174 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:37:43,312 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:37:53,392 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:38:03,475 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:38:13,562 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:38:23,743 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:38:33,724 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:38:43,799 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:38:53,878 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:39:03,959 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:39:14,037 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:39:24,119 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:39:34,196 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:39:44,280 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:39:54,354 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:40:04,417 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:40:14,476 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:40:24,539 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:40:34,604 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:40:44,670 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:40:54,879 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:40:54,879 INFO Resize event: Size(width=238, height=52) - fixing terminal input
+2026-03-19 18:40:54,880 INFO termios settings applied
+2026-03-19 18:41:04,826 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:41:14,890 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:41:24,953 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:41:35,021 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:41:45,082 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:41:55,147 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:42:05,215 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:42:15,283 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:42:25,350 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:42:35,418 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:42:45,480 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:42:55,543 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:43:05,615 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:43:15,677 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:43:25,740 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:43:35,804 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:43:45,871 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:43:55,935 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:44:05,999 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:44:16,071 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:44:26,139 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:44:36,202 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:44:46,271 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:44:56,337 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:45:06,404 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:45:16,468 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:45:26,536 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:45:36,598 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:45:46,667 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:45:56,732 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:46:06,829 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:46:16,860 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:46:26,936 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:46:36,995 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:46:47,062 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:46:57,127 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:47:07,194 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:47:17,256 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:47:27,320 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:47:37,383 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:47:47,447 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:47:57,514 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:48:07,580 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:48:17,683 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:48:27,715 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:48:37,780 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:48:47,841 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:48:57,904 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:49:07,969 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:49:18,040 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:49:28,100 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:49:38,165 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:49:48,261 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:49:58,291 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:50:08,355 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:50:18,419 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:50:28,521 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:50:38,551 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:50:48,618 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:50:58,679 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:51:08,746 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:51:18,814 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:51:28,879 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:51:38,942 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:51:49,011 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:51:59,070 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:52:09,135 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:52:19,198 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:52:29,266 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:52:39,330 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:52:49,394 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:52:59,459 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:53:09,525 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:53:19,588 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:53:29,652 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:53:39,747 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:53:49,781 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:53:59,844 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:54:09,914 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:54:19,978 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:54:30,045 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:54:40,105 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:54:50,172 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:55:00,236 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:55:10,298 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:55:20,362 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:55:30,426 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:55:40,489 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:55:50,550 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:56:00,618 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:56:10,681 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:56:20,747 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:56:30,847 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:56:40,875 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:56:50,940 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:57:01,000 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:57:11,066 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:57:21,130 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:57:31,192 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:57:41,253 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:57:51,349 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:58:01,378 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:58:11,443 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:58:21,508 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:58:31,571 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:58:41,635 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:58:51,698 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:59:01,763 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:59:11,830 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:59:21,893 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:59:31,956 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:59:42,022 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 18:59:52,084 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:00:02,148 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:00:12,216 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:00:22,275 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:00:32,339 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:00:42,414 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:00:52,482 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:01:02,554 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:01:12,628 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:01:22,697 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:01:32,773 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:01:42,848 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:01:52,918 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:02:02,994 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:02:13,062 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:02:23,134 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:02:33,215 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:02:43,284 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:02:53,360 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:03:03,433 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:03:13,514 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:03:23,607 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:03:33,651 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:03:43,718 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:03:53,792 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:04:03,868 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:04:13,943 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:04:24,014 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:04:34,087 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:04:44,158 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:04:46,351 INFO Resize event: Size(width=238, height=49) - fixing terminal input
+2026-03-19 19:04:46,351 INFO termios settings applied
+2026-03-19 19:04:54,272 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:05:04,316 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:05:14,391 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:05:24,467 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:05:34,548 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:05:44,619 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:05:54,687 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:06:04,764 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:06:14,841 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:06:24,927 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:06:35,014 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:06:45,084 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:06:55,159 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:07:05,239 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:07:15,319 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:07:25,405 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:07:35,478 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:07:45,560 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:07:55,637 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:08:05,715 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:08:15,796 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:08:25,874 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:08:35,952 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:08:46,031 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:08:56,115 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:09:06,187 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:09:16,278 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:09:26,356 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:09:36,430 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:09:46,505 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:09:56,580 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:10:06,647 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:10:16,731 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:10:26,808 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:10:36,890 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:10:46,953 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:10:57,030 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:11:07,102 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:11:17,179 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:11:27,253 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:11:37,321 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:11:47,389 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:11:57,462 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:12:07,544 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:12:17,620 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:12:27,698 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:12:37,768 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:12:47,848 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:12:57,913 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:13:07,997 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:13:18,093 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:13:28,139 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:13:38,220 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:13:48,293 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:13:58,372 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:14:08,448 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:14:18,525 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:14:28,602 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:14:38,672 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:14:48,743 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:14:58,834 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:15:08,895 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:15:18,970 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:15:29,042 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:15:39,121 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:15:49,198 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:15:59,280 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:16:09,350 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:16:19,422 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:16:29,503 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:16:39,567 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:16:49,636 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:16:59,717 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:17:09,788 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:17:19,867 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:17:29,944 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:17:40,027 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:17:50,101 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:18:00,173 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:18:10,286 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:18:20,330 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:18:30,415 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:18:40,485 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:18:50,559 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:19:00,630 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:19:10,716 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:19:20,788 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:19:30,851 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:19:40,929 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:19:51,015 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:20:01,087 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:20:11,161 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:20:21,240 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:20:31,305 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:20:41,388 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:20:51,462 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:21:01,543 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:21:11,627 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:21:21,698 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:21:31,802 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:21:41,847 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:21:51,925 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:22:01,994 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:22:12,070 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:22:22,150 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:22:32,220 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:22:42,298 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:22:52,378 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:23:02,452 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:23:12,517 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:23:22,585 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:23:32,670 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:23:42,755 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:23:52,837 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:24:02,916 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:24:12,980 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:24:23,054 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:24:33,121 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:24:43,197 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:24:53,272 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:25:03,343 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:25:13,419 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:25:23,485 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:25:33,560 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:25:43,630 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:25:53,729 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:26:03,799 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:26:13,842 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:26:23,918 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:26:33,994 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:26:44,067 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:26:54,153 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:27:04,221 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:27:14,331 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:27:24,373 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:27:34,447 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:27:44,523 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:27:54,597 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:28:04,669 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:28:14,742 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:28:24,815 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:28:34,887 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:28:44,967 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:28:55,042 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:29:05,114 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:29:15,186 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:29:25,256 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:29:35,332 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:29:45,401 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:29:55,476 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:30:05,550 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:30:15,617 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:30:25,687 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:30:35,765 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:30:45,837 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:30:55,924 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:31:05,995 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:31:16,064 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:31:26,151 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:31:36,222 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:31:46,293 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:31:56,371 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:32:06,441 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:32:16,518 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:32:26,595 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:32:36,668 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:32:46,743 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:32:56,824 WARNING [tui] Error applying server state: The `call_from_thread` method must run in a different thread from the app
+2026-03-19 19:33:04,774 ERROR Task exception was never retrieved
+future: <Task finished name='Task-12517' exception=SystemExit(0)>
+Traceback (most recent call last):
+  File "/home/paulewog/MAD/pipeline/lib/python3.13/site-packages/textual/message_pump.py", line 566, in _process_messages
+    if not await self._pre_process():
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/paulewog/MAD/pipeline/lib/python3.13/site-packages/textual/message_pump.py", line 605, in _pre_process
+    self._post_mount()
+    ~~~~~~~~~~~~~~~~^^
+  File "/home/paulewog/MAD/pipeline/lib/python3.13/site-packages/textual/dom.py", line 629, in _post_mount
+    Reactive._initialize_object(self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/paulewog/MAD/pipeline/lib/python3.13/site-packages/textual/reactive.py", line 239, in _initialize_object
+    reactive._initialize_reactive(obj, name)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/home/paulewog/MAD/pipeline/tui.py", line 4435, in _tmux_signal_handler
+SystemExit: 0
+2026-03-19 19:33:08,191 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 19:33:08,304 INFO [client] Connected to /tmp/pipeline.sock
+2026-03-19 19:33:08,311 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 19:41:42,176 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 19:41:42,301 INFO [client] Connected to /tmp/pipeline.sock
+2026-03-19 19:41:42,315 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 19:45:23,760 INFO [runner] Interactive instructions for 'ideas': 1363 chars
+2026-03-19 19:45:23,760 INFO [runner] Instructions preview: Code Path: /home/paulewog/MAD
+Context File: /home/paulewog/MAD/.mad/CONTEXT.md
+
+**Feature Iteration: Shared context/memory file per board**
+
+The feature file is at: `shared-contextmemory-file-per-boar...
+2026-03-19 20:01:40,503 INFO Resize event: Size(width=238, height=49) - fixing terminal input
+2026-03-19 20:01:40,503 INFO termios settings applied
+2026-03-19 20:03:08,016 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 20:03:08,073 WARNING [client] Failed to connect: [Errno 2] No such file or directory
+2026-03-19 20:03:08,163 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 20:03:09,076 WARNING [client] Failed to connect: [Errno 2] No such file or directory
+2026-03-19 20:03:11,077 WARNING [client] Failed to connect: [Errno 2] No such file or directory
+2026-03-19 20:03:22,770 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 20:03:22,903 INFO [client] Connected to /tmp/mad-ea61c02ce0b2.sock
+2026-03-19 20:03:22,914 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 20:14:52,316 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 20:14:52,450 INFO [client] Connected to /tmp/mad-ea61c02ce0b2.sock
+2026-03-19 20:14:52,459 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-19 20:19:16,770 WARNING [client] Recv loop error: 0 bytes read on a total of 4 expected bytes
+2026-03-19 20:19:16,772 INFO [client] Connection lost, reconnecting...
+2026-03-19 20:19:16,772 WARNING [client] Failed to connect: [Errno 2] No such file or directory
+2026-03-19 20:19:17,773 INFO [client] Connected to /tmp/mad-ea61c02ce0b2.sock
+2026-03-19 21:00:14,270 WARNING [client] Recv loop error: 0 bytes read on a total of 4 expected bytes
+2026-03-19 21:00:14,272 INFO [client] Connection lost, reconnecting...
+2026-03-19 21:00:14,272 WARNING [client] Failed to connect: [Errno 2] No such file or directory
+2026-03-19 21:00:15,273 INFO [client] Connected to /tmp/mad-ea61c02ce0b2.sock
+2026-03-20 07:04:47,298 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-20 07:04:47,424 INFO [client] Connected to /tmp/mad-ea61c02ce0b2.sock
+2026-03-20 07:04:47,435 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-20 07:05:07,817 INFO <rich.panel.Panel object at 0x7f0a69e978c0>
+2026-03-20 07:05:07,817 INFO [bold blue]Implementing:[/bold blue] Feature dependency tracking (depends-on field)
+2026-03-20 07:05:07,817 INFO [implementing] Starting: Feature dependency tracking (depends-on field)
+2026-03-20 07:05:07,856 INFO [implementing] Running: Feature dependency tracking (depends-on field)
+2026-03-20 07:05:07,857 INFO [runner] Wrote instructions for 'feature-dependency-tracking-depends-on-field': 52627 chars
+2026-03-20 07:05:07,870 INFO [runner] Instructions preview: Code Path: /home/paulewog/MAD
+Context File: /home/paulewog/MAD/.mad/CONTEXT.md
+
+Implement the following feature.
+
+Feature: Feature dependency tracking (depends-on field)
+
+**Feature Data:** `/home/paul...
+2026-03-20 07:05:07,871 INFO Starting opencode in cwd=/home/paulewog/MAD with cmd: ['/home/paulewog/.opencode/bin/opencode', 'run', 'Read /home/paulewog/MAD/.tmp/feature-dependency-tracking-depends-on-field.instructions and follow the instructions exactly.', '-m', 'minimax-coding-plan/MiniMax-M2.5']
+2026-03-20 07:05:07,871 INFO status.feature_slug = 'feature-dependency-tracking-depends-on-field'
+2026-03-20 07:05:07,871 INFO Logging to: /home/paulewog/MAD/logs/opencode-feature-dependency-tracking-depends-on-field-1774015507.log
+2026-03-20 07:22:29,078 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-20 07:22:29,198 INFO [client] Connected to /tmp/mad-ea61c02ce0b2.sock
+2026-03-20 07:22:29,207 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-20 07:27:01,463 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-20 07:27:01,594 INFO [client] Connected to /tmp/mad-ea61c02ce0b2.sock
+2026-03-20 07:27:01,603 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-20 07:27:13,671 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-20 07:27:13,798 INFO [client] Connected to /tmp/mad-ea61c02ce0b2.sock
+2026-03-20 07:27:13,807 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-20 07:28:39,265 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-20 07:28:39,396 INFO [client] Connected to /tmp/mad-ea61c02ce0b2.sock
+2026-03-20 07:28:39,406 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-20 07:33:27,287 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)
+2026-03-20 07:33:27,415 INFO [client] Connected to /tmp/mad-ea61c02ce0b2.sock
+2026-03-20 07:33:27,424 INFO Resize event: Size(width=238, height=49) - skipping (not initialized yet)

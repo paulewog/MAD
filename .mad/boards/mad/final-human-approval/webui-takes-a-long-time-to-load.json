@@ -1,0 +1,219 @@
+{
+  "id": "7d4c99be",
+  "board": "mad",
+  "title": "Webui takes a long time to load",
+  "type": "bug",
+  "created": "2026-03-20T04:37Z",
+  "description": "The webui takes a long time to load initially. Also, when I created a new item, it didn't end up showing up until I refreshed.",
+  "done_script": "deploy-web-app",
+  "requires_human_approval": false,
+  "plan": "## Root Cause Analysis\n\nTwo distinct issues cause the reported slowness:\n\n1. **Initial page load delay**: The periodic polling mechanism that refreshes feature data from the server only fires on a fixed interval (every 5 seconds). When the page first loads, no immediate data fetch occurs \u2014 the user must wait up to the full interval duration before any content appears. The server already has the data available via HTTP; the client simply doesn't request it immediately.\n\n2. **Stale UI after mutations**: All mutation operations (creating items, editing titles/types/descriptions/done-scripts/dependencies) use a fire-and-forget HTTP pattern \u2014 the server acknowledges the request immediately, then forwards it to the pipeline client via WebSocket. The browser schedules a single poll after a short fixed delay (500ms) to pick up the change. However, the pipeline's full round-trip (receive command, write to disk, reload features, push state_update back to the Go server) frequently takes longer than 500ms. When the poll fires before the pipeline has finished processing, the UI shows stale data. The user must wait for the next periodic poll (up to 5 seconds later) or manually refresh.\n\n## Impact Assessment\n\n- **Severity**: Medium \u2014 purely a UX/responsiveness issue, no data loss or corruption\n- **Scope**: Affects every user on every page load, and every mutation action\n- **Related risk**: The periodic polling mechanism itself is sound and correctly diffs the DOM to avoid disrupting expanded cards or form state. The fix should preserve this smart-diffing behavior.\n\n## Fix Strategy\n\n1. **Immediate poll on page load**: Trigger the existing data-fetch function once immediately after the polling interval is established. This eliminates the 0-to-5-second initial blank window with zero risk \u2014 it's just calling the same function that already runs periodically.\n\n2. **Retry-based polling after mutations**: Replace all single-shot delayed polls after mutation actions with a shared retry helper. The helper should poll repeatedly (e.g., 3-4 retries at ~750ms intervals) until the rendered HTML actually differs from the cached version, or retries are exhausted. This gives the pipeline up to ~3 seconds to process the change while providing responsiveness as soon as the change lands. This is a client-side-only change using the existing polling infrastructure.\n\n## Risks\n\n- **False positives in change detection**: The retry helper detects \"any change\" rather than \"my specific change was processed.\" In a single-user context this is an acceptable trade-off. If a concurrent background state change happens to satisfy the retry, the UI still ends up showing current data.\n- **Retry exhaustion on no-op edits**: If a user saves an edit that doesn't actually change the rendered output (e.g., saving the same value), the retry helper will exhaust all retries since the HTML never changes. This is acceptable \u2014 the UI will catch up on the next periodic poll.\n- **Increased server load**: The retry approach increases HTTP requests briefly after each mutation (up to ~4 extra requests over 3 seconds). Given the single-user context, this is negligible.\n\n## Scope\n\n- **In scope**: Client-side JavaScript changes only \u2014 the initial poll call and the mutation retry helper\n- **Out of scope**: No server-side (Go) changes needed. No Python pipeline changes needed. No changes to the WebSocket protocol or state management. No optimistic UI, loading skeletons, or client-side state management.",
+  "plan_exploration_summary": "",
+  "impl_spec": "## Implementation Spec: WebUI Takes a Long Time to Load\n\nAll changes are in a single file: `server/templates/client.html` (client-side JavaScript only).\n\n### Task 1: Add immediate poll on page load\n\n**File:** `server/templates/client.html`\n**Location:** Line 630, immediately after `setInterval(smartPollFeatures, 5000);`\n**Change:** Add a single line:\n```js\nsmartPollFeatures();\n```\n**Rationale:** The `setInterval` only fires after the first 5-second interval elapses. Adding an immediate call fetches feature data on page load, eliminating the 0-to-5-second blank window.\n**Dependencies:** None.\n\n### Task 2: Create the `pollUntilChanged` helper function\n\n**File:** `server/templates/client.html`\n**Location:** Insert immediately after the `smartPollFeatures` function definition (after line 629, before the `setInterval` line).\n**Change:** Add the following function:\n```js\nfunction pollUntilChanged(maxRetries, intervalMs) {\n    var beforeHTML = _lastFeaturesHTML;\n    var attempt = 0;\n    function retry() {\n        if (attempt >= maxRetries) return;\n        attempt++;\n        setTimeout(function() {\n            fetch(_featuresURL).then(function(r) { return r.text(); }).then(function(html) {\n                if (html !== beforeHTML) {\n                    // Change detected, do a full smartPollFeatures to update DOM\n                    smartPollFeatures();\n                } else if (attempt < maxRetries) {\n                    retry();\n                }\n            }).catch(function() {});\n        }, intervalMs);\n    }\n    retry();\n}\n```\n**Rationale:** This captures the current `_lastFeaturesHTML` at call time, then polls up to `maxRetries` times at `intervalMs` intervals. If the fetched HTML differs from the snapshot, it calls `smartPollFeatures()` to apply the DOM diff. If retries are exhausted, the regular 5-second interval will catch up.\n**Dependencies:** Must be defined before any mutation handlers that call it.\n\n### Task 3: Replace all post-mutation `setTimeout(smartPollFeatures, 500)` calls with `pollUntilChanged`\n\nReplace each of the following 5 occurrences of `setTimeout(function() { smartPollFeatures(); }, 500)` with `pollUntilChanged(4, 750)`:\n\n1. **Line 1218** (edit-title success handler)\n   - **Before:** `setTimeout(function() { smartPollFeatures(); }, 500);`\n   - **After:** `pollUntilChanged(4, 750);`\n\n2. **Line 1259** (edit-type success handler)\n   - **Before:** `setTimeout(function() { smartPollFeatures(); }, 500);`\n   - **After:** `pollUntilChanged(4, 750);`\n\n3. **Line 1298** (edit-description success handler)\n   - **Before:** `setTimeout(function() { smartPollFeatures(); }, 500);`\n   - **After:** `pollUntilChanged(4, 750);`\n\n4. **Line 1356** (edit-done-script success handler)\n   - **Before:** `setTimeout(function() { smartPollFeatures(); }, 500);`\n   - **After:** `pollUntilChanged(4, 750);`\n\n5. **Line 1417** (edit-depends-on success handler)\n   - **Before:** `setTimeout(function() { smartPollFeatures(); }, 500);`\n   - **After:** `pollUntilChanged(4, 750);`\n\n### Task 4: Replace post-mutation `setTimeout(..., 1000)` blocks that call `smartPollFeatures` with `pollUntilChanged`\n\nThese three locations use `setTimeout` with 1000ms delay wrapping `smartPollFeatures()`. Replace the `smartPollFeatures()` call inside each with `pollUntilChanged(4, 750)` and remove the wrapping `setTimeout`:\n\n1. **Lines 1562-1566** (approve/reject/rework success handler)\n   - **Before:**\n     ```js\n     setTimeout(function() {\n         var detail = document.querySelector('.feature-detail');\n         if (detail) detail.remove();\n         smartPollFeatures();\n     }, 1000);\n     ```\n   - **After:**\n     ```js\n     var detail = document.querySelector('.feature-detail');\n     if (detail) detail.remove();\n     pollUntilChanged(4, 750);\n     ```\n\n2. **Lines 1616-1618** (move feature success handler)\n   - **Before:**\n     ```js\n     setTimeout(function() {\n         smartPollFeatures();\n     }, 1000);\n     ```\n   - **After:**\n     ```js\n     pollUntilChanged(4, 750);\n     ```\n\n3. **Lines 1691-1695** (create idea success handler)\n   - **Before:**\n     ```js\n     setTimeout(function() {\n         closeNewIdeaModal();\n         // Trigger immediate poll to see the new idea\n         smartPollFeatures();\n     }, 1000);\n     ```\n   - **After:**\n     ```js\n     closeNewIdeaModal();\n     pollUntilChanged(4, 750);\n     ```\n\n### Summary of Parameters\n\n- `maxRetries = 4`: Polls up to 4 times\n- `intervalMs = 750`: 750ms between each retry\n- Total retry window: ~3 seconds, after which the regular 5-second poll catches up\n\n### What NOT to change\n\n- Do NOT modify the `smartPollFeatures` function itself \u2014 its DOM-diffing logic is correct\n- Do NOT modify the `setInterval(smartPollFeatures, 5000)` cadence \u2014 5 seconds is fine for steady-state\n- Do NOT modify any Go server code\n- Do NOT modify any Python pipeline code\n- Do NOT add loading skeletons, optimistic UI, or client-side state management",
+  "test_spec": "# Test Spec: WebUI Takes a Long Time to Load\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Immediate Poll on Page Load\n\n**Behavior:** When the page loads, `smartPollFeatures()` is called immediately (not just on the 5-second interval).\n\n- **Success criteria:** After the page's JavaScript initializes, an HTTP request to the features endpoint (`/clients/{id}/features?key=...`) is made immediately, without waiting for the `setInterval` to fire.\n- **Expected output:** The features HTML is fetched and rendered into the DOM on the first tick after initialization. The user sees feature data within the first network round-trip (~100-500ms) rather than waiting up to 5 seconds.\n- **Verify:** The `setInterval(smartPollFeatures, 5000)` line still exists and is unchanged \u2014 the immediate call is an addition, not a replacement.\n\n### 1.2 `pollUntilChanged` Helper Exists and Works Correctly\n\n**Behavior:** A new function `pollUntilChanged(maxRetries, intervalMs)` is defined that:\n  - Captures the current value of `_lastFeaturesHTML` at call time as a \"before\" snapshot.\n  - Polls the features endpoint up to `maxRetries` times, spaced `intervalMs` apart.\n  - On each poll, compares the fetched HTML to the \"before\" snapshot.\n  - If the HTML differs, calls `smartPollFeatures()` to apply the DOM diff, then stops retrying.\n  - If retries are exhausted without detecting a change, stops silently (the regular 5-second poll will catch up).\n\n- **Success criteria:** The function is defined and callable. It makes at most `maxRetries` fetch requests. It stops early when a change is detected.\n- **Expected output:** Between 1 and `maxRetries` HTTP requests to the features endpoint after each mutation.\n\n### 1.3 Edit-Title Mutation Uses `pollUntilChanged`\n\n**Behavior:** After a successful title edit, `pollUntilChanged(4, 750)` is called instead of `setTimeout(function() { smartPollFeatures(); }, 500)`.\n\n- **Success criteria:** The old `setTimeout(..., 500)` call at the edit-title success handler is replaced. The UI updates as soon as the pipeline processes the title change, within ~3 seconds.\n- **Expected output:** The edited title appears in the feature list without a manual refresh.\n\n### 1.4 Edit-Type Mutation Uses `pollUntilChanged`\n\n**Behavior:** After a successful type edit, `pollUntilChanged(4, 750)` is called instead of `setTimeout(function() { smartPollFeatures(); }, 500)`.\n\n- **Success criteria:** Same as 1.3 but for the type edit handler.\n- **Expected output:** The edited type appears in the feature list without a manual refresh.\n\n### 1.5 Edit-Description Mutation Uses `pollUntilChanged`\n\n**Behavior:** After a successful description edit, `pollUntilChanged(4, 750)` is called instead of `setTimeout(function() { smartPollFeatures(); }, 500)`.\n\n- **Success criteria:** Same as 1.3 but for the description edit handler.\n- **Expected output:** The edited description appears in the feature detail without a manual refresh.\n\n### 1.6 Edit-Done-Script Mutation Uses `pollUntilChanged`\n\n**Behavior:** After a successful done-script edit, `pollUntilChanged(4, 750)` is called instead of `setTimeout(function() { smartPollFeatures(); }, 500)`.\n\n- **Success criteria:** Same as 1.3 but for the done-script edit handler.\n- **Expected output:** The edited done-script value appears without a manual refresh.\n\n### 1.7 Edit-Depends-On Mutation Uses `pollUntilChanged`\n\n**Behavior:** After a successful depends-on edit, `pollUntilChanged(4, 750)` is called instead of `setTimeout(function() { smartPollFeatures(); }, 500)`.\n\n- **Success criteria:** Same as 1.3 but for the depends-on edit handler.\n- **Expected output:** The edited dependency list appears without a manual refresh.\n\n### 1.8 Approve/Reject/Rework Mutation Uses `pollUntilChanged`\n\n**Behavior:** After a successful approve, reject, or rework action:\n  - The `.feature-detail` element is removed immediately (no wrapping `setTimeout`).\n  - `pollUntilChanged(4, 750)` is called instead of `smartPollFeatures()` inside a `setTimeout(..., 1000)`.\n\n- **Success criteria:** The detail panel closes immediately. The feature list updates to reflect the stage change within ~3 seconds.\n- **Expected output:** The feature moves to its new stage column without a manual refresh.\n\n### 1.9 Move Feature Mutation Uses `pollUntilChanged`\n\n**Behavior:** After a successful move-feature action, `pollUntilChanged(4, 750)` is called directly instead of `smartPollFeatures()` inside `setTimeout(..., 1000)`.\n\n- **Success criteria:** The wrapping `setTimeout` is removed. The feature list updates to reflect the move within ~3 seconds.\n- **Expected output:** The feature appears in its new stage column without a manual refresh.\n\n### 1.10 Create Idea Mutation Uses `pollUntilChanged`\n\n**Behavior:** After a successful idea creation:\n  - `closeNewIdeaModal()` is called immediately (no wrapping `setTimeout`).\n  - `pollUntilChanged(4, 750)` is called instead of `smartPollFeatures()` inside `setTimeout(..., 1000)`.\n\n- **Success criteria:** The modal closes immediately. The new idea appears in the ideas column within ~3 seconds.\n- **Expected output:** The newly created idea appears in the feature list without a manual refresh.\n\n### 1.11 Smart-Diffing Behavior Is Preserved\n\n**Behavior:** The `smartPollFeatures` function's DOM-diffing logic is unchanged. Expanded cards, form inputs, and scroll position are not disrupted by polling.\n\n- **Success criteria:** The `smartPollFeatures` function body is identical to its pre-change version. No modifications to how it parses HTML, diffs stage sections, or updates the DOM.\n- **Expected output:** If a user has a card expanded and a poll fires, the card remains expanded and any in-progress form edits are preserved.\n\n### 1.12 Periodic Polling Cadence Is Unchanged\n\n**Behavior:** The `setInterval(smartPollFeatures, 5000)` call remains unchanged.\n\n- **Success criteria:** The 5-second steady-state polling interval is not modified.\n- **Expected output:** Features continue to refresh every 5 seconds in the background.\n\n## 2. Edge Cases\n\n### 2.1 No-Op Edit (Same Value Saved)\n\nWhen a user edits a field and saves the exact same value, the pipeline processes the edit but the rendered HTML is identical. `pollUntilChanged` will exhaust all 4 retries without detecting a change. This is acceptable \u2014 the regular 5-second poll will catch any concurrent changes.\n\n### 2.2 Rapid Sequential Mutations\n\nIf a user performs two mutations in quick succession (e.g., edits title then immediately edits type), two separate `pollUntilChanged` retry chains run concurrently. Each captures its own \"before\" snapshot. The first chain may detect the change from the second mutation (or vice versa). This is acceptable \u2014 the UI ends up showing current state regardless.\n\n### 2.3 Network Error During Retry Polling\n\nIf a `fetch` call inside `pollUntilChanged` fails (network error, server down), the `.catch(function() {})` handler silently swallows the error and the retry chain continues on its next attempt. Retries should not crash or leave the UI in a broken state.\n\n### 2.4 Server Returns Empty HTML\n\nIf the features endpoint returns an empty response (e.g., no features exist yet, or pipeline not connected), `pollUntilChanged` compares against `_lastFeaturesHTML`. If both are empty, no change is detected and retries exhaust normally. If the previous state had content and now it's empty, a change IS detected and `smartPollFeatures` is called to update the DOM.\n\n### 2.5 Page Load When Pipeline Is Not Connected\n\nThe immediate `smartPollFeatures()` call on page load may fetch empty or stale data if the pipeline hasn't sent its first `state_update` to the Go server. This is acceptable \u2014 the 5-second periodic poll will pick up data once the pipeline connects. The page should not error or crash.\n\n### 2.6 `pollUntilChanged` Called with Zero Retries\n\nIf called with `maxRetries=0`, the function should do nothing (no fetch, no error). This is a boundary condition for the retry loop.\n\n### 2.7 Multiple Concurrent `pollUntilChanged` Instances\n\nMultiple instances of `pollUntilChanged` can run simultaneously (see 2.2). Each must maintain its own independent retry counter and \"before\" snapshot. They should not interfere with each other.\n\n## 3. What Constitutes Failure\n\n### 3.1 Initial Load Still Delayed\n\nIf the page loads and no features endpoint request is made until the first `setInterval` fires (~5 seconds), the immediate poll fix is missing or broken.\n\n### 3.2 Any `setTimeout(smartPollFeatures, 500)` Remains\n\nIf any of the 5 original `setTimeout(function() { smartPollFeatures(); }, 500)` calls still exist in the code, the mutation retry fix is incomplete.\n\n### 3.3 Any Wrapping `setTimeout(..., 1000)` Around `smartPollFeatures` Remains\n\nIf any of the 3 original `setTimeout(..., 1000)` blocks that wrap `smartPollFeatures()` calls still exist, the fix is incomplete.\n\n### 3.4 `pollUntilChanged` Makes Unbounded Requests\n\nIf the retry helper makes more than `maxRetries` fetch requests, or never stops retrying, it is broken.\n\n### 3.5 `pollUntilChanged` Does Not Call `smartPollFeatures` on Change\n\nIf the helper detects a change (HTML differs from snapshot) but does not call `smartPollFeatures()` to apply the DOM diff, the UI will not update.\n\n### 3.6 `smartPollFeatures` Function Modified\n\nIf the body of `smartPollFeatures` is changed in any way, the fix has overstepped its scope and may break DOM-diffing behavior.\n\n### 3.7 `setInterval` Cadence Changed\n\nIf the 5000ms interval is changed, the fix has overstepped its scope.\n\n### 3.8 Server-Side Code Modified\n\nIf any Go server files (`server/api.go`, `server/hub.go`, etc.) or Python pipeline files are modified, the fix has overstepped its scope.\n\n### 3.9 JavaScript Errors on Page Load\n\nIf the page throws any JavaScript errors during initialization due to the new code, the fix is broken.\n\n### 3.10 Approve/Reject/Rework Still Wrapped in setTimeout\n\nIf the `.feature-detail` removal and `pollUntilChanged` call for approve/reject/rework are still inside a `setTimeout`, the detail panel will not close immediately as intended.\n\n### 3.11 Create Idea Modal Still Wrapped in setTimeout\n\nIf `closeNewIdeaModal()` and `pollUntilChanged` for create-idea are still inside a `setTimeout`, the modal will not close immediately as intended.\n\n## 4. Out of Scope\n\n- **Performance benchmarks**: Do not measure or assert specific timing (e.g., \"page must load in under 200ms\"). The fix is about eliminating unnecessary delays, not achieving specific performance targets.\n- **Visual/UI assertions**: Do not test pixel-level rendering, CSS styling, or layout. The test spec covers functional behavior only.\n- **Server-side behavior**: Do not test Go server endpoints, WebSocket handling, or Python pipeline processing. The fix is client-side JavaScript only.\n- **Browser compatibility**: Do not test across multiple browsers. The existing polling code already works cross-browser; the fix uses the same APIs (`fetch`, `setTimeout`, `setInterval`).\n- **Load testing / concurrent users**: The system is designed for single-user use. Do not test multi-user concurrency.\n- **Optimistic UI / loading states**: The plan explicitly rejected optimistic UI. Do not test for loading skeletons, spinners, or pending states.\n- **WebSocket protocol changes**: No changes are made to the WebSocket communication between the Go server and Python pipeline.\n- **Exact retry timing**: Do not assert that retries happen at exactly 750ms intervals. The important thing is that retries happen and eventually stop.",
+  "impl_notes": "Implemented WebUI performance improvements in server/templates/client.html: (1) Added immediate smartPollFeatures() call on page load to eliminate 0-5 second initial delay; (2) Created pollUntilChanged helper function that retries polling until HTML changes or max retries exhausted; (3) Replaced 5 setTimeout(..., 500) calls with pollUntilChanged(4, 750) for edit mutations; (4) Replaced 3 setTimeout(..., 1000) blocks with pollUntilChanged for approve/reject/rework, move feature, and create idea actions. Go server builds and tests pass.",
+  "ideation_summaries": [
+    "Two root causes identified. (1) Slow initial load: The Go server renders the client page from in-memory state that only gets populated when the Python pipeline pushes a state_update via WebSocket (every 2s periodic broadcast). If the browser loads the page before the first push arrives, the page renders empty/stale and must wait up to 5 seconds for smartPollFeatures to fetch updated HTML. Fix: either have the Go server proactively request state from the pipeline on first page load, or add a client-side immediate poll on page load (call smartPollFeatures() immediately instead of only on a 5s interval). (2) New items not appearing: The create_idea flow is fire-and-forget \u2014 the Go server sends the command to the pipeline via WebSocket, returns 200 immediately, and the browser calls smartPollFeatures() right after. But the pipeline hasn't processed the idea yet (it needs to create the JSON file, reload features, and push state back). The single immediate poll races against this round-trip and almost always loses. Fix: after creating an idea, poll more aggressively (e.g., retry smartPollFeatures 3 times at 1-second intervals) or have the Go server wait for the next state_update from the pipeline before returning the create_idea response, confirming the item exists before the UI tries to render it.",
+    "The previous proposal correctly identifies both root causes but its fixes have gaps. (1) For slow initial load: calling smartPollFeatures() immediately on page load is necessary but insufficient \u2014 if the Go server has no pipeline client connected yet (or the pipeline hasn't sent its first state_update), the immediate poll just fetches empty state, leaving the user staring at a blank page anyway. The fix should also have the Go server return a loading/skeleton state when it has no data, so the user sees feedback rather than emptiness. (2) For create_idea: the '3 retries at 1s intervals' approach is a non-deterministic hack that will still fail under load or slow pipelines. The better alternative (Go server waits for the next state_update before returning) was mentioned but not explored \u2014 it has its own problems: it couples the HTTP response to WebSocket round-trip latency and needs a timeout, and if the pipeline is busy processing other work, the wait could be long. A simpler middle ground: return a provisional/optimistic item from the Go server immediately (the server already has all the data it needs from the POST body), render it client-side as 'pending', and let the next real state_update replace it. (3) The proposal misses that the same race condition affects ALL actions, not just create_idea \u2014 move, approve, reject, etc. all use the same pattern of setTimeout(smartPollFeatures, 500), which is an optimistic 500ms poll that frequently loses the race. Any fix should address the general pattern, not just create_idea.",
+    "The previous critiques are strong but overcomplicate the solution. Optimistic UI and server-side waiting both add significant complexity for marginal gain. The pragmatic fix is two changes: (1) For slow initial load, call smartPollFeatures() immediately on DOMContentLoaded AND reduce the initial poll interval to 1s for the first 10 seconds (then revert to 5s). This handles both the 'pipeline already connected but no state_update yet' case and the 'pipeline not connected yet' case without any server changes. A CSS loading skeleton is unnecessary \u2014 the page already renders empty stage sections from the Go template; the real problem is just the 5-second gap before the first poll fires. (2) For the post-action race condition affecting ALL mutations (create_idea, move, edit-title, edit-type, edit-description, edit-done-script, edit-depends-on), replace the scattered setTimeout(smartPollFeatures, 500) pattern with a single helper like pollUntilChanged(maxRetries=4, intervalMs=750) that calls smartPollFeatures repeatedly until _lastFeaturesHTML actually changes or retries are exhausted. This is deterministic enough \u2014 if the HTML hasn't changed after 3 seconds, the pipeline genuinely hasn't processed the action yet, and the next regular 5s poll will catch it. This avoids the complexity of optimistic UI (which requires client-side state management, pending indicators, and reconciliation logic for every action type), avoids coupling HTTP responses to WebSocket round-trips on the server, and requires zero Go server changes \u2014 it's purely client-side JavaScript.",
+    "The previous proposal's two-change approach is pragmatic and mostly sound, but has a subtle flaw in pollUntilChanged and misses a simpler fix for initial load. (1) For initial load: the 'aggressive polling for first 10 seconds then back off to 5s' idea adds unnecessary complexity. The simpler fix is just to call smartPollFeatures() immediately after its definition (right after the setInterval line). The 5-second setInterval is fine as the steady-state cadence \u2014 the only real problem is the initial 0-to-5-second gap before the first interval fires. One immediate call closes that gap entirely. No dynamic interval switching needed. (2) For pollUntilChanged: comparing _lastFeaturesHTML to detect change is brittle because it conflates 'the pipeline processed MY action' with 'any state changed at all'. If another action or the pipeline's periodic broadcast happens to update features during the retry window, pollUntilChanged will see a change and stop \u2014 even if the user's specific mutation hasn't been applied yet. In practice this is unlikely to matter for single-user scenarios, but it means the 'deterministic enough' claim doesn't fully hold. That said, this is an acceptable trade-off \u2014 the alternative (tracking per-action expected outcomes) would be far too complex. The real risk is the opposite case: if the pipeline processes the action but the HTML output happens to be identical (e.g., editing a field to the same value), pollUntilChanged will exhaust all retries for no reason. Adding a simple 'force refresh after action' flag would handle this edge case more cleanly than polling for change. (3) The proposal correctly identifies that zero Go server changes is a virtue. The server-side state is already authoritative and the polling model works \u2014 the only issue is timing. Keeping the fix purely client-side means no risk of introducing server-side bugs or coupling."
+  ],
+  "ideation": "",
+  "ideation_prompt": "",
+  "history": [
+    {
+      "ts": "2026-03-20T04:37Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-20T04:38Z",
+      "stage": "IDEATING",
+      "note": "Moved via server command"
+    },
+    {
+      "ts": "2026-03-20T04:44Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-20T04:44Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-20T04:47Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-20T04:47Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-20T04:49Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-20T04:49Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 1)"
+    },
+    {
+      "ts": "2026-03-20T04:50Z",
+      "stage": "IDEATING",
+      "note": "Consensus reached after 4 rounds"
+    },
+    {
+      "ts": "2026-03-20T04:50Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-20T06:39Z",
+      "stage": "PLAN-INBOX",
+      "note": "Moved via server command"
+    },
+    {
+      "ts": "2026-03-20T06:39Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-20T06:43Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-20T06:43Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-20T06:45Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-20T06:45Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-20T06:45Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-20T06:45Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-20T06:46Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-20T06:47Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-20T06:47Z",
+      "stage": "SPECREVIEW",
+      "note": "Starting spec review"
+    },
+    {
+      "ts": "2026-03-20T06:49Z",
+      "stage": "SPECREVIEW",
+      "note": "Verdict: PASS - The specs are complete, aligned with the plan, and consistent. All line reference..."
+    },
+    {
+      "ts": "2026-03-20T06:49Z",
+      "stage": "SPECREVIEW",
+      "note": "Specs approved, moving to implementing"
+    },
+    {
+      "ts": "2026-03-20T06:49Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-20T06:56Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-20T06:56Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-20T06:56Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-20T07:03Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-20T07:03Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-20T07:04Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation correctly adds immediate smartPollFeatures() call on page load (li..."
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-20T06:45Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-20T07:04Z",
+      "verdict": "PASS",
+      "summary": "Implementation correctly adds immediate smartPollFeatures() call on page load (line 649) and pollUntilChanged retry helper (lines 630-646). All 5 setTimeout(..., 500) calls replaced with pollUntilChanged(4, 750) for edit mutations. All 3 setTimeout(..., 1000) blocks replaced for approve/reject/rework, move, and create-idea actions with immediate side effects and pollUntilChanged. smartPollFeatures body and setInterval cadence are unchanged. No server-side modifications for this feature.",
+      "feedback": null
+    }
+  ],
+  "ideation_cycle_verdicts": [
+    {
+      "cycle": 1,
+      "verdict": "consensus",
+      "reason": "Rounds 3 and 4 agree on the same two-part client-side fix with only minor refinements (simplifying dynamic interval to a single immediate call, acknowledging acceptable edge cases in pollUntilChanged). No substantive new arguments or alternative approaches emerged in Round 4.",
+      "rounds_completed": 4
+    }
+  ],
+  "Ideation": "The WebUI slowness has two distinct root causes. First, the initial page load appears slow because the Go server renders from in-memory state that is only populated when the Python pipeline pushes a state_update via WebSocket. The `smartPollFeatures()` function fires on a 5-second setInterval, meaning users may wait up to 5 seconds before seeing any content. The fix is simple: call `smartPollFeatures()` once immediately after defining the interval \u2014 this closes the 0-to-5-second gap with a single line of JavaScript and requires no server-side changes.\n\nSecond, all mutation actions (create_idea, move, edit-title, edit-type, edit-description, edit-done-script, edit-depends-on) use a fire-and-forget pattern where the Go server returns 200 immediately, then the client calls `setTimeout(smartPollFeatures, 500)`. This single poll at 500ms races against the pipeline's full round-trip (receive command \u2192 write JSON \u2192 reload features \u2192 push state_update) and frequently loses. The fix is to replace all scattered `setTimeout(smartPollFeatures, 500)` calls with a shared `pollUntilChanged(maxRetries=4, intervalMs=750)` helper that retries until `_lastFeaturesHTML` actually changes or retries are exhausted (~3 seconds total). This is deterministic enough for practical use.\n\nThe discussion considered but rejected more complex alternatives: optimistic UI (requires client-side state management and reconciliation per action type), server-side waiting on WebSocket state_update before returning HTTP response (couples HTTP latency to WebSocket round-trip, risks long waits), and loading skeletons (unnecessary since the page already renders empty stage sections from the template). A subtle flaw in `pollUntilChanged` was noted \u2014 it conflates 'my action was processed' with 'any state changed at all', and will exhaust retries if the HTML output is identical after an edit. Both edge cases are acceptable trade-offs given the single-user context and the far greater complexity of alternatives.\n\nThe full fix is purely client-side JavaScript: one immediate `smartPollFeatures()` call on page load, and one `pollUntilChanged` helper replacing all post-mutation polls. Zero server changes required.\n\n[Ideation concluded by consensus after 4 rounds, 1 cycles.]",
+  "spec_reviews": [
+    {
+      "ts": "2026-03-20T06:49Z",
+      "verdict": "PASS",
+      "summary": "The specs are complete, aligned with the plan, and consistent. All line references in the impl spec match the actual source code. Both the immediate-poll fix and the pollUntilChanged retry helper are well-specified with precise before/after code. The test spec covers all 8 mutation sites, preserves scope boundaries, and documents relevant edge cases.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-20T00:03:12.830292",
+    "verdict": "PASS",
+    "results": {
+      "passed": 1,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All test spec requirements verified via code inspection: (1) Immediate poll on page load - smartPollFeatures() called immediately after setInterval (line 649); (2) pollUntilChanged helper function exists at lines 630-647; (3-7) All 5 edit mutations (title, type, description, done-script, depends-on) use pollUntilChanged(4, 750) instead of setTimeout(..., 500); (8) Approve/reject/rework uses immediate detail.remove() and pollUntilChanged(4, 750) instead of setTimeout(..., 1000); (9) Move feature uses pollUntilChanged(4, 750) directly without setTimeout wrapper; (10) Create idea uses closeNewIdeaModal() immediately and pollUntilChanged(4, 750) instead of setTimeout(..., 1000); (11) smartPollFeatures DOM diffing logic preserved (lines 545-629); (12) setInterval cadence unchanged at 5000ms (line 648). Go server builds successfully and tests pass (25.973s). No JavaScript unit tests exist for this feature as it involves client-side behavior verification, but all implementation requirements from the test spec are satisfied."
+  }
+}

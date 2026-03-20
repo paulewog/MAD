@@ -21,6 +21,7 @@ class MockConfig:
         self._code_path = code_path
         self._mad_dir = Path("/tmp/test-mad")
         self._context_file = Path("/tmp/test-mad/CONTEXT.md")
+        self._boards_dir = Path("/tmp/test-mad/boards")
 
     @property
     def code_path(self):
@@ -33,6 +34,10 @@ class MockConfig:
     @property
     def context_file(self):
         return self._context_file
+
+    @property
+    def boards_dir(self):
+        return self._boards_dir
 
     @property
     def current_agent(self):
@@ -239,6 +244,64 @@ class TestPrependContext(unittest.TestCase):
             prompt = runner._prepend_context("Do something")
 
         self.assertIn("Do something", prompt)
+
+    def test_prepend_context_with_board(self):
+        """Board context included when board parameter provided."""
+        config = MockConfig()
+        
+        with patch('runner.read_context_file') as mock_read:
+            with patch('runner.read_board_context_file') as mock_board_read:
+                mock_read.return_value = "Global context"
+                mock_board_read.return_value = "Board specific context"
+                runner = AgentRunner(config)
+                prompt = runner._prepend_context("Do something", board="testboard")
+
+        self.assertIn("Global context", prompt)
+        self.assertIn("Board Context", prompt)
+        self.assertIn("Board specific context", prompt)
+
+    def test_prepend_context_without_board(self):
+        """No board context when board parameter not provided."""
+        config = MockConfig()
+        
+        with patch('runner.read_context_file') as mock_read:
+            with patch('runner.read_board_context_file') as mock_board_read:
+                mock_read.return_value = "Global context"
+                mock_board_read.return_value = "Board context"
+                runner = AgentRunner(config)
+                prompt = runner._prepend_context("Do something")
+
+        self.assertIn("Global context", prompt)
+        mock_board_read.assert_not_called()
+
+    def test_prepend_context_board_no_file(self):
+        """No board context section when file doesn't exist."""
+        config = MockConfig()
+        
+        with patch('runner.read_context_file') as mock_read:
+            with patch('runner.read_board_context_file') as mock_board_read:
+                mock_read.return_value = "Global context"
+                mock_board_read.return_value = None
+                runner = AgentRunner(config)
+                prompt = runner._prepend_context("Do something", board="testboard")
+
+        self.assertIn("Global context", prompt)
+        self.assertNotIn("Board Context", prompt)
+
+    def test_prepend_context_board_after_global(self):
+        """Board context appears after global context."""
+        config = MockConfig()
+        
+        with patch('runner.read_context_file') as mock_read:
+            with patch('runner.read_board_context_file') as mock_board_read:
+                mock_read.return_value = "Global CONTEXT.md"
+                mock_board_read.return_value = "Board context content"
+                runner = AgentRunner(config)
+                prompt = runner._prepend_context("Prompt", board="myboard")
+
+        global_pos = prompt.find("Global CONTEXT.md")
+        board_pos = prompt.find("Board Context")
+        self.assertLess(global_pos, board_pos)
 
 
 class TestReadCheckpoint(unittest.TestCase):

@@ -18,6 +18,8 @@ LOCAL_CONFIG = "config.json"
 PROJECT_CONFIG = ".mad.config.json"
 CONTEXT_FILENAME = "CONTEXT.md"
 MAX_CONTEXT_SIZE = 100 * 1024  # 100KB
+BOARD_CONTEXT_FILENAME = "BOARD_CONTEXT.md"
+MAX_BOARD_CONTEXT_SIZE = 30 * 1024  # 30KB
 
 BUILTIN_AGENTS: Dict[str, dict] = {
     "claude": {
@@ -101,6 +103,19 @@ def get_mad_dir() -> Path:
         # Default to global
         return Path("~/MAD")
     return config_path.parent
+
+
+def socket_path_for_project() -> str:
+    """Derive a unique Unix socket path for the current project.
+
+    Uses the .mad directory's absolute path to generate a short hash,
+    so each project gets its own socket and multiple instances don't collide.
+    """
+    import hashlib
+    mad_dir = get_mad_dir()
+    abs_path = str(mad_dir.resolve())
+    hash_value = hashlib.sha256(abs_path.encode()).hexdigest()[:12]
+    return f"/tmp/mad-{hash_value}.sock"
 
 
 def ensure_local_config(cwd: Path) -> Path:
@@ -612,6 +627,39 @@ def read_context_file(config: Config) -> Optional[str]:
         
         if len(content_bytes) > MAX_CONTEXT_SIZE:
             truncated_bytes = content_bytes[:MAX_CONTEXT_SIZE]
+            while truncated_bytes:
+                try:
+                    return truncated_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    truncated_bytes = truncated_bytes[:-1]
+            return ""
+        
+        return content_bytes.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def read_board_context_file(config: Config, board: str) -> Optional[str]:
+    """Read BOARD_CONTEXT.md for a specific board with 30KB size limit.
+    
+    Returns None if file doesn't exist or cannot be read.
+    Truncates at 30KB byte boundary if file is too large.
+    """
+    context_path = config.boards_dir / board / BOARD_CONTEXT_FILENAME
+    if not context_path.exists():
+        return None
+    
+    try:
+        with open(context_path, "rb") as f:
+            content_bytes = f.read()
+        
+        if len(content_bytes) > MAX_BOARD_CONTEXT_SIZE:
+            logger.warning(
+                f"Board context file for '{board}' exceeds 30KB "
+                f"({len(content_bytes)} bytes) — consider curating "
+                f".mad/boards/{board}/{BOARD_CONTEXT_FILENAME}"
+            )
+            truncated_bytes = content_bytes[:MAX_BOARD_CONTEXT_SIZE]
             while truncated_bytes:
                 try:
                     return truncated_bytes.decode("utf-8")

@@ -44,6 +44,47 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
 
 
+def _append_board_context(feature_data: dict, board: str, boards_dir: Path) -> None:
+    """Append a summary entry to the board's BOARD_CONTEXT.md when a feature completes.
+    
+    Extracts 'plan' and 'impl_notes' fields from the feature data.
+    Each field is truncated to 500 chars. If both are empty, skips the append.
+    """
+    title = feature_data.get("title", "Untitled")
+    feature_id = feature_data.get("id", "unknown")
+    plan = (feature_data.get("plan") or "").strip()
+    impl_notes = (feature_data.get("impl_notes") or "").strip()
+    
+    if not plan and not impl_notes:
+        return
+    
+    if len(plan) > 500:
+        plan = plan[:497] + "..."
+    if len(impl_notes) > 500:
+        impl_notes = impl_notes[:497] + "..."
+    
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    lines = []
+    lines.append(f"## {title} (id: {feature_id})")
+    lines.append(f"**Date:** {date_str}")
+    lines.append("")
+    if plan:
+        lines.append(f"**Plan:**")
+        lines.append(plan)
+        lines.append("")
+    if impl_notes:
+        lines.append(f"**Implementation Notes:**")
+        lines.append(impl_notes)
+        lines.append("")
+    
+    entry = "\n".join(lines) + "\n"
+    
+    context_path = boards_dir / board / "BOARD_CONTEXT.md"
+    context_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(context_path, "a", encoding="utf-8") as f:
+        f.write(entry)
+
+
 class FeatureFile:
     """Represents a single feature file stored as JSON.
     
@@ -132,6 +173,17 @@ class FeatureFile:
 
     def set_requires_human_approval(self, value: bool) -> None:
         self._data["requires_human_approval"] = bool(value)
+        self._save()
+
+    @property
+    def depends_on(self) -> list:
+        return self._data.get("depends_on", [])
+
+    def set_depends_on(self, value: list):
+        if value:
+            self._data["depends_on"] = value
+        elif "depends_on" in self._data:
+            del self._data["depends_on"]
         self._save()
 
     # --- Field accessors ---
@@ -470,6 +522,12 @@ class FeatureFile:
 
         shutil.move(str(self._path), str(target_path))
         self._path = target_path.resolve()
+        
+        if stage == "done":
+            try:
+                _append_board_context(self._data, self.board, config.boards_dir)
+            except Exception:
+                logger.warning(f"Failed to append board context for {self.title}", exc_info=True)
 
     # --- Static finders ---
 
@@ -562,3 +620,83 @@ class FeatureFile:
                         continue
 
         return results
+
+
+def resolve_dependencies(feature_id: str, all_features: list) -> dict:
+    """Resolve dependency status for a feature.
+    
+    Returns:
+        {
+            'blocked': bool,
+            'unresolved_deps': [{'id': str, 'title': str, 'stage': str}],
+            'dangling_deps': [str],  # IDs with no matching feature
+        }
+    """
+    feature = None
+    feature_map = {}
+    for f in all_features:
+        feature_map[f.id] = f
+        if f.id == feature_id:
+            feature = f
+    
+    if not feature:
+        return {'blocked': False, 'unresolved_deps': [], 'dangling_deps': []}
+    
+    deps = feature.depends_on
+    if not deps:
+        return {'blocked': False, 'unresolved_deps': [], 'dangling_deps': []}
+    
+    terminal_stages = {'done', 'rejected'}
+    unresolved = []
+    dangling = []
+    
+    for dep_id in deps:
+        dep_feature = feature_map.get(dep_id)
+        if dep_feature is None:
+            dangling.append(dep_id)
+        elif dep_feature.current_stage not in terminal_stages:
+            unresolved.append({
+                'id': dep_id,
+                'title': dep_feature.title,
+                'stage': dep_feature.current_stage,
+            })
+    
+    blocked = len(unresolved) > 0 or len(dangling) > 0
+    return {'blocked': blocked, 'unresolved_deps': unresolved, 'dangling_deps': dangling}
+
+
+def detect_cycle(feature_id: str, proposed_deps: list, all_features: list) -> bool:
+    """Detect if adding proposed_deps to feature_id would create a cycle.
+    
+    Uses DFS. Returns True if a cycle would be created.
+    Also rejects self-references.
+    """
+    if feature_id in proposed_deps:
+        return True
+    
+    # Build adjacency: feature_id -> list of dependency IDs
+    dep_graph = {}
+    for f in all_features:
+        dep_graph[f.id] = list(f.depends_on)
+    
+    # Apply proposed change
+    dep_graph[feature_id] = list(proposed_deps)
+    
+    # DFS from feature_id following dependency edges
+    visited = set()
+    stack = set()
+    
+    def has_cycle(node):
+        if node in stack:
+            return True
+        if node in visited:
+            return False
+        visited.add(node)
+        stack.add(node)
+        for dep in dep_graph.get(node, []):
+            if has_cycle(dep):
+                return True
+        stack.discard(node)
+        return False
+    
+    return has_cycle(feature_id)

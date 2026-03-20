@@ -1,0 +1,204 @@
+{
+  "id": "9bd14a67",
+  "board": "mad",
+  "title": "MAD webui seems to go blank",
+  "type": "bug",
+  "created": "2026-03-19T04:09Z",
+  "description": "Maybe crashing?",
+  "done_script": "",
+  "requires_human_approval": false,
+  "plan": "## Root Cause Analysis\n\nThe WebUI intermittently goes blank due to two independent bugs in the client-side polling functions that fetch HTML fragments from the server.\n\n**Primary cause \u2014 Missing HTTP status checks:** Both polling functions convert the fetch response to text without first checking whether the HTTP response was successful. When the server returns a non-200 response (e.g., 401 unauthorized or 500 internal error), the plain-text error message is parsed as HTML. This produces zero stage-section elements in the parsed DOM, which triggers the \"structure changed\" branch that replaces the entire container contents with the error text \u2014 effectively blanking the board.\n\n**Secondary cause \u2014 Premature cache update:** The HTML cache variable is updated immediately after receiving the response, before any DOM validation or update occurs. If an error or empty response poisons the cache, the next successful poll will see different HTML and correctly restore the board, but there is a window (one poll interval) where the UI remains blank. Additionally, if two error responses arrive in sequence, the second one matches the cache and is silently ignored \u2014 but the board is already blank from the first.\n\n**Why it's intermittent:** The blank screen only persists for one poll cycle (~5 seconds) because the next successful response will differ from the cached error text and trigger a full DOM replacement that restores the board. This matches the reported behavior of transient blanking rather than permanent failure.\n\n## Impact Assessment\n\n- **Severity: Medium** \u2014 The UI self-recovers within one poll interval, but the visual glitch is jarring and could cause user confusion or data-entry loss (e.g., if a modal was open)\n- **Affected pages:** Both the main dashboard (aggregate board view) and individual client detail pages have identical vulnerable polling functions\n- **No data loss risk** \u2014 This is purely a display issue; no server-side state is affected\n- **Related risk:** If the server experiences sustained errors (e.g., template rendering failure), the board would flash blank every other poll cycle indefinitely\n\n## Fix Strategy\n\nThe fix requires three coordinated changes applied to both polling functions:\n\n1. **Add HTTP status validation** \u2014 Before processing the response body, check that the response indicates success. On non-success responses, abort the poll silently (the catch handler already swallows errors). This prevents error text from ever reaching the DOM manipulation logic.\n\n2. **Add empty-content guard** \u2014 After parsing the response HTML, verify that the expected structural elements exist before proceeding with DOM updates. If the parsed response contains zero stage sections, abort without modifying the DOM. This provides defense-in-depth against edge cases where a 200 response contains unexpected content.\n\n3. **Move cache update after DOM update** \u2014 Defer the cache assignment until after the DOM has been successfully updated. This ensures the cache only ever contains HTML that was actually rendered, preventing cache poisoning from error or empty responses.\n\n## Risks\n\n- **Minimal regression risk** \u2014 The changes are additive guards that prevent action on bad data; they don't alter the happy-path DOM diffing logic\n- **Silent failure on persistent errors** \u2014 With the fix, server errors will be silently swallowed. Consider whether a user-visible indicator (e.g., stale-data warning) should be shown if multiple consecutive polls fail. This is an enhancement, not a requirement for the bug fix.\n- **Cache ordering** \u2014 Moving the cache update must be done carefully to avoid a scenario where a successful DOM update crashes partway through, leaving the cache stale and causing unnecessary full DOM replacements on the next poll. This would be a performance concern, not a correctness issue.\n\n## Scope\n\n**In scope:**\n- The two client-side polling functions (dashboard board poll and client detail features poll)\n- Adding HTTP status checks, empty-content guards, and fixing cache update ordering\n\n**Out of scope:**\n- Server-side error handling changes (the server already returns appropriate status codes)\n- htmx-based polling (htmx 2.x already handles non-2xx responses correctly by not swapping)\n- Service worker behavior (confirmed as a red herring)\n- Any changes to the DOM diffing algorithm itself",
+  "plan_exploration_summary": "",
+  "impl_spec": "",
+  "test_spec": "",
+  "impl_notes": "",
+  "ideation_summaries": [
+    "The most likely cause of the WebUI going blank is the smartPollBoard() function (index.html:412-464) and smartPollFeatures() (client.html:529-612) \u2014 neither checks the HTTP response status before using the response body. If the server returns a non-200 response (500 error, timeout, empty body, or JSON error like {\"error\":\"...\"}), the code parses it as HTML, finds zero .stage-section elements, hits the branch `if (newSections.length !== curSections.length)`, and executes `container.innerHTML = html` \u2014 replacing the entire board with the error text or nothing. The fix is straightforward: add `if (!r.ok) return;` before processing the response text in both smartPollBoard and smartPollFeatures. Additionally, the htmx auto-refresh on the client cards div (hx-trigger='every 5s') has no error protection \u2014 htmx will swap in error responses by default, potentially blanking the clients grid too. A secondary concern is the service worker registration (sw.js) which could serve stale or cached error responses. The `.catch(function() {})` silent error swallowing is fine for network failures (it correctly does nothing), but the real gap is treating HTTP error responses as valid HTML content.",
+    "The previous proposal correctly identifies missing HTTP status checks in smartPollBoard() and smartPollFeatures() as a likely cause, but has three significant weaknesses. First, the htmx claim is wrong: htmx 2.x (the version loaded, 2.0.4) does NOT swap content on non-2xx responses by default, so the client-grid htmx polling is actually safe \u2014 the htmx:responseError handler at line 480 already covers the 401 case, and other errors are simply ignored by htmx. Second, the proposed fix of `if (!r.ok) return;` is too simplistic \u2014 it silently swallows errors, leaving the user staring at a frozen/stale dashboard with zero indication that polling has broken. A better fix would combine the status check with a visible staleness indicator (e.g., a subtle banner or dimming the board after N consecutive failures) and an exponential backoff to avoid hammering a struggling server every 5 seconds. Third, the proposal overlooks that a bad response gets cached in `_lastBoardHTML` \u2014 if the server returns error HTML that gets rendered, the NEXT successful poll will correctly detect a difference and restore the board, but if `_lastBoardHTML` is set to the error text and the server keeps returning the same error, subsequent polls will see html === _lastBoardHTML and do nothing, locking in the broken state. The fix should also skip updating `_lastBoardHTML` when the response is not a valid board fragment. The service worker concern is a red herring \u2014 the default service worker registration without explicit cache strategies does not intercept or cache fetch responses.",
+    "Both previous rounds correctly identify missing HTTP status checks in smartPollBoard() and smartPollFeatures() as the root cause. The concrete failure path is: server returns a non-200 response (e.g., 401 'unauthorized' text or 500 'internal server error' from a template rendering failure at api.go:437), the response body contains zero .stage-section elements, triggering `newSections.length !== curSections.length` which executes `container.innerHTML = html` \u2014 blanking the board with raw error text. Round 2's correction about htmx being safe and the service worker being a red herring is accurate. However, round 2 over-engineers the fix by proposing staleness indicators and exponential backoff \u2014 this is a polling resilience bug, not a monitoring feature. The practical fix is three lines in each function: (1) check `if (!r.ok) return;` before calling `.text()`, (2) move `_lastBoardHTML = html` after the DOM update logic so a failed parse never poisons the cache, and (3) add a basic structural guard `if (newSections.length === 0) return;` to prevent blanking even if a 200 response somehow contains no stage sections (e.g., a template rendering edge case where groupFeaturesByStage returns nil). The _lastBoardHTML poisoning that round 2 identified is real but its fix suggestion was incomplete \u2014 simply skipping the cache update on non-ok responses is insufficient because the current code structure sets `_lastBoardHTML` before parsing, so even a valid but temporarily empty board response gets cached and locks in the blank state until the next change. Moving the cache assignment after successful DOM diffing solves both the error case and the empty-board-flash case.",
+    "The previous three rounds have converged on the correct root cause and a reasonable fix, but round 3's proposed fix has a subtle sequencing error and all rounds miss a second, independent blank-screen vector. First, the sequencing issue: round 3 says to check `if (!r.ok) return;` before calling `.text()` \u2014 but the current code chains `.then(function(r) { return r.text(); })` directly, so by the time you're in the second `.then`, the Response object is already consumed. The guard must go inside the first `.then` (i.e., `return r.ok ? r.text() : Promise.reject()`) or the chain needs restructuring \u2014 just adding a check 'before `.text()`' in the second `.then` is impossible because `r` is already the text string there. This isn't a nitpick; implementing round 3's pseudocode literally would reference an undefined variable. Second, all three rounds focus exclusively on HTTP error responses but ignore a confirmed reproduction path: if the server returns a 200 with valid HTML that contains zero features (e.g., all clients disconnect simultaneously, or the hub's client list is briefly empty during a reconnection window), `groupFeaturesByStage` at api.go:430 returns an empty slice, the template renders zero `.stage-section` elements, and `newSections.length !== curSections.length` triggers `container.innerHTML = html` \u2014 blanking the board with an empty but structurally valid response. Round 3 mentions an `if (newSections.length === 0) return;` guard but buries it as a secondary concern \u2014 it should be the primary defense because this is the only blank-screen path that survives the `r.ok` fix. The _lastBoardHTML poisoning analysis from round 2 is correct and round 3's fix placement (after DOM update) is right, but note that this also means if the empty-board 200 response gets through and blanks the UI, the cache is now set to the empty HTML, so the next poll with actual content will correctly detect a diff and restore the board \u2014 meaning the blank is transient (one poll cycle, ~5 seconds) rather than permanent, which is consistent with the user's report of the UI 'going blank' intermittently rather than staying blank forever.",
+    "Confirmed the three-vector blank-screen analysis by reading both smartPollBoard() (index.html:410-464) and smartPollFeatures() (client.html:528-614). Both functions share identical structural flaws: (1) the fetch chain does `r.text()` without checking `r.ok`, so non-200 error bodies get parsed as HTML, find zero `.stage-section` elements, and trigger `container.innerHTML = html` \u2014 replacing the board with error text; (2) even on valid 200 responses, if the server returns HTML with zero stage-sections (e.g., during a transient reconnection window), the `newSections.length !== curSections.length` branch fires and blanks the container; (3) `_lastBoardHTML`/`_lastFeaturesHTML` is assigned before any DOM diffing, so an error or empty response poisons the cache and the next valid response will always diff as changed, creating a flash. The fix for each polling function is: add `if (!r.ok) return Promise.reject()` in the first `.then()`, add `if (newSections.length === 0) return` before any DOM mutation, and move the `_lastBoardHTML = html` / `_lastFeaturesHTML = html` assignment to after the DOM update succeeds. The `.catch(function() {})` already silently swallows errors, so the reject path is safe. These are three surgical, coordinated changes per function \u2014 no architectural refactor needed.",
+    "Confirmed three independent blank-screen vectors in both smartPollBoard (index.html:412) and smartPollFeatures (client.html:529): (1) Missing HTTP status checks \u2014 both functions call r.text() without verifying r.ok, so non-200 responses (error HTML) get parsed, find zero .stage-section elements, and trigger container.innerHTML replacement that blanks the board. Fix: change the first .then() to `return r.ok ? r.text() : Promise.reject()`. (2) Zero-sections guard missing \u2014 even valid 200 responses can transiently contain zero .stage-section elements, which triggers the `newSections.length !== curSections.length` branch and blanks the container. Fix: add `if (newSections.length === 0) return;` before the length comparison. (3) Cache poisoning \u2014 _lastBoardHTML/_lastFeaturesHTML is assigned before DOM diffing completes, so error or empty responses lock broken state into the cache and prevent recovery on the next poll. Fix: move cache assignment to after successful DOM update. All three fixes are needed in both polling functions (6 changes total).",
+    "The proposed three-part fix is structurally sound but has two gaps worth addressing. First, the empty-sections guard (`if (newSections.length === 0) return;`) prevents legitimate empty-board states from ever rendering \u2014 if all features are genuinely removed or moved out of all stages, the board will be frozen showing stale cards indefinitely. A better guard would distinguish between 'server returned a plausible page with zero sections' versus 'response is too small or malformed to be a real board render' (e.g., check `html.indexOf('stage-section') === -1 && html.length < threshold`), or at minimum only suppress zero-section updates when the current board already has content. Second, moving the cache assignment after DOM update (fix 3) introduces a subtle redundant-work issue: if the server returns identical content on consecutive polls but the first poll triggered a full DOM replace (via the length-mismatch branch), the cache won't match on the next poll and the expensive DOM diffing will run again unnecessarily \u2014 the cache should still be updated even on early-return paths to prevent repeated re-processing of the same content.",
+    "The three-part fix (HTTP status guard, zero-sections guard, cache reordering) is correct but needs two refinements to avoid introducing new bugs. The zero-sections guard should be conditional \u2014 only suppress zero-section responses when the board currently has content (e.g., `if (newSections.length === 0 && curSections.length > 0) return;`) \u2014 otherwise legitimately clearing all features from a board becomes impossible, leaving stale cards frozen on screen indefinitely. The cache assignment should be updated on ALL code paths that successfully process a response (including early-return paths like the zero-sections guard), not just after DOM mutation; otherwise identical consecutive responses will redundantly re-diff because the cache never records the last-seen HTML. With these two adjustments the six coordinated changes (3 per polling function) form a complete, correct fix with no regressions.",
+    "The refined three-part fix with conditional zero-sections guard and cache-on-all-paths is sound, but two operational gaps remain. First, there is no protection against fetch race conditions: if smartPollBoard fires overlapping requests (e.g., a slow response from poll N arrives after poll N+1 has already updated the DOM), the stale response will overwrite newer content \u2014 a sequence counter or AbortController per poll cycle is needed to discard out-of-order responses. Second, the Promise.reject() error-handling path is silent \u2014 persistent server failures (502s, timeouts) will be invisibly swallowed with no user feedback or backoff, meaning the board appears frozen with stale data and the user has no indication anything is wrong; at minimum, consecutive non-200 responses should trigger a visible status indicator or exponential backoff on the poll interval."
+  ],
+  "ideation": "",
+  "ideation_prompt": "",
+  "history": [
+    {
+      "ts": "2026-03-19T04:09Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-19T16:47Z",
+      "stage": "IDEATING",
+      "note": "Moved via web UI"
+    },
+    {
+      "ts": "2026-03-19T16:47Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-19T16:47Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-19T16:48Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-19T16:50Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-19T16:51Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-19T16:51Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 1)"
+    },
+    {
+      "ts": "2026-03-19T16:52Z",
+      "stage": "IDEATING",
+      "note": "Consensus reached after 4 rounds"
+    },
+    {
+      "ts": "2026-03-19T16:52Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-19T18:13Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-19T18:13Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-19T18:15Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-19T18:15Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-19T18:15Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible."
+    },
+    {
+      "ts": "2026-03-19T18:15Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-19T23:06Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-19T23:06Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-19T23:06Z",
+      "stage": "IDEATING",
+      "note": "Moved via server command"
+    },
+    {
+      "ts": "2026-03-19T23:06Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-19T23:06Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-19T23:07Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-20T00:34Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-20T00:34Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-20T00:35Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-20T00:36Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-20T00:37Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-20T00:38Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 1)"
+    },
+    {
+      "ts": "2026-03-20T00:38Z",
+      "stage": "IDEATING",
+      "note": "Consensus reached after 4 rounds"
+    },
+    {
+      "ts": "2026-03-20T00:38Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-20T00:52Z",
+      "stage": "REJECTED",
+      "note": "Rejected: Going to wait to see if this happens again.  Re-architected."
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-19T18:15Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [],
+  "ideation_cycle_verdicts": [
+    {
+      "cycle": 1,
+      "verdict": "consensus",
+      "reason": "Rounds 3 and 4 produced only refinements and out-of-scope additions (race conditions, error visibility) to an already-agreed core fix; fewer than 20% of points in the final round were substantively new, indicating the discussion has converged.",
+      "rounds_completed": 4
+    }
+  ],
+  "Ideation": "The MAD WebUI blank-screen bug stems from three independent failure vectors in both polling functions (smartPollBoard in index.html and smartPollFeatures in client.html). First, neither function checks HTTP status before processing responses \u2014 any non-200 reply (502, error HTML, etc.) is parsed as a board update, finds zero .stage-section elements, and triggers a DOM replacement that blanks the screen. Second, even valid 200 responses can transiently contain zero sections, which hits the length-mismatch branch and blanks the container unnecessarily. Third, the response cache (_lastBoardHTML/_lastFeaturesHTML) is written before DOM diffing completes, so a broken or empty response poisons the cache and prevents recovery on subsequent polls.\n\nThe fix requires six coordinated changes (three per polling function): (1) Add an HTTP status check \u2014 `return r.ok ? r.text() : Promise.reject()` \u2014 so error responses are discarded rather than processed. (2) Add a conditional zero-sections guard \u2014 `if (newSections.length === 0 && curSections.length > 0) return;` \u2014 to suppress blank updates only when the board currently has content, while still allowing legitimate board-clearing when all features are genuinely removed. (3) Move cache assignment to all successful processing paths, including early-return paths, so the cache accurately reflects the last-seen HTML and prevents redundant re-diffing on identical consecutive responses.\n\nTwo additional operational gaps were identified in later rounds but fall outside the minimal fix scope: fetch race conditions (overlapping slow responses overwriting newer DOM state, addressable via AbortController or a sequence counter) and silent failure handling (non-200 responses are swallowed with no user feedback or backoff, leaving the board appearing frozen). These are real issues but represent follow-on hardening work rather than the core blank-screen fix.\n\nThe discussion converged on a well-defined, complete solution. All six required changes are specified with exact logic, the conditional guard correctly handles both the transient-zero and legitimate-empty-board cases, and the cache-on-all-paths rule prevents redundant work. The race condition and error visibility concerns are acknowledged as out-of-scope improvements rather than blockers.\n\n[Ideation concluded by consensus after 4 rounds, 1 cycles.]"
+}

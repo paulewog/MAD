@@ -120,11 +120,34 @@ class PipelineServer:
 
     async def start(self):
         """Start all connections and begin serving."""
-        # 1. Connect to remote Golang server via WebSocket
+        # 1. Clean up stale socket if no process is listening
+        self._cleanup_stale_socket()
+        # 2. Connect to remote Golang server via WebSocket
         await self._connect_golang()
-        # 2. Start Unix socket server for local TUI clients
+        # 3. Start Unix socket server for local TUI clients
         await self._start_local_server()
-        # 3. Listen for commands from both channels
+        # 4. Listen for commands from both channels
+
+    def _cleanup_stale_socket(self):
+        """Remove stale socket file from a previous crash.
+
+        If the socket file exists, try connecting to it. If the connection
+        is refused (no process listening), unlink the file so we can bind.
+        If something IS listening, raise an error — another server is running.
+        """
+        import socket as sock
+        path = self._socket_path
+        if not os.path.exists(path):
+            return
+        test = sock.socket(sock.AF_UNIX, sock.SOCK_STREAM)
+        try:
+            test.connect(path)
+            test.close()
+            raise RuntimeError(f"Another server is already listening on {path}")
+        except ConnectionRefusedError:
+            os.unlink(path)
+        finally:
+            test.close()
 
     async def _connect_golang(self):
         """Maintain persistent bidirectional WebSocket to Golang server."""
@@ -185,18 +208,55 @@ class PipelineServer:
         """Submit answers to feature questions."""
 ```
 
-**Protocol (JSON over Unix socket):**
+**Protocol (length-prefixed JSON over Unix socket):**
 
-Client → Server:
+Messages are framed with a 4-byte big-endian length prefix followed by JSON
+bytes. This avoids the 64KB line limit of newline-delimited framing and
+handles arbitrarily large state broadcasts cleanly.
+
+- Sender: `struct.pack("!I", len(json_bytes)) + json_bytes` → write to socket
+- Receiver: read 4 bytes for length, then read exactly that many bytes, parse as JSON
+
+Client → Server (requests include an `id` for correlation):
 ```json
-{"cmd": "move_feature", "args": {"feature_slug": "...", "from_stage": "...", "to_stage": "...", "board": "..."}}
+{"id": "0", "cmd": "move_feature", "args": {"feature_slug": "...", "target_stage": "...", "reason": "..."}}
+{"id": "1", "cmd": "start_agent", "args": {"feature_id": "...", "action": "plan"}}
 ```
 
-Server → Client:
+Server → Client (responses echo the `id`; broadcasts have no `id`):
 ```json
+{"id": "0", "type": "ok", "data": {"moved": true, "slug": "...", "stage": "..."}}
+{"id": "1", "type": "error", "message": "Agent already running"}
 {"type": "state", "data": {...}}
-{"type": "error", "message": "..."}
-{"type": "log", "entries": [...]}
+```
+
+The `id` field is a client-generated string (e.g. UUID or counter). The server
+echoes it verbatim in the response. Broadcast messages (`state`, `log`) have no
+`id` — the client distinguishes responses from broadcasts by the presence of
+the `id` field. This allows clients to send multiple concurrent commands and
+match each response to the correct request.
+
+**Implementation helper (used by both server and client):**
+
+```python
+class JsonFramer:
+    """Read/write length-prefixed JSON over an asyncio stream."""
+
+    HEADER = struct.Struct("!I")  # 4-byte unsigned big-endian
+
+    @staticmethod
+    async def read_message(reader: asyncio.StreamReader) -> dict:
+        header = await reader.readexactly(JsonFramer.HEADER.size)
+        (length,) = JsonFramer.HEADER.unpack(header)
+        data = await reader.readexactly(length)
+        return json.loads(data)
+
+    @staticmethod
+    async def write_message(writer: asyncio.StreamWriter, msg: dict):
+        payload = json.dumps(msg, separators=(",", ":")).encode()
+        header = JsonFramer.HEADER.pack(len(payload))
+        writer.write(header + payload)
+        await writer.drain()
 ```
 
 #### 1.2 Create Client Library
@@ -211,39 +271,77 @@ New file: `/home/paulewog/MAD/pipeline/client.py`
 
 ```python
 class PipelineClient:
-    """Async client for connecting to PipelineServer."""
-    
+    """Async client for connecting to PipelineServer.
+
+    Uses JsonFramer for all socket I/O (same framing as server).
+    """
+
     def __init__(self, socket_path: str = "/tmp/pipeline.sock"):
         self._socket_path = socket_path
-        self._reader = None
-        self._writer = None
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
         self._state_callbacks: list[Callable] = []
         self._log_callbacks: list[Callable] = []
-        
+        self._pending: dict[str, asyncio.Future] = {}  # id -> Future
+        self._next_id = 0
+
     async def connect(self) -> bool:
-        """Connect to server."""
-        
+        """Connect to server via Unix socket."""
+        self._reader, self._writer = await asyncio.open_unix_connection(
+            self._socket_path
+        )
+        # Start background listener for incoming messages
+        asyncio.create_task(self._recv_loop())
+        return True
+
     async def disconnect(self):
         """Close connection."""
-        
+        if self._writer:
+            self._writer.close()
+            await self._writer.wait_closed()
+
+    async def _recv_loop(self):
+        """Read messages from server, dispatch responses vs broadcasts."""
+        while True:
+            msg = await JsonFramer.read_message(self._reader)
+            if "id" in msg:
+                # Response to a command — resolve the matching Future
+                fut = self._pending.pop(msg["id"], None)
+                if fut and not fut.done():
+                    fut.set_result(msg)
+            elif msg.get("type") == "state":
+                for cb in self._state_callbacks:
+                    cb(msg["data"])
+            elif msg.get("type") == "log":
+                for cb in self._log_callbacks:
+                    cb(msg["entries"])
+
     async def send_command(self, cmd: str, **kwargs) -> dict:
-        """Send command to server, wait for response."""
-        
+        """Send command with a unique request ID, wait for matching response."""
+        req_id = str(self._next_id)
+        self._next_id += 1
+        msg = {"id": req_id, "cmd": cmd, "args": kwargs}
+        fut = asyncio.get_running_loop().create_future()
+        self._pending[req_id] = fut
+        await JsonFramer.write_message(self._writer, msg)
+        return await fut
+
     def on_state_update(self, callback: Callable[[dict], None]):
-        """Register callback for state updates."""
-        
+        """Register callback for state broadcasts."""
+        self._state_callbacks.append(callback)
+
     def on_log_update(self, callback: Callable[[list], None]):
-        """Register callback for log entries."""
-        
+        """Register callback for log broadcasts."""
+        self._log_callbacks.append(callback)
+
     async def get_state(self) -> dict:
-        """Get current state (blocking)."""
         return await self.send_command("get_state")
-        
-    async def move_feature(self, feature_slug: str, from_stage: str, 
+
+    async def move_feature(self, feature_slug: str, from_stage: str,
                            to_stage: str, board: str) -> dict:
         return await self.send_command("move_feature", feature_slug=feature_slug,
                                        from_stage=from_stage, to_stage=to_stage, board=board)
-        
+
     # ... similar for all commands
 ```
 
@@ -374,6 +472,10 @@ The Golang server (`hub.go`) needs minimal changes:
 
 #### 4.1 Update systemd service
 
+The server is headless — it no longer needs a terminal or tmux. Run it
+directly under systemd, which handles restart, logging (stdout → journal),
+and signal delivery natively.
+
 Current:
 ```
 [Service]
@@ -383,7 +485,10 @@ ExecStart=/usr/bin/tmux new-session -d -s mad-mad-c5a2 -x 200 -y 50 /home/paulew
 New:
 ```
 [Service]
-ExecStart=/usr/bin/tmux new-session -d -s mad-mad-c5a2 -x 200 -y 50 /home/paulewog/MAD/pipeline/bin/python3 -m pipeline server
+Type=simple
+ExecStart=/home/paulewog/MAD/pipeline/bin/python3 -m pipeline server
+Restart=on-failure
+RestartSec=3
 ```
 
 #### 4.2 Add `pipeline server` CLI command
@@ -395,8 +500,43 @@ In `pipeline.py`:
 def server():
     """Start the headless pipeline server."""
     from server import PipelineServer
-    server = PipelineServer()
-    server.run()
+    srv = PipelineServer()
+    srv.run()
+```
+
+#### 4.3 Graceful Shutdown
+
+The server must handle SIGTERM (sent by `systemctl stop`) and SIGINT (Ctrl-C):
+
+```python
+async def start(self):
+    # ... existing startup ...
+    # Register signal handlers
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(self._shutdown()))
+
+async def _shutdown(self):
+    """Graceful shutdown sequence."""
+    logger.info("Shutdown signal received")
+    # 1. Stop accepting new Unix socket connections
+    self._unix_server.close()
+    await self._unix_server.wait_closed()
+    # 2. Close all local TUI client connections
+    for client in list(self._local_clients):
+        client.close()
+    # 3. Close Golang WebSocket
+    if self._golang_ws:
+        await self._golang_ws.close()
+    # 4. Signal running agents to stop (SIGTERM, not SIGKILL)
+    for proc in self._agent_processes:
+        proc.terminate()
+    # 5. Clean up socket file
+    if os.path.exists(self._socket_path):
+        os.unlink(self._socket_path)
+    # 6. Stop event loop
+    asyncio.get_running_loop().stop()
+    logger.info("Shutdown complete")
 ```
 
 ## Edge Cases & Considerations

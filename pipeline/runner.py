@@ -16,7 +16,7 @@ from typing import Optional
 from rich.console import Console
 
 from agent_status import AgentStatus
-from config import AgentConfig, Config, read_context_file, get_mad_dir
+from config import AgentConfig, Config, read_context_file, read_board_context_file, get_mad_dir
 
 console = Console()
 
@@ -123,7 +123,7 @@ When you have finished all work:
 3. Exit immediately after creating the marker file. Do not wait for input.
 """
 
-    def _prepend_context(self, prompt: str) -> str:
+    def _prepend_context(self, prompt: str, board: str = None) -> str:
         """Prepend code path and context file info to prompt."""
         code_path = self._config.code_path
         context_file = self._config.context_file
@@ -139,6 +139,14 @@ When you have finished all work:
         if context_content:
             parts.append(context_content)
             parts.append("")
+        
+        if board:
+            board_context = read_board_context_file(self._config, board)
+            if board_context:
+                parts.append("## Board Context (completed features)")
+                parts.append(board_context)
+                parts.append("")
+        
         parts.append(prompt)
         
         return "\n".join(parts)
@@ -256,6 +264,7 @@ When you have finished all work:
         status: Optional[AgentStatus] = None,
         phase_key: str = None,
         output_schema: dict = None,
+        board: str = None,
     ) -> str:
         """Run the agent headlessly with the given prompt. Returns stdout.
 
@@ -293,7 +302,7 @@ When you have finished all work:
             output_path.unlink(missing_ok=True)
             marker_path.unlink(missing_ok=True)
             
-            full_prompt = self._prepend_context(prompt)
+            full_prompt = self._prepend_context(prompt, board=board)
             
             # Read checkpoint if it exists
             checkpoint_context = self._read_checkpoint(item_name)

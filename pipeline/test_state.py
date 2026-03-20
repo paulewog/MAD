@@ -10,7 +10,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from state import FeatureFile, _slugify, STAGES
+from state import FeatureFile, _slugify, _append_board_context, STAGES
 
 
 class MockConfig:
@@ -1109,6 +1109,263 @@ class TestJsonRoundTrip(unittest.TestCase):
 
         content = self.feature.path.read_text()
         self.assertTrue(content.endswith("\n"))
+
+
+class TestAppendBoardContext(unittest.TestCase):
+    """Tests for _append_board_context helper function."""
+
+    def setUp(self):
+        self.temp_dir = Path("/tmp/test-board-context-append")
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        self.boards_dir = self.temp_dir / "boards"
+        self.boards_dir.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        import shutil
+        if self.temp_dir.exists():
+            shutil.rmtree(self.temp_dir)
+
+    def test_append_creates_file(self):
+        """Creates BOARD_CONTEXT.md if it doesn't exist."""
+        feature_data = {
+            "title": "Test Feature",
+            "id": "abc123",
+            "plan": "This is the plan",
+            "impl_notes": "Implementation notes here",
+        }
+        board_name = "testboard"
+
+        _append_board_context(feature_data, board_name, self.boards_dir)
+
+        context_file = self.boards_dir / board_name / "BOARD_CONTEXT.md"
+        self.assertTrue(context_file.exists())
+
+    def test_append_writes_entry(self):
+        """Appends a properly formatted entry."""
+        feature_data = {
+            "title": "Test Feature",
+            "id": "abc123",
+            "plan": "This is the plan",
+            "impl_notes": "Implementation notes here",
+        }
+        board_name = "testboard"
+
+        _append_board_context(feature_data, board_name, self.boards_dir)
+
+        context_file = self.boards_dir / board_name / "BOARD_CONTEXT.md"
+        content = context_file.read_text()
+
+        self.assertIn("## Test Feature (id: abc123)", content)
+        self.assertIn("**Date:**", content)
+        self.assertIn("**Plan:**", content)
+        self.assertIn("This is the plan", content)
+        self.assertIn("**Implementation Notes:**", content)
+        self.assertIn("Implementation notes here", content)
+
+    def test_append_skips_empty_fields(self):
+        """Skips append when both plan and impl_notes are empty."""
+        feature_data = {
+            "title": "Test Feature",
+            "id": "abc123",
+            "plan": "",
+            "impl_notes": "",
+        }
+        board_name = "testboard"
+
+        _append_board_context(feature_data, board_name, self.boards_dir)
+
+        context_file = self.boards_dir / board_name / "BOARD_CONTEXT.md"
+        self.assertFalse(context_file.exists())
+
+    def test_append_skips_none_fields(self):
+        """Skips append when fields are None."""
+        feature_data = {
+            "title": "Test Feature",
+            "id": "abc123",
+            "plan": None,
+            "impl_notes": None,
+        }
+        board_name = "testboard"
+
+        _append_board_context(feature_data, board_name, self.boards_dir)
+
+        context_file = self.boards_dir / board_name / "BOARD_CONTEXT.md"
+        self.assertFalse(context_file.exists())
+
+    def test_append_truncates_long_fields(self):
+        """Truncates fields longer than 500 characters."""
+        long_plan = "A" * 600
+        feature_data = {
+            "title": "Test Feature",
+            "id": "abc123",
+            "plan": long_plan,
+            "impl_notes": "Short notes",
+        }
+        board_name = "testboard"
+
+        _append_board_context(feature_data, board_name, self.boards_dir)
+
+        context_file = self.boards_dir / board_name / "BOARD_CONTEXT.md"
+        content = context_file.read_text()
+
+        self.assertIn("...", content)
+        self.assertLess(len(content.split("**Plan:**")[1].split("\n")[1]), 510)
+
+    def test_append_plan_only(self):
+        """Appends entry with only plan field populated."""
+        feature_data = {
+            "title": "Test Feature",
+            "id": "abc123",
+            "plan": "Only plan content",
+            "impl_notes": "",
+        }
+        board_name = "testboard"
+
+        _append_board_context(feature_data, board_name, self.boards_dir)
+
+        context_file = self.boards_dir / board_name / "BOARD_CONTEXT.md"
+        content = context_file.read_text()
+
+        self.assertIn("**Plan:**", content)
+        self.assertIn("Only plan content", content)
+        self.assertNotIn("**Implementation Notes:**", content)
+
+    def test_append_impl_notes_only(self):
+        """Appends entry with only impl_notes field populated."""
+        feature_data = {
+            "title": "Test Feature",
+            "id": "abc123",
+            "plan": "",
+            "impl_notes": "Only impl notes content",
+        }
+        board_name = "testboard"
+
+        _append_board_context(feature_data, board_name, self.boards_dir)
+
+        context_file = self.boards_dir / board_name / "BOARD_CONTEXT.md"
+        content = context_file.read_text()
+
+        self.assertNotIn("**Plan:**", content)
+        self.assertIn("**Implementation Notes:**", content)
+        self.assertIn("Only impl notes content", content)
+
+    def test_append_creates_board_dir(self):
+        """Creates board directory if it doesn't exist."""
+        feature_data = {
+            "title": "Test Feature",
+            "id": "abc123",
+            "plan": "Plan",
+            "impl_notes": "Notes",
+        }
+        board_name = "newboard"
+
+        _append_board_context(feature_data, board_name, self.boards_dir)
+
+        board_dir = self.boards_dir / board_name
+        self.assertTrue(board_dir.exists())
+        self.assertTrue((board_dir / "BOARD_CONTEXT.md").exists())
+
+    def test_append_chronological_order(self):
+        """Multiple appends add entries in chronological order."""
+        feature_data1 = {
+            "title": "First Feature",
+            "id": "aaa111",
+            "plan": "First plan",
+            "impl_notes": "",
+        }
+        feature_data2 = {
+            "title": "Second Feature",
+            "id": "bbb222",
+            "plan": "Second plan",
+            "impl_notes": "",
+        }
+        board_name = "testboard"
+
+        _append_board_context(feature_data1, board_name, self.boards_dir)
+        _append_board_context(feature_data2, board_name, self.boards_dir)
+
+        context_file = self.boards_dir / board_name / "BOARD_CONTEXT.md"
+        content = context_file.read_text()
+
+        first_pos = content.find("First Feature")
+        second_pos = content.find("Second Feature")
+        self.assertLess(first_pos, second_pos)
+
+
+class TestMoveToStageWithBoardContext(unittest.TestCase):
+    """Tests for move_to_stage with board context append."""
+
+    def setUp(self):
+        self.temp_dir = Path("/tmp/test-move-to-stage")
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        self.boards_dir = self.temp_dir / "boards"
+        self.boards_dir.mkdir(parents=True, exist_ok=True)
+        self.board_dir = self.boards_dir / "testboard"
+        self.board_dir.mkdir(parents=True, exist_ok=True)
+        self.ideas_dir = self.board_dir / "ideas"
+        self.ideas_dir.mkdir(parents=True, exist_ok=True)
+
+        self.feature_data = {
+            "id": "test123",
+            "board": "testboard",
+            "title": "Test Feature",
+            "description": "A test feature",
+            "plan": "The plan",
+            "impl_notes": "Implementation notes",
+            "type": "feature",
+        }
+
+        self.feature_path = self.ideas_dir / "test-feature.json"
+        with open(self.feature_path, "w") as f:
+            json.dump(self.feature_data, f)
+            f.write("\n")
+
+    def tearDown(self):
+        import shutil
+        if self.temp_dir.exists():
+            shutil.rmtree(self.temp_dir)
+
+    @patch('state.Config')
+    def test_move_to_stage_done_appends_context(self, mock_config_class):
+        """When moving to done, board context is appended."""
+        mock_config = MagicMock()
+        mock_config.boards_dir = self.boards_dir
+        mock_config_class.return_value = mock_config
+
+        feature = FeatureFile(self.feature_path)
+        feature.move_to_stage("done")
+
+        context_file = self.boards_dir / "testboard" / "BOARD_CONTEXT.md"
+        self.assertTrue(context_file.exists())
+        content = context_file.read_text()
+        self.assertIn("Test Feature", content)
+
+    @patch('state.Config')
+    def test_move_to_stage_other_stage_no_append(self, mock_config_class):
+        """Moving to non-done stages doesn't append context."""
+        mock_config = MagicMock()
+        mock_config.boards_dir = self.boards_dir
+        mock_config_class.return_value = mock_config
+
+        feature = FeatureFile(self.feature_path)
+        feature.move_to_stage("testing")
+
+        context_file = self.boards_dir / "testboard" / "BOARD_CONTEXT.md"
+        self.assertFalse(context_file.exists())
+
+    @patch('state.Config')
+    def test_move_to_stage_done_always_succeeds(self, mock_config_class):
+        """Done transition succeeds even if append fails."""
+        mock_config = MagicMock()
+        mock_config.boards_dir = self.boards_dir
+        mock_config_class.return_value = mock_config
+
+        feature = FeatureFile(self.feature_path)
+        feature.move_to_stage("done")
+
+        done_dir = self.boards_dir / "testboard" / "done"
+        self.assertTrue(done_dir.exists())
+        self.assertTrue((done_dir / "test-feature.json").exists())
 
 
 if __name__ == '__main__':

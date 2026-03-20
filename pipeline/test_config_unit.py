@@ -19,6 +19,7 @@ from config import (
     find_config,
     ensure_local_config,
     read_context_file,
+    read_board_context_file,
     write_context_file,
     BUILTIN_AGENTS,
 )
@@ -561,6 +562,108 @@ class TestContextFile(unittest.TestCase):
         write_context_file(config, "Content")
 
         self.assertTrue(self.context_file.parent.exists())
+
+
+class TestReadBoardContextFile(unittest.TestCase):
+    """Tests for read_board_context_file function."""
+
+    def setUp(self):
+        self.temp_dir = Path("/tmp/test-board-context")
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        self.config_file = self.temp_dir / ".mad" / "config.json"
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        self.config_file.write_text(json.dumps({"boards": ["testboard"]}))
+        self.config = Config(self.config_file)
+        self.boards_dir = self.config.boards_dir
+        self.boards_dir.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        import shutil
+        if self.temp_dir.exists():
+            shutil.rmtree(self.temp_dir)
+
+    def test_read_board_context_file_exists(self):
+        """Returns file content for existing board context file."""
+        board_name = "testboard"
+        board_dir = self.boards_dir / board_name
+        board_dir.mkdir(parents=True, exist_ok=True)
+        board_context_file = board_dir / "BOARD_CONTEXT.md"
+        board_context_file.write_text("Board context content")
+
+        result = read_board_context_file(self.config, board_name)
+
+        self.assertEqual(result, "Board context content")
+
+    def test_read_board_context_file_missing(self):
+        """Returns None when board doesn't exist."""
+        result = read_board_context_file(self.config, "nonexistent")
+
+        self.assertIsNone(result)
+
+    def test_read_board_context_file_missing_file(self):
+        """Returns None when board exists but no BOARD_CONTEXT.md."""
+        board_name = "testboard"
+        board_dir = self.boards_dir / board_name
+        board_dir.mkdir(parents=True, exist_ok=True)
+
+        result = read_board_context_file(self.config, board_name)
+
+        self.assertIsNone(result)
+
+    def test_read_board_context_file_truncation(self):
+        """Content > 30KB truncated at UTF-8 boundary."""
+        board_name = "testboard"
+        board_dir = self.boards_dir / board_name
+        board_dir.mkdir(parents=True, exist_ok=True)
+        board_context_file = board_dir / "BOARD_CONTEXT.md"
+        large_content = "A" * 35 * 1024
+        board_context_file.write_text(large_content)
+
+        result = read_board_context_file(self.config, board_name)
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertLessEqual(len(result), 30 * 1024)
+
+    def test_read_board_context_file_at_exact_limit(self):
+        """Content at exactly 30KB is not truncated."""
+        board_name = "testboard"
+        board_dir = self.boards_dir / board_name
+        board_dir.mkdir(parents=True, exist_ok=True)
+        board_context_file = board_dir / "BOARD_CONTEXT.md"
+        content = "A" * (30 * 1024)
+        board_context_file.write_text(content)
+
+        result = read_board_context_file(self.config, board_name)
+
+        assert result is not None
+        self.assertEqual(len(result), 30 * 1024)
+
+    def test_read_board_context_file_over_limit_warning(self):
+        """Warning logged when file exceeds 30KB."""
+        board_name = "testboard"
+        board_dir = self.boards_dir / board_name
+        board_dir.mkdir(parents=True, exist_ok=True)
+        board_context_file = board_dir / "BOARD_CONTEXT.md"
+        board_context_file.write_text("A" * 35 * 1024)
+
+        with self.assertLogs('pipeline', level='WARNING') as log:
+            result = read_board_context_file(self.config, board_name)
+
+        self.assertIn("exceeds 30KB", log.output[0])
+
+    def test_read_board_context_file_utf8_safe(self):
+        """UTF-8 characters handled correctly."""
+        board_name = "testboard"
+        board_dir = self.boards_dir / board_name
+        board_dir.mkdir(parents=True, exist_ok=True)
+        board_context_file = board_dir / "BOARD_CONTEXT.md"
+        utf8_content = "Hello 你好 🌍 test"
+        board_context_file.write_text(utf8_content, encoding="utf-8")
+
+        result = read_board_context_file(self.config, board_name)
+
+        self.assertEqual(result, utf8_content)
 
 
 class TestServerConfig(unittest.TestCase):

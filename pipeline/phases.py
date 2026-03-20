@@ -296,25 +296,33 @@ def _run_phase(
     
     logger.info(f"[{config['runner_phase']}] Running: {feature.title}")
     
+    board_for_context = None
+    if config["runner_phase"] in ("planning", "implementing", "spec_writing"):
+        board_for_context = feature.board
+    
     try:
         output = runner.headless(
             prompt,
             status=status,
             phase_key=phase_key,
             output_schema=config.get("output_schema"),
+            board=board_for_context,
         )
     except Exception as e:
         logger.error(f"[{config['runner_phase']}] headless() failed for {feature.title}: {e}")
         feature.add_history(config["history_tag"], f"FAILED: {e}")
         feature.save()
+        feature.append_pipeline_log(config['runner_phase'], f"Phase {config['runner_phase']} failed: {e}")
         raise
     
     if not output or not output.strip():
         logger.error(f"[{config['runner_phase']}] Empty output for {feature.title}")
         feature.add_history(config["history_tag"], "FAILED: Empty output from agent")
         feature.save()
+        feature.append_pipeline_log(config['runner_phase'], f"Phase {config['runner_phase']} failed: empty output from agent")
         raise RuntimeError(f"Phase {phase_key} produced empty output for {feature.title}")
     
+    feature.append_pipeline_log(config['runner_phase'], f"Phase {config['runner_phase']} completed successfully")
     return output
 
 
@@ -626,14 +634,149 @@ def _strip_markdown(text: str) -> str:
     return text.strip()
 
 
+def _build_failure_summary(reviews: list, loop_name: str) -> str:
+    """Build a structured failure summary from a list of review dicts.
+    
+    Args:
+        reviews: List of review dicts, each with 'ts', 'verdict', 'summary', 'feedback'
+        loop_name: One of "plan", "spec", "impl" (for context, currently unused)
+    
+    Returns:
+        A human-readable text block with failure history, or empty string if no failures.
+    """
+    import difflib
+    
+    fail_reviews = [r for r in reviews if r.get("verdict") == "FAIL"]
+    
+    if not fail_reviews:
+        return ""
+    
+    lines = []
+    n = len(fail_reviews)
+    lines.append(f"## Failure History ({n} prior attempt{'s' if n > 1 else ''})")
+    lines.append("")
+    
+    recurring_issue = False
+    recurring_phrase = ""
+    max_consecutive = 0
+    consecutive_start = 0
+    
+    contradictory_feedback = False
+    contradiction_pair = ()
+    
+    for i, review in enumerate(fail_reviews):
+        feedback = review.get("feedback") or ""
+        first_sentence = feedback.split('.')[0] if feedback else ""
+        key_complaint = first_sentence[:200].strip()
+        
+        lines.append(f"Attempt {i + 1}: {key_complaint}")
+        
+        if i > 0:
+            prev_feedback = fail_reviews[i - 1].get("feedback") or ""
+            prev_first = prev_feedback.split('.')[0].lower() if prev_feedback else ""
+            curr_lower = feedback.lower() if feedback else ""
+            
+            matcher = difflib.SequenceMatcher(None, prev_first, curr_lower)
+            match = matcher.find_longest_match(0, len(prev_first), 0, len(curr_lower))
+            if match.size >= 20:
+                phrase = prev_first[match.a:match.a + match.size]
+                if phrase.strip():
+                    max_consecutive += 1
+                    if max_consecutive == 0:
+                        consecutive_start = i - 1
+                    max_consecutive += 1
+                    if max_consecutive >= 3:
+                        recurring_issue = True
+                        recurring_phrase = phrase.strip()
+            
+            too_x_pattern = re.compile(r'\btoo\s+(\w+)\b')
+            not_x_pattern = re.compile(r'\bnot\s+(\w+)\s+enough\b')
+            add_pattern = re.compile(r'\badd\s+(\w+)\b')
+            remove_pattern = re.compile(r'\bremove\s+(\w+)\b')
+            
+            too_matches = too_x_pattern.findall(prev_feedback)
+            not_matches = not_x_pattern.findall(prev_feedback)
+            add_matches = add_pattern.findall(prev_feedback)
+            remove_matches = remove_pattern.findall(prev_feedback)
+            
+            for word in too_matches:
+                if f"not {word} enough" in curr_lower:
+                    contradictory_feedback = True
+                    contradiction_pair = (i, i + 1)
+                    break
+            
+            for word in add_matches:
+                if f"remove {word}" in curr_lower:
+                    contradictory_feedback = True
+                    contradiction_pair = (i, i + 1)
+                    break
+    
+    lines.append("")
+    
+    if recurring_issue and recurring_phrase:
+        count = len([r for r in fail_reviews if (r.get("feedback") or "").lower().find(recurring_phrase.lower()) >= 0])
+        lines.append(f"⚠ RECURRING ISSUE: The same core problem has appeared in {count} consecutive attempts: \"{recurring_phrase}\"")
+        lines.append("")
+    
+    if contradictory_feedback and contradiction_pair:
+        lines.append(f"⚠ CONTRADICTORY FEEDBACK: Reviews have given conflicting guidance between attempts {contradiction_pair[0]} and {contradiction_pair[1]}.")
+        lines.append("")
+    
+    latest_feedback = fail_reviews[-1].get("feedback") or ""
+    lines.append("Full feedback from most recent attempt:")
+    lines.append(latest_feedback)
+    
+    return "\n".join(lines)
+
+
+def _detect_stuck(reviews: list, threshold: int = 3) -> bool:
+    """Detect if the pipeline appears stuck on the same issue.
+    
+    Args:
+        reviews: List of review dicts with 'verdict' and 'feedback' keys
+        threshold: Number of consecutive FAIL reviews to consider stuck (default 3)
+    
+    Returns:
+        True if stuck, False otherwise.
+    """
+    import difflib
+    
+    if len(reviews) < threshold:
+        return False
+    
+    last_n = reviews[-threshold:]
+    
+    for review in last_n:
+        if review.get("verdict") != "FAIL":
+            return False
+    
+    complaints = []
+    for review in last_n:
+        feedback = review.get("feedback") or ""
+        first_sentence = feedback.split('.')[0].lower() if feedback else ""
+        cleaned = re.sub(r'[^\w\s]', '', first_sentence)
+        complaints.append(cleaned.strip())
+    
+    for i in range(len(complaints) - 1):
+        matcher = difflib.SequenceMatcher(None, complaints[i], complaints[i + 1])
+        match = matcher.find_longest_match(0, len(complaints[i]), 0, len(complaints[i + 1]))
+        if match.size < 20:
+            return False
+    
+    return True
+
+
 def _get_latest_feedback(feature: FeatureFile) -> str:
-    """Extract the most recent review feedback from dedicated review arrays."""
-    latest_impl = feature.get_latest_impl_review()
-    if latest_impl and latest_impl.get("verdict") == "FAIL":
-        return latest_impl.get("feedback", "")
-    latest_plan = feature.get_latest_plan_review()
-    if latest_plan and latest_plan.get("verdict") == "FAIL":
-        return latest_plan.get("feedback", "")
+    """Extract the most recent review feedback from dedicated review arrays.
+    
+    Now delegates to _build_failure_summary for backward compatibility.
+    """
+    impl_summary = _build_failure_summary(feature.impl_reviews, "impl")
+    if impl_summary:
+        return impl_summary
+    plan_summary = _build_failure_summary(feature.plan_reviews, "plan")
+    if plan_summary:
+        return plan_summary
     return "No previous feedback available."
 
 
@@ -800,7 +943,11 @@ def run_ideating(
                 for i in range(len(full_outputs))
             ]) if full_outputs else "No full transcripts yet."
             
-            previous_ideation = f"\n\n## Existing Ideation\n{feature.Ideation}" if feature.Ideation else ""
+            # Cap existing ideation to avoid blowing context window after many cycles
+            existing_ideation = feature.Ideation or ""
+            if len(existing_ideation) > 3000:
+                existing_ideation = existing_ideation[:3000] + "\n\n[... truncated for context limit ...]"
+            previous_ideation = f"\n\n## Existing Ideation\n{existing_ideation}" if existing_ideation else ""
             
             ideation_prompt_section = ""
             if feature.ideation_prompt:
@@ -840,6 +987,7 @@ def run_ideating(
                 logger.error(f"[ideating] Empty output for round {current_round}")
                 feature.add_history("IDEATING", f"Round {current_round} failed: empty output")
                 feature.save()
+                feature.append_pipeline_log('ideating', f"Ideation round {current_round} failed: empty output")
                 raise RuntimeError(f"Ideation round {current_round} produced empty output")
             
             full_output_path = conversations_dir / f"{feature.slug}.ideating.{next_num}"
@@ -857,6 +1005,7 @@ def run_ideating(
             summaries.append(summary)
             
             total_rounds_completed += 1
+            feature.append_pipeline_log('ideating', f"Ideation round {current_round} completed (cycle {cycle_number})")
         
         previous_verdicts_text = ""
         if feature.ideation_cycle_verdicts:
@@ -865,8 +1014,21 @@ def run_ideating(
                 lines.append(f"- Cycle {v['cycle']}: {v['verdict']} - {v['reason']}")
             previous_verdicts_text = "Previous cycle verdicts:\n" + "\n".join(lines)
         
+        # Cap summaries to avoid exceeding context window.
+        # Include full summaries for the current cycle, condensed for earlier ones.
+        if len(summaries) > rounds_per_cycle * 2:
+            earlier = summaries[:-(rounds_per_cycle)]
+            recent = summaries[-(rounds_per_cycle):]
+            earlier_condensed = "\n".join([f"- Round {i+1}: {s[:200]}..." if len(s) > 200 else f"- Round {i+1}: {s}" for i, s in enumerate(earlier)])
+            summaries_text_for_synthesis = (
+                f"## Earlier Rounds (condensed)\n{earlier_condensed}\n\n"
+                + "\n\n".join([f"## Round {len(earlier)+i+1}\n{s}" for i, s in enumerate(recent)])
+            )
+        else:
+            summaries_text_for_synthesis = "\n\n".join([f"## Round {i+1}\n{s}" for i, s in enumerate(summaries)])
+
         compact_prompt = _build_prompt("compact.md", {
-            "{summaries}": "\n\n".join([f"## Round {i+1}\n{s}" for i, s in enumerate(summaries)]),
+            "{summaries}": summaries_text_for_synthesis,
             "{feature_file_path}": str(Config().mad_dir / "boards" / feature.board / feature.current_stage / f"{feature.slug}.json"),
             "{cycle_number}": str(cycle_number),
             "{total_rounds_completed}": str(total_rounds_completed),
@@ -911,6 +1073,7 @@ def run_ideating(
             verdict = "progress"
         
         feature.add_ideation_cycle_verdict(cycle_number, verdict, verdict_reason, total_rounds_completed)
+        feature.append_pipeline_log('ideating', f"Ideation synthesis cycle {cycle_number}: {verdict} - {verdict_reason}")
         
         if termination_reason == "hard_cap":
             break
@@ -1000,6 +1163,31 @@ def run_planning(
     
     if feedback_context:
         prompt += feedback_context
+
+    dependency_context = ""
+    if feature.depends_on:
+        from state import resolve_dependencies, FeatureFile as SF
+        all_features = SF.list_all(board=feature.board)
+        dep_status = resolve_dependencies(feature.id, all_features)
+        feature_map = {f.id: f for f in all_features}
+        dep_lines = []
+        for dep_id in feature.depends_on:
+            dep_f = feature_map.get(dep_id)
+            if dep_id in dep_status['dangling_deps']:
+                dep_lines.append(f"- {dep_id}: MISSING (broken reference)")
+            elif dep_f:
+                stage = dep_f.current_stage
+                if stage == 'rejected':
+                    dep_lines.append(f"- {dep_f.title} ({dep_id}): REJECTED — plan must adapt to work without this dependency")
+                elif stage == 'done':
+                    dep_lines.append(f"- {dep_f.title} ({dep_id}): COMPLETED")
+                else:
+                    dep_lines.append(f"- {dep_f.title} ({dep_id}): IN PROGRESS ({stage})")
+        if dep_lines:
+            dependency_context = "\n\n## Dependencies\nThis feature depends on the following features. Adapt your plan based on their status:\n" + "\n".join(dep_lines) + "\n"
+
+    if dependency_context:
+        prompt += dependency_context
 
     output = _run_phase("planning", feature, runner, prompt, status=status,
                         start_message="Starting planning", skip_history_start=True)

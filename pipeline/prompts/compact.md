@@ -32,8 +32,9 @@ After writing the synthesis, assess whether the discussion should continue:
 2. If fewer than ~20% of points are genuinely new (not rewordings or sub-splits of existing points), this is likely a **stall**.
 3. If agents are largely agreeing on approach with only minor refinements, this is likely **consensus**.
 4. Only report **progress** if there are substantive new arguments, alternative approaches, or meaningful critiques that previous cycles did not raise.
+5. If the discussion is expanding scope beyond the original request (adding features, edge cases, or abstractions not asked for), that is a **stall** — scope creep is not progress.
 
-Be conservative: when in doubt between progress and stall, choose stall. The goal is to avoid wasting rounds on circular discussion.
+Be conservative: when in doubt between progress and stall, choose stall. The goal is a good, practical solution — not a perfect one. Avoid wasting rounds on circular discussion or diminishing-returns refinement.
 
 ## Output
 

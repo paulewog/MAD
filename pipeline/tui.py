@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 # Import config early for logging setup
-from config import Config, get_mad_dir, BUILTIN_AGENTS, PIPELINE_PHASES
+from config import Config, get_mad_dir, BUILTIN_AGENTS, PIPELINE_PHASES, BOARD_CONTEXT_FILENAME, MAX_BOARD_CONTEXT_SIZE
 
 # Set up pipeline log file - use code_path if set, otherwise use mad_dir from cwd
 _config = Config()
@@ -39,6 +39,7 @@ app_logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent))
 
 from agent_status import AgentStatus
+from client import PipelineClient
 from config import (
     view_context_file,
     edit_context_file,
@@ -202,6 +203,25 @@ def _feature_markdown(feature: FeatureFile) -> str:
         header,
         "",
     ]
+
+    if feature.depends_on:
+        from state import resolve_dependencies, FeatureFile as SF
+        all_features = SF.list_all(board=feature.board)
+        dep_status = resolve_dependencies(feature.id, all_features)
+        lines += ["## Dependencies", ""]
+        feature_map = {f.id: f for f in all_features}
+        for dep_id in feature.depends_on:
+            dep_f = feature_map.get(dep_id)
+            if dep_id in dep_status['dangling_deps']:
+                lines.append(f"- {dep_id} ⚠ BROKEN LINK")
+            elif dep_f and dep_f.current_stage in ('done', 'rejected'):
+                lines.append(f"- {dep_f.title} ({dep_id}) ✓ {dep_f.current_stage}")
+            elif dep_f:
+                lines.append(f"- {dep_f.title} ({dep_id}) ⏳ {dep_f.current_stage}")
+        if dep_status['blocked']:
+            lines.append("")
+            lines.append("**Status: BLOCKED**")
+        lines.append("")
 
     description = feature.get_section("Description")
     if description:
@@ -1861,7 +1881,11 @@ class PipelineApp(App):
                 logger.warning(f"stty fallback also failed: {e2}")
 
     async def action_quit(self) -> None:
-        """Override quit to detach from tmux instead of exiting."""
+        """Quit the TUI client. Server continues running."""
+        # Disconnect from server cleanly
+        if self._client.connected:
+            await self._client.disconnect()
+        # If in tmux, detach instead of exiting
         if os.environ.get("TMUX"):
             subprocess.run(["tmux", "detach-client"], capture_output=True)
             print("\nDetached from tmux. Run 'pipeline tui' to reconnect.")
@@ -2016,33 +2040,37 @@ class PipelineApp(App):
         # Track previous feature snapshot for change detection in auto-refresh
         self._prev_snapshot: dict[str, list[tuple[str, str]]] = {}
         self._prev_mtimes: dict[str, dict[str, float]] = {}
-        # Two separate agent status instances for plan and implement pipelines
+        # Agent status instances — populated from server state broadcasts
         self._plan_agent_status = AgentStatus()
         self._implement_agent_status = AgentStatus()
         # Shared agent status instance (for manual runs)
         self._agent_status = AgentStatus()
         # Persistent log buffer - survives view toggles
         self._log_buffer: list[str] = []
-        # Track which features have been auto-queued to avoid duplicates
-        self._auto_plan_queued: set[str] = set()
-        self._auto_implement_queued: set[str] = set()
-        # Track failures for retry cooldown
-        self._auto_plan_fail_cooldown: dict[str, float] = {}  # slug -> timestamp when eligible again
-        self._auto_implement_fail_cooldown: dict[str, float] = {}  # slug -> timestamp when eligible again
-        self._auto_plan_fail_count: dict[str, int] = {}  # slug -> consecutive failure count
-        self._auto_implement_fail_count: dict[str, int] = {}  # slug -> consecutive failure count
-        # Track if plan/implement pipelines are running
+        # Track if plan/implement pipelines are running (from server state)
         self._plan_running = False
         self._implement_running = False
         # Rate limit tracking - timestamp until which auto modes are disabled
         self._rate_limit_until: float = 0.0
-        # Server client for pushing state to monitoring server
-        self._server_client: Optional[ServerClient] = None
-        # Scripts configuration
+        # Auto-run tracking (used when running without server)
+        self._auto_plan_queued: set[str] = set()
+        self._auto_implement_queued: set[str] = set()
+        self._auto_plan_fail_cooldown: dict[str, float] = {}
+        self._auto_implement_fail_cooldown: dict[str, float] = {}
+        # Track board context warnings shown this session (to avoid spam)
+        self._board_context_warned: set[str] = set()
+        self._auto_plan_fail_count: dict[str, int] = {}
+        self._auto_implement_fail_count: dict[str, int] = {}
+        # Pipeline client for communicating with headless server
+        self._client = PipelineClient()
+        self._client.on_state_update(self._on_server_state)
+        # Scripts configuration (from server state)
         self._scripts: list[ScriptConfig] = load_scripts(self._config.mad_dir)
         self._script_status: Optional[ScriptStatus] = None
-        # Pipeline lock for preventing concurrent runs
+        # Pipeline lock for preventing concurrent runs (local TUI actions only)
         self._pipeline_lock = PipelineLock(self._config)
+        # Keep server_client for backward compat during transition
+        self._server_client: Optional["ServerClient"] = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -2122,32 +2150,115 @@ class PipelineApp(App):
             pass
         # Auto-refresh every 10 seconds to pick up external changes
         self.set_interval(10.0, self._check_for_changes)
-        # Auto-run check every 10 seconds
+        # Auto-run check every 10 seconds (server handles this now, but keep
+        # local check as fallback if running without server)
         self.set_interval(10.0, self._auto_run_check)
-        # Start server connection if configured
-        server_cfg = self._config.server
-        if server_cfg and HAS_WEBSOCKETS and ServerClient is not None:
-            self._server_client = ServerClient(
-                url=server_cfg.url,
-                api_key=server_cfg.api_key,
-                client_id=server_cfg.client_id,
-                on_connect=self._on_server_connected,
-                on_answers_received=self._handle_server_answers,
-                on_set_auto_mode=self._handle_set_auto_mode,
-                on_start_agent=self._handle_start_agent,
-                on_idea_created=self._handle_create_idea,
-                on_move_requested=self._on_move_requested,
-                on_edit_description=self._handle_edit_description,
-                on_edit_done_script=self._handle_edit_done_script,
-                on_edit_title=self._handle_edit_title,
-                on_edit_item_type=self._handle_edit_item_type,
-                on_edit_ideation_prompt=self._handle_edit_ideation_prompt,
-                on_run_script=self._handle_run_script,
-                on_set_agent_for_phase=self._handle_set_agent_for_phase,
-                on_restart=self._handle_remote_restart,
-            )
-            self._connect_server()
-            self.set_interval(5.0, self._periodic_server_push)
+        # Connect to headless pipeline server
+        self._connect_to_server()
+
+    @work(thread=False)
+    async def _connect_to_server(self) -> None:
+        """Connect to headless PipelineServer via Unix socket."""
+        try:
+            await self._client.reconnect_loop()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"[tui] Server connection error: {e}")
+
+    def _on_server_state(self, state: dict) -> None:
+        """Handle state broadcast from PipelineServer.
+
+        Updates local UI state from server's authoritative state.
+        Called from PipelineClient's recv loop (runs in asyncio context).
+        We store the state and schedule a debounced UI refresh so that
+        rapid broadcasts don't hammer the event loop with disk I/O.
+        """
+        try:
+            # Update agent status (lightweight, no disk I/O)
+            plan = state.get("plan_agent", {})
+            self._plan_agent_status.running = plan.get("running", False)
+            self._plan_agent_status.phase = plan.get("phase", "")
+            self._plan_agent_status.feature_slug = plan.get("feature", "")
+            self._plan_agent_status.agent = plan.get("agent", "")
+            self._plan_running = plan.get("running", False)
+
+            impl = state.get("impl_agent", {})
+            self._implement_agent_status.running = impl.get("running", False)
+            self._implement_agent_status.phase = impl.get("phase", "")
+            self._implement_agent_status.feature_slug = impl.get("feature", "")
+            self._implement_agent_status.agent = impl.get("agent", "")
+            self._implement_running = impl.get("running", False)
+
+            # Update auto mode flags
+            self.auto_plan_enabled = state.get("auto_plan", False)
+            self.auto_implement_enabled = state.get("auto_impl", False)
+
+            # Store new log entries
+            self._pending_server_logs = state.get("logs", [])
+
+            # Debounced UI refresh — only schedule if one isn't already pending
+            if not getattr(self, '_state_refresh_pending', False):
+                self._state_refresh_pending = True
+                self.set_timer(0.1, self._apply_server_state)
+        except Exception as e:
+            logger.warning(f"[tui] Error processing server state: {e}")
+
+    def _apply_server_state(self) -> None:
+        """Apply server state to UI widgets. Called in Textual's message loop.
+
+        Only rebuilds the kanban if features actually changed (stage moves,
+        new/deleted items, or active agent changed). Avoids destroying scroll
+        position and collapsible state on every broadcast.
+        """
+        self._state_refresh_pending = False
+        try:
+            # Write new log entries to the visible Log widget
+            logs = getattr(self, '_pending_server_logs', [])
+            if logs and isinstance(logs, list):
+                for entry in logs:
+                    if isinstance(entry, str) and entry not in self._log_buffer:
+                        self._log_buffer.append(entry)
+                        try:
+                            log_widget = self.query_one("#log-view", Log)
+                            log_widget.write_line(entry)
+                        except NoMatches:
+                            pass
+
+            # Check if kanban needs a full rebuild
+            board = self.active_board
+            if board:
+                features = self._load_features(board)
+                new_snapshot = self._snapshot(features)
+
+                # Also track active slugs so spinner changes trigger refresh
+                active_slugs = set()
+                if self._plan_running and self._plan_agent_status.feature_slug:
+                    active_slugs.add(self._plan_agent_status.feature_slug)
+                if self._implement_running and self._implement_agent_status.feature_slug:
+                    active_slugs.add(self._implement_agent_status.feature_slug)
+
+                prev_snapshot = self._prev_snapshot.get(board, [])
+                prev_active = getattr(self, '_prev_active_slugs', set())
+
+                if new_snapshot != prev_snapshot or active_slugs != prev_active:
+                    # Something actually changed — rebuild kanban
+                    self._prev_snapshot[board] = new_snapshot
+                    self._prev_active_slugs = active_slugs
+                    self._current_features = features
+                    self._refresh_kanban_widgets()
+                    self._update_status_bar(board, features)
+
+            # Always refresh the detail view (lightweight — just re-renders markdown)
+            if self.selected_feature:
+                refreshed = FeatureFile.find(self.selected_feature.slug)
+                if refreshed and refreshed._data != self.selected_feature._data:
+                    self.selected_feature = refreshed
+                    self._update_detail_view()
+
+            self._update_footer()
+        except Exception as e:
+            logger.warning(f"[tui] Error applying server state to UI: {e}")
 
     async def _periodic_server_push(self) -> None:
         """Push current state to server periodically (agent status may change without feature changes)."""
@@ -2580,6 +2691,21 @@ class PipelineApp(App):
         self._current_features = features
         self._refresh_kanban_widgets()
         self._update_status_bar(board, features)
+        
+        if board not in self._board_context_warned:
+            board_context_path = self._config.boards_dir / board / BOARD_CONTEXT_FILENAME
+            if board_context_path.exists():
+                try:
+                    size = board_context_path.stat().st_size
+                    if size > MAX_BOARD_CONTEXT_SIZE:
+                        self.notify(
+                            f"Board context file exceeds 30KB ({size // 1024}KB) — "
+                            f"consider curating .mad/boards/{board}/{BOARD_CONTEXT_FILENAME}",
+                            severity="warning",
+                        )
+                        self._board_context_warned.add(board)
+                except OSError:
+                    pass
 
     def _refresh_kanban_widgets(self) -> None:
         """Rebuild the kanban left pane widgets from self._current_features."""
@@ -2657,9 +2783,12 @@ class PipelineApp(App):
 
     def _check_for_changes(self) -> None:
         """Periodically check for changes and refresh if needed.
-        
+
         Uses file modification times to detect changes efficiently.
+        When connected to the server, state broadcasts handle this instead.
         """
+        if self._client.connected:
+            return
         board = self.active_board
         if not board:
             return
@@ -3082,7 +3211,8 @@ class PipelineApp(App):
                 initial_message=context,
             )
 
-        # After returning, refresh everything
+        # After returning from subprocess, fix terminal and refresh
+        self._fix_terminal_input()
         refreshed = FeatureFile.find(f.slug)
         if refreshed:
             self.selected_feature = refreshed
@@ -3116,7 +3246,8 @@ class PipelineApp(App):
                 initial_message=context,
             )
 
-        # After returning, refresh everything
+        # After returning from subprocess, fix terminal and refresh
+        self._fix_terminal_input()
         refreshed = FeatureFile.find(f.slug)
         if refreshed:
             self.selected_feature = refreshed
@@ -3309,37 +3440,41 @@ class PipelineApp(App):
         if not self._plan_running and not self._implement_running:
             self.notify("No agent is running", severity="warning")
             return
-        
-        # Kill plan agent if running
-        if self._plan_running and self._plan_agent_status:
-            self._plan_agent_status.kill_requested = True
-            slug = self._plan_agent_status.feature_slug
-            self.notify(f"Killing plan agent for {slug}")
-            self._log_line(f"[user] Kill requested for plan agent ({slug})")
-            # Add history entry
-            from state import FeatureFile
-            feature = FeatureFile.find(slug)
-            if feature:
-                elapsed = ""
-                if self._plan_agent_status.started_at:
-                    elapsed_secs = int(time.time() - self._plan_agent_status.started_at)
-                    elapsed = f"{elapsed_secs // 60}m{elapsed_secs % 60}s"
-                feature.add_history("KILLED", f"Agent terminated by user after {elapsed}")
-        # Kill implement agent if running
-        elif self._implement_running and self._implement_agent_status:
-            self._implement_agent_status.kill_requested = True
-            slug = self._implement_agent_status.feature_slug
-            self.notify(f"Killing implement agent for {slug}")
-            self._log_line(f"[user] Kill requested for implement agent ({slug})")
-            # Add history entry
-            from state import FeatureFile
-            feature = FeatureFile.find(slug)
-            if feature:
-                elapsed = ""
-                if self._implement_agent_status.started_at:
-                    elapsed_secs = int(time.time() - self._implement_agent_status.started_at)
-                    elapsed = f"{elapsed_secs // 60}m{elapsed_secs % 60}s"
-                feature.add_history("KILLED", f"Agent terminated by user after {elapsed}")
+
+        if self._client.connected:
+            # Delegate to server
+            if self._plan_running:
+                self.notify(f"Killing plan agent for {self._plan_agent_status.feature_slug}")
+                asyncio.create_task(self._client.stop_agent("plan"))
+            elif self._implement_running:
+                self.notify(f"Killing implement agent for {self._implement_agent_status.feature_slug}")
+                asyncio.create_task(self._client.stop_agent("implement"))
+        else:
+            # Local fallback
+            if self._plan_running and self._plan_agent_status:
+                self._plan_agent_status.kill_requested = True
+                slug = self._plan_agent_status.feature_slug
+                self.notify(f"Killing plan agent for {slug}")
+                self._log_line(f"[user] Kill requested for plan agent ({slug})")
+                feature = FeatureFile.find(slug)
+                if feature:
+                    elapsed = ""
+                    if self._plan_agent_status.started_at:
+                        elapsed_secs = int(time.time() - self._plan_agent_status.started_at)
+                        elapsed = f"{elapsed_secs // 60}m{elapsed_secs % 60}s"
+                    feature.add_history("KILLED", f"Agent terminated by user after {elapsed}")
+            elif self._implement_running and self._implement_agent_status:
+                self._implement_agent_status.kill_requested = True
+                slug = self._implement_agent_status.feature_slug
+                self.notify(f"Killing implement agent for {slug}")
+                self._log_line(f"[user] Kill requested for implement agent ({slug})")
+                feature = FeatureFile.find(slug)
+                if feature:
+                    elapsed = ""
+                    if self._implement_agent_status.started_at:
+                        elapsed_secs = int(time.time() - self._implement_agent_status.started_at)
+                        elapsed = f"{elapsed_secs // 60}m{elapsed_secs % 60}s"
+                    feature.add_history("KILLED", f"Agent terminated by user after {elapsed}")
 
     def action_run_script(self) -> None:
         """Open modal to select and run a script."""
@@ -3555,13 +3690,16 @@ class PipelineApp(App):
 
     def action_toggle_auto_plan(self) -> None:
         """Toggle automatic planning for plan-inbox features."""
-        self.auto_plan_enabled = not self.auto_plan_enabled
-        if self.auto_plan_enabled:
+        new_val = not self.auto_plan_enabled
+        self.auto_plan_enabled = new_val
+        if new_val:
             self.notify("Auto-Plan enabled - will process plan-inbox features", severity="information")
         else:
-            self.auto_plan_enabled = False
             self.notify("Auto-Plan disabled", severity="information")
         self._update_status_bar(self.active_board, self._load_features(self.active_board))
+        # Notify server
+        if self._client.connected:
+            asyncio.create_task(self._client.set_auto_mode("plan", new_val))
 
     def _handle_rate_limit(self, mode: str) -> None:
         """Handle rate limiting by pausing auto mode for a cooldown period."""
@@ -3578,13 +3716,16 @@ class PipelineApp(App):
 
     def action_toggle_auto_implement(self) -> None:
         """Toggle automatic implementation for approved features."""
-        self.auto_implement_enabled = not self.auto_implement_enabled
-        if self.auto_implement_enabled:
+        new_val = not self.auto_implement_enabled
+        self.auto_implement_enabled = new_val
+        if new_val:
             self.notify("Auto-Implement enabled - will process approved features", severity="information")
         else:
-            self.auto_implement_enabled = False
             self.notify("Auto-Implement disabled", severity="information")
         self._update_status_bar(self.active_board, self._load_features(self.active_board))
+        # Notify server
+        if self._client.connected:
+            asyncio.create_task(self._client.set_auto_mode("impl", new_val))
 
     def action_stop_auto(self) -> None:
         """Stop both auto-plan and auto-implement modes."""
@@ -3607,11 +3748,17 @@ class PipelineApp(App):
 
     def _auto_run_check(self) -> None:
         """Check for features and auto-run if enabled.
-        
+
         Auto-Plan runs on plan-inbox/reviewing-plan/requested-input.
         Auto-Implement runs on approved/spec-writing.
         Each mode runs independently and in parallel.
+
+        When connected to the headless server, the server handles auto-run.
+        This only runs as a local fallback.
         """
+        # Server handles auto-run when connected
+        if self._client.connected:
+            return
         # Check if we're rate limited
         if time.time() < self._rate_limit_until:
             remaining = int(self._rate_limit_until - time.time())
@@ -3836,7 +3983,11 @@ class PipelineApp(App):
         self._log_line(f"=== Running PLAN only for: {f.title} ===")
         self._log_line(f"Stage: {f.current_stage}")
         self._log_line("")
-        self._run_plan_async(f)
+        # Delegate to server if connected, else run locally
+        if self._client.connected:
+            self._start_agent_via_server(f.id, "plan")
+        else:
+            self._run_plan_async(f)
 
     def action_run_implement_only(self) -> None:
         """Run implementation phase only on selected feature."""
@@ -3859,7 +4010,21 @@ class PipelineApp(App):
         self._log_line(f"=== Running IMPLEMENT only for: {f.title} ===")
         self._log_line(f"Stage: {f.current_stage}")
         self._log_line("")
-        self._run_implement_async(f)
+        # Delegate to server if connected, else run locally
+        if self._client.connected:
+            self._start_agent_via_server(f.id, "implement")
+        else:
+            self._run_implement_async(f)
+
+    @work(thread=False)
+    async def _start_agent_via_server(self, feature_id: str, action: str) -> None:
+        """Start an agent via the server."""
+        try:
+            resp = await self._client.start_agent(feature_id, action)
+            if resp.get("type") == "error":
+                self.notify(f"Server: {resp.get('message', 'unknown error')}", severity="warning")
+        except Exception as e:
+            self.notify(f"Failed to start {action}: {e}", severity="error")
 
     @work(thread=True, exclusive=True, group="pipeline")
     def _run_pipeline_async(self, feature: FeatureFile) -> None:

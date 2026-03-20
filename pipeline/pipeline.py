@@ -57,6 +57,7 @@ FIELD_SETTERS = {
     "requires_human_approval": "set_requires_human_approval",
     "ideation_prompt": "set_ideation_prompt",
     "ideation_max_rounds": "set_ideation_max_rounds",
+    "depends_on": "set_depends_on",
 }
 
 FIELD_GETTERS = {
@@ -73,6 +74,7 @@ FIELD_GETTERS = {
     "requires_human_approval": "requires_human_approval",
     "ideation_prompt": "ideation_prompt",
     "ideation_max_rounds": "ideation_max_rounds",
+    "depends_on": "depends_on",
 }
 
 
@@ -662,6 +664,12 @@ def set_field(ctx, field_name: str, value: str, stdin: bool, file_path: str):
                 except ValueError:
                     console.print("[red]Error:[/red] ideation_max_rounds must be an integer")
                     sys.exit(1)
+        elif field_name == "depends_on":
+            if content.strip() == "" or content.strip() == "[]":
+                getattr(feature, FIELD_SETTERS[field_name])([])
+            else:
+                parsed = [v.strip() for v in content.split(",") if v.strip()]
+                getattr(feature, FIELD_SETTERS[field_name])(parsed)
         else:
             getattr(feature, FIELD_SETTERS[field_name])(content)
     except ValueError as e:
@@ -746,6 +754,19 @@ def tui(force: bool):
     """Open the interactive TUI dashboard."""
     from tui import run_tui
     run_tui(force=force)
+
+
+@cli.command("server")
+@click.option("--socket", default=None, help="Unix socket path (default: auto per project)")
+def server(socket: str):
+    """Start the headless pipeline server.
+
+    Manages all state, connects to Golang server via WebSocket,
+    and accepts local TUI clients via Unix socket.
+    """
+    from server import PipelineServer
+    srv = PipelineServer(socket_path=socket)
+    srv.run()
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,340 @@
+{
+  "id": "71084b81",
+  "board": "mad",
+  "title": "Shared context/memory file per board",
+  "type": "feature",
+  "created": "2026-03-20T00:52Z",
+  "description": "Add a persistent shared context file per board (BOARD_CONTEXT.md) that accumulates concise cross-feature learnings, prepended to agent prompts alongside CONTEXT.md.\n\n## V1 Approach (simple, iterate later)\n\n### Capture mechanism\n- Hook into `move_to_stage()` in `state.py` \u2014 the single canonical transition point already called by TUI, server, and all done paths.\n- When target stage is `done`, mechanically extract `plan` summary, `impl_notes`, and review feedback from the feature JSON.\n- Append a concise, structured entry to `.mad/boards/<board>/BOARD_CONTEXT.md`.\n- No LLM call at capture time \u2014 deterministic extraction only.\n- The extraction prompt/logic should instruct the formatting to be concise: key decisions, patterns, and gotchas only \u2014 no verbose narratives.\n\n### File format (BOARD_CONTEXT.md)\nMarkdown file. Each entry is a section with the following structure:\n\n```\n## <feature-title> (id: <feature-id>)\n**Date:** <YYYY-MM-DD when entry was added>\n\n- Key architectural decisions made\n- New patterns introduced\n- Gotchas or lessons learned\n```\n\nEntries are appended in chronological order (newest at bottom). The date field enables manual curation \u2014 users can scan by date and remove stale entries.\n\n### Context inclusion\n- Read in `_prepend_context()` in `runner.py`, inserted after CONTEXT.md content.\n- Add `read_board_context_file(config, board)` to `config.py`, following the same pattern as `read_context_file()`.\n- V1: include for planning and implementation stages only (not review). Revisit if needed.\n\n### Size management\n- Hard cap at 30KB (well under the existing 100KB MAX_CONTEXT_SIZE for CONTEXT.md).\n- When cap is exceeded, surface a warning in the TUI: \"Board context file exceeds 30KB \u2014 consider curating .mad/boards/<board>/BOARD_CONTEXT.md\".\n- No automatic summarization. Users curate manually \u2014 the date headers make it easy to identify and remove old entries.\n\n### Integration point\n- Single hook in `move_to_stage()` in `state.py` (line ~461), alongside the existing done_script trigger pattern.\n- Runs synchronously (it's just a file append, no LLM call).\n\n### What this does NOT do (potential v2)\n- No LLM-based summarization or extraction\n- No selective context filtering by pipeline stage (tag/category system)\n- No automatic quality gating\n\nThis creates institutional memory across features, reducing repeated mistakes and helping agents maintain consistency.\n",
+  "done_script": "",
+  "requires_human_approval": false,
+  "plan": "## What\n\nAdd a persistent per-board context file (BOARD_CONTEXT.md) that automatically accumulates concise summaries of completed features. When any feature transitions to 'done', the system extracts its plan and implementation notes and appends a dated, structured markdown entry to the board's context file. This content is then prepended to agent prompts (after CONTEXT.md) during planning and implementation phases, giving agents institutional memory of what has been built.\n\n## Why\n\nCurrently, each pipeline agent run starts with no knowledge of what other features have been built on the same board. This leads to repeated mistakes, inconsistent patterns, and agents re-discovering lessons that previous features already learned. A lightweight, deterministic capture mechanism (no LLM calls) provides cross-feature continuity at near-zero cost.\n\n## Design Decisions\n\n**Capture approach:** Deterministic field extraction from the feature JSON \u2014 specifically the 'plan' field (the authoritative plan content, addressing review feedback #1) and 'impl_notes' field. Not LLM summarization. This keeps the done transition fast and predictable. Each field is truncated to 500 chars to keep entries compact. If both fields are empty, the entry is skipped entirely to avoid noise. Review feedback from impl_reviews is NOT extracted (addressing review feedback #2) \u2014 the description explicitly excludes this: 'Review feedback extraction from history (free-text history entries lack structured stage tags, making reliable extraction impossible without schema changes).' However, impl_reviews is a structured list with verdict/summary/feedback fields that could potentially be extracted in V2.\n\n**Integration point:** The append logic goes inside the canonical move_to_stage() method when the target stage is 'done'. This centralizes the behavior rather than duplicating it across the multiple done-transition callsites (TUI has 2 callsites, server has at least 1 via generic move endpoint). The append is wrapped in try/except that logs but never raises \u2014 the state transition (shutil.move) has already happened by this point, making board context capture strictly best-effort.\n\n**Context inclusion \u2014 stage-selective (addressing review feedback #3):** Board context is included for planning and implementation stages only, NOT for review or all stages. The original V1 requirement explicitly states 'V1: include for planning and implementation only (not review).' This is straightforward to implement since the prompt prepend function is called with phase context available. The phase-based filtering maps to the runner_phase values in PHASE_CONFIG: 'planning' and 'implementing' (and 'spec_writing' which is part of the implementation flow).\n\n**Board name derivation for context prepend (addressing review feedback #4):** The runner currently has no board awareness \u2014 _prepend_context() takes only a prompt string. The board name must flow through to the context prepend. The cleanest approach: add an optional 'board' parameter to _prepend_context() and pass it from the phase execution layer. In phases.py, every phase function has access to the FeatureFile which has a .board property. The _run_phase() helper receives the feature object and calls runner.headless() which calls _prepend_context(). The board name can be threaded through: _run_phase passes board to runner.headless(), which passes it to _prepend_context(). Alternatively, the runner could accept board at construction time or via for_phase(). The simplest path is adding board as a parameter through the call chain.\n\n**Size management:** Hard cap at 30KB (vs 100KB for CONTEXT.md). When exceeded, a warning is logged. The TUI surfaces this warning when displaying board status. No automatic summarization \u2014 users curate manually using the date headers to identify and remove stale entries. The reader uses the same UTF-8-safe byte truncation pattern as the existing context file reader.\n\n**File location and format:** Each board gets its own file at `.mad/boards/<board>/BOARD_CONTEXT.md`. Entries are chronological (newest at bottom), each with a `## <title> (id: <id>)` header, `**Date:**` line, and bullet points from plan/impl_notes content.\n\n## Impact\n\n- **State management layer:** Small addition to the stage transition method \u2014 ~15 lines of extraction and append logic (or a helper method called from there). Runs synchronously since it's just a file append.\n- **Configuration layer:** New reader function mirroring the existing context file reader pattern with 30KB cap \u2014 ~20 lines. New constant for the size cap.\n- **Runner layer:** The prompt prepend function gains board awareness \u2014 reads board context file and appends after CONTEXT.md content. Needs the board name passed through the call chain from the phase execution layer.\n- **Phase execution layer:** Threads board name from feature object through to the runner's headless call, which passes it to the prepend function. Only includes board context for planning and implementation phases.\n- **TUI layer:** Size warning display when BOARD_CONTEXT.md exceeds 30KB \u2014 minimal change.\n- No new dependencies. No LLM calls. No schema changes to feature JSON.\n- Existing done_script execution at callsites is unaffected \u2014 board context append happens inside the stage transition method before done_script runs.\n\n## Risks\n\n- **Signal quality:** Mechanical extraction produces lower-signal entries than LLM summarization. Mitigated by the manual curation design (date headers + size warning) and the option to add LLM summarization in V2.\n- **Stale context:** Old entries may become irrelevant as the codebase evolves. Mitigated by the 30KB cap and TUI size warning prompting users to curate.\n- **Prompt bloat:** Adding board context increases prompt size. Mitigated by the 30KB cap (well under CONTEXT.md's 100KB), per-entry truncation (500 chars per field), and stage-selective inclusion (only planning/implementation).\n- **Thread safety:** The stage transition method could theoretically be called concurrently for different features. File append is atomic enough for this use case (single writer per feature), and the helper opens in append mode to minimize risk.\n\n## Scope\n\n**Included:** Board context file creation, automatic append on done transition, context prepend in agent prompts (planning and implementation only), size cap with TUI warning, reader function in config.\n\n**Not included:** LLM-based summarization or extraction. Selective context filtering by category/tag. Automatic quality gating. Cross-board context sharing. Review feedback extraction (structured impl_reviews data exists but extraction deferred to V2).",
+  "plan_exploration_summary": "Explored the full pipeline codebase. Key files examined: state.py (FeatureFile class with move_to_stage() at line 461, feature JSON schema with 'plan', 'plan_exploration_summary', and 'impl_notes' fields), config.py (read_context_file() at line 612 with MAX_CONTEXT_SIZE=100KB and UTF-8-safe byte truncation), runner.py (_prepend_context() at line 126 which reads CONTEXT.md and prepends it to prompts), phases.py (pipeline orchestration with _run_phase() helper, PHASE_CONFIG dict defining all phases, run_pipeline() at line 1550), tui.py (done transitions at lines 3118 and 3349 with done_script execution pattern). Key insights: (1) move_to_stage() is a simple shutil.move \u2014 no hooks or side effects currently, (2) _prepend_context() takes no board parameter \u2014 it reads a single global CONTEXT.md via config.context_file, (3) done transitions happen in tui.py (2 callsites) and potentially server.py (via generic move endpoint), (4) feature.board property reliably provides the board name, (5) plan_exploration_summary DOES exist as a field in the feature JSON schema (state.py line 170/501), contrary to the review feedback claim.",
+  "impl_spec": "## Implementation Spec: Shared Context/Memory File Per Board\n\n### Task 1: Add `read_board_context_file()` to `config.py`\n\n**File:** `pipeline/config.py`\n\n1. Add constant after `MAX_CONTEXT_SIZE` (line 20):\n   ```python\n   BOARD_CONTEXT_FILENAME = \"BOARD_CONTEXT.md\"\n   MAX_BOARD_CONTEXT_SIZE = 30 * 1024  # 30KB\n   ```\n\n2. Add function after `read_context_file()` (after line 637):\n   ```python\n   def read_board_context_file(config: Config, board: str) -> Optional[str]:\n       \"\"\"Read BOARD_CONTEXT.md for a specific board with 30KB size limit.\n       \n       Returns None if file doesn't exist or cannot be read.\n       Truncates at 30KB byte boundary if file is too large.\n       \"\"\"\n       context_path = config.boards_dir / board / BOARD_CONTEXT_FILENAME\n       if not context_path.exists():\n           return None\n       \n       try:\n           with open(context_path, \"rb\") as f:\n               content_bytes = f.read()\n           \n           if len(content_bytes) > MAX_BOARD_CONTEXT_SIZE:\n               logger.warning(\n                   f\"Board context file for '{board}' exceeds 30KB \"\n                   f\"({len(content_bytes)} bytes) \u2014 consider curating \"\n                   f\".mad/boards/{board}/{BOARD_CONTEXT_FILENAME}\"\n               )\n               truncated_bytes = content_bytes[:MAX_BOARD_CONTEXT_SIZE]\n               while truncated_bytes:\n                   try:\n                       return truncated_bytes.decode(\"utf-8\")\n                   except UnicodeDecodeError:\n                       truncated_bytes = truncated_bytes[:-1]\n               return \"\"\n           \n           return content_bytes.decode(\"utf-8\")\n       except (OSError, UnicodeDecodeError):\n           return None\n   ```\n\n   This mirrors `read_context_file()` exactly but uses the 30KB cap and board-specific path. The warning is logged when the file exceeds 30KB.\n\n**Dependencies:** None \u2014 standalone function.\n\n---\n\n### Task 2: Add board context append helper to `state.py`\n\n**File:** `pipeline/state.py`\n\n1. Add imports at top of file (after existing imports):\n   ```python\n   from datetime import date\n   ```\n   Note: `datetime` is already imported. We need `date` for `date.today()`. Actually `datetime` module is already imported, so use `datetime.now(timezone.utc).strftime(\"%Y-%m-%d\")`.\n\n2. Add a module-level helper function (before the `FeatureFile` class, or as a private function after the class \u2014 best placed after `_now_iso()` around line 44):\n   ```python\n   def _append_board_context(feature_data: dict, board: str, boards_dir: Path) -> None:\n       \"\"\"Append a summary entry to the board's BOARD_CONTEXT.md when a feature completes.\n       \n       Extracts 'plan' and 'impl_notes' fields from the feature data.\n       Each field is truncated to 500 chars. If both are empty, skips the append.\n       \"\"\"\n       title = feature_data.get(\"title\", \"Untitled\")\n       feature_id = feature_data.get(\"id\", \"unknown\")\n       plan = feature_data.get(\"plan\", \"\").strip()\n       impl_notes = feature_data.get(\"impl_notes\", \"\").strip()\n       \n       # Skip if both fields are empty\n       if not plan and not impl_notes:\n           return\n       \n       # Truncate each field to 500 chars\n       if len(plan) > 500:\n           plan = plan[:497] + \"...\"\n       if len(impl_notes) > 500:\n           impl_notes = impl_notes[:497] + \"...\"\n       \n       # Build the entry\n       date_str = datetime.now(timezone.utc).strftime(\"%Y-%m-%d\")\n       lines = []\n       lines.append(f\"## {title} (id: {feature_id})\")\n       lines.append(f\"**Date:** {date_str}\")\n       lines.append(\"\")\n       if plan:\n           lines.append(f\"**Plan:**\")\n           lines.append(plan)\n           lines.append(\"\")\n       if impl_notes:\n           lines.append(f\"**Implementation Notes:**\")\n           lines.append(impl_notes)\n           lines.append(\"\")\n       \n       entry = \"\\n\".join(lines) + \"\\n\"\n       \n       # Append to BOARD_CONTEXT.md\n       context_path = boards_dir / board / \"BOARD_CONTEXT.md\"\n       context_path.parent.mkdir(parents=True, exist_ok=True)\n       with open(context_path, \"a\", encoding=\"utf-8\") as f:\n           f.write(entry)\n   ```\n\n3. Modify `move_to_stage()` method in `FeatureFile` class (line 472) to call the helper after `shutil.move()` when the target stage is 'done':\n\n   Current code (lines 472-483):\n   ```python\n   def move_to_stage(self, stage: str) -> None:\n       if stage not in STAGES:\n           raise ValueError(f\"Unknown stage: {stage}. Valid: {STAGES}\")\n       config = Config()\n       target_dir = config.boards_dir / self.board / stage\n       target_dir.mkdir(parents=True, exist_ok=True)\n       target_path = target_dir / self._path.name\n       shutil.move(str(self._path), str(target_path))\n       self._path = target_path.resolve()\n   ```\n\n   Modified code:\n   ```python\n   def move_to_stage(self, stage: str) -> None:\n       if stage not in STAGES:\n           raise ValueError(f\"Unknown stage: {stage}. Valid: {STAGES}\")\n       config = Config()\n       target_dir = config.boards_dir / self.board / stage\n       target_dir.mkdir(parents=True, exist_ok=True)\n       target_path = target_dir / self._path.name\n       shutil.move(str(self._path), str(target_path))\n       self._path = target_path.resolve()\n       \n       # Append board context entry on done transition (best-effort)\n       if stage == \"done\":\n           try:\n               _append_board_context(self._data, self.board, config.boards_dir)\n           except Exception:\n               logger.warning(f\"Failed to append board context for {self.title}\", exc_info=True)\n   ```\n\n   The try/except ensures the state transition (shutil.move) always succeeds \u2014 board context capture is strictly best-effort.\n\n**Dependencies:** None \u2014 uses only existing imports and data.\n\n---\n\n### Task 3: Add board context to prompt prepend in `runner.py`\n\n**File:** `pipeline/runner.py`\n\n1. Update import (line 19):\n   ```python\n   from config import AgentConfig, Config, read_context_file, read_board_context_file, get_mad_dir\n   ```\n\n2. Modify `_prepend_context()` method (line 126) to accept an optional `board` parameter:\n\n   Current signature:\n   ```python\n   def _prepend_context(self, prompt: str) -> str:\n   ```\n\n   New signature:\n   ```python\n   def _prepend_context(self, prompt: str, board: str = None) -> str:\n   ```\n\n3. Add board context reading after the CONTEXT.md content insertion (after line 141, before the prompt append):\n\n   Current code (lines 138-143):\n   ```python\n   parts = [\"\\n\".join(header), \"\"]\n   if context_content:\n       parts.append(context_content)\n       parts.append(\"\")\n   parts.append(prompt)\n   ```\n\n   Modified code:\n   ```python\n   parts = [\"\\n\".join(header), \"\"]\n   if context_content:\n       parts.append(context_content)\n       parts.append(\"\")\n   \n   # Include board context if board is specified\n   if board:\n       board_context = read_board_context_file(self._config, board)\n       if board_context:\n           parts.append(\"## Board Context (completed features)\")\n           parts.append(board_context)\n           parts.append(\"\")\n   \n   parts.append(prompt)\n   ```\n\n4. Modify `headless()` method to accept and pass through the `board` parameter.\n\n   Current signature (line 252):\n   ```python\n   def headless(self, prompt: str, workdir: Path = None, status: Optional[AgentStatus] = None, phase_key: str = None, output_schema: dict = None) -> str:\n   ```\n\n   New signature:\n   ```python\n   def headless(self, prompt: str, workdir: Path = None, status: Optional[AgentStatus] = None, phase_key: str = None, output_schema: dict = None, board: str = None) -> str:\n   ```\n\n   Update the `_prepend_context` call inside `headless()` (line 296):\n   ```python\n   full_prompt = self._prepend_context(prompt, board=board)\n   ```\n\n**Dependencies:** Task 1 (needs `read_board_context_file`).\n\n---\n\n### Task 4: Thread board name through phase execution in `phases.py`\n\n**File:** `pipeline/phases.py`\n\n1. Modify `_run_phase()` (line 260) to pass the board name to `runner.headless()`. The feature object is already available as a parameter.\n\n   Current `runner.headless()` call (lines 300-305):\n   ```python\n   output = runner.headless(\n       prompt,\n       status=status,\n       phase_key=phase_key,\n       output_schema=config.get(\"output_schema\"),\n   )\n   ```\n\n   Modified call \u2014 add `board` parameter, but only for planning and implementation phases:\n   ```python\n   # Include board context for planning and implementation phases only\n   board_for_context = None\n   if config[\"runner_phase\"] in (\"planning\", \"implementing\", \"spec_writing\"):\n       board_for_context = feature.board\n   \n   output = runner.headless(\n       prompt,\n       status=status,\n       phase_key=phase_key,\n       output_schema=config.get(\"output_schema\"),\n       board=board_for_context,\n   )\n   ```\n\n   This uses the `runner_phase` value from `PHASE_CONFIG` to determine whether to include board context. The phases that get board context are:\n   - `planning` (runner_phase: \"planning\")\n   - `spec_impl` (runner_phase: \"spec_writing\")\n   - `spec_test` (runner_phase: \"spec_writing\")\n   - `implementing` (runner_phase: \"implementing\")\n\n   The phases that do NOT get board context:\n   - `reviewing_plan` (runner_phase: \"reviewing_plan\")\n   - `reviewing_spec` (runner_phase: \"reviewing_spec\")\n   - `testing` (runner_phase: \"testing\")\n   - `review_impl` (runner_phase: \"review\")\n   - `fix_feedback` (runner_phase: \"fix_feedback\")\n   - `ideating` (runner_phase: \"ideating\")\n\n2. The ideation debate `runner.headless()` calls (lines 836 and 900) do NOT need board context (ideating is not a planning/implementation phase), so no changes needed there.\n\n3. The `update_design_doc` call at line 1876 (`runner.headless(prompt)`) does not need board context either.\n\n**Dependencies:** Task 3 (needs the `board` parameter on `headless()`).\n\n---\n\n### Task 5: Add board context size warning to TUI\n\n**File:** `pipeline/tui.py`\n\nAdd a warning notification when displaying board status if the BOARD_CONTEXT.md file exceeds 30KB.\n\n1. In the TUI's board refresh or board switch logic, check the board context file size. The simplest integration point is in `_refresh_board()` or wherever the board status is displayed.\n\n   Find the `_refresh_board` method and add a size check:\n   ```python\n   from config import BOARD_CONTEXT_FILENAME, MAX_BOARD_CONTEXT_SIZE\n   \n   # Check board context file size (in _refresh_board or board switch)\n   board_context_path = self._config.boards_dir / board / BOARD_CONTEXT_FILENAME\n   if board_context_path.exists():\n       try:\n           size = board_context_path.stat().st_size\n           if size > MAX_BOARD_CONTEXT_SIZE:\n               self.notify(\n                   f\"Board context file exceeds 30KB ({size // 1024}KB) \u2014 \"\n                   f\"consider curating .mad/boards/{board}/BOARD_CONTEXT.md\",\n                   severity=\"warning\",\n               )\n       except OSError:\n           pass\n   ```\n\n   To avoid spamming the warning, add a simple flag like `_board_context_warned` set to track whether the warning has been shown this session. Only show it once per board per session.\n\n**Dependencies:** Task 1 (needs `BOARD_CONTEXT_FILENAME` and `MAX_BOARD_CONTEXT_SIZE` constants).\n\n---\n\n### Summary of Changes\n\n| File | Changes | Lines (approx) |\n|------|---------|----------------|\n| `pipeline/config.py` | Add constants + `read_board_context_file()` | ~25 |\n| `pipeline/state.py` | Add `_append_board_context()` helper + modify `move_to_stage()` | ~35 |\n| `pipeline/runner.py` | Add `board` param to `_prepend_context()` and `headless()`, read board context | ~10 |\n| `pipeline/phases.py` | Pass `board` from feature to `runner.headless()` in `_run_phase()` (stage-selective) | ~8 |\n| `pipeline/tui.py` | Board context size warning in board refresh | ~12 |\n\n**Total:** ~90 lines across 5 files. No new dependencies. No LLM calls. No schema changes.\n\n### Execution Order\n\n1. Task 1 (config.py) \u2014 no dependencies\n2. Task 2 (state.py) \u2014 no dependencies\n3. Task 3 (runner.py) \u2014 depends on Task 1\n4. Task 4 (phases.py) \u2014 depends on Task 3\n5. Task 5 (tui.py) \u2014 depends on Task 1 constants",
+  "test_spec": "# Test Specification: Shared Context/Memory File Per Board\n\n## 1. Behaviors That MUST Be Verified\n\n### 1.1 Board Context File Creation & Append on Done Transition\n\n**Behavior:** When a feature transitions to the 'done' stage via `move_to_stage('done')`, the system extracts the `plan` and `impl_notes` fields from the feature JSON and appends a structured markdown entry to `.mad/boards/<board>/BOARD_CONTEXT.md`.\n\n**Success Criteria:**\n- A file at `.mad/boards/<board>/BOARD_CONTEXT.md` is created if it does not already exist.\n- The appended entry contains a `## <title> (id: <id>)` header.\n- The entry contains a `**Date:**` line with the current date.\n- The entry contains bullet points extracted from the `plan` field content.\n- The entry contains bullet points extracted from the `impl_notes` field content.\n- Each field (plan, impl_notes) is truncated to 500 characters.\n- Entries are appended chronologically (newest at bottom).\n- The file is valid UTF-8 markdown after the append.\n\n**Expected Outputs:**\n- BOARD_CONTEXT.md file exists after first done transition.\n- File contains one entry per completed feature, in chronological order.\n\n### 1.2 Skip Entry When Both Fields Are Empty\n\n**Behavior:** If both `plan` and `impl_notes` fields are empty/null on a feature transitioning to done, no entry is appended to BOARD_CONTEXT.md.\n\n**Success Criteria:**\n- No new content is appended to BOARD_CONTEXT.md.\n- If BOARD_CONTEXT.md did not exist before, it is NOT created.\n- The done transition still completes successfully.\n- No error is logged.\n\n### 1.3 Field Truncation at 500 Characters\n\n**Behavior:** Each extracted field (plan, impl_notes) is truncated to 500 characters before being written to BOARD_CONTEXT.md.\n\n**Success Criteria:**\n- A plan field with 600 characters results in only the first 500 characters appearing in the entry.\n- An impl_notes field with 1000 characters results in only the first 500 characters appearing.\n- Truncation does not break mid-UTF-8-character (safe byte boundary).\n- Truncation is indicated in the output (e.g., trailing ellipsis or similar marker).\n\n### 1.4 Best-Effort Append (Never Blocks Done Transition)\n\n**Behavior:** The board context append is wrapped in try/except. If the append fails for any reason, the done transition still succeeds. The `shutil.move()` for the state transition has already completed before the append runs.\n\n**Success Criteria:**\n- If the BOARD_CONTEXT.md file is not writable (permissions error), the feature still moves to done.\n- If the board directory does not exist (unusual edge case), the feature still moves to done.\n- An error is logged when the append fails.\n- The feature file is in the `done/` directory regardless of append success.\n\n### 1.5 Board Context Reader Function in config.py\n\n**Behavior:** A new reader function (mirroring `read_context_file()`) reads BOARD_CONTEXT.md for a given board, with a 30KB size cap.\n\n**Success Criteria:**\n- Returns the file content as a string when the file exists and is under 30KB.\n- Returns None when the file does not exist.\n- Truncates content at 30KB byte boundary when file exceeds the cap.\n- Handles UTF-8 decode errors by progressively trimming bytes (same pattern as `read_context_file()`).\n- A constant `MAX_BOARD_CONTEXT_SIZE = 30 * 1024` (or similar) is defined.\n\n### 1.6 Context Prepend in Agent Prompts (Stage-Selective)\n\n**Behavior:** Board context is prepended to agent prompts (after CONTEXT.md content) only during planning and implementation phases. It is NOT included for review or other phases.\n\n**Success Criteria:**\n- During `planning` phase: board context appears in the prepended prompt, after CONTEXT.md content.\n- During `implementing` phase: board context appears in the prepended prompt.\n- During `spec_writing` phase: board context appears in the prepended prompt.\n- During `review` phase: board context does NOT appear in the prepended prompt.\n- During `ideating` phase: board context does NOT appear in the prepended prompt.\n- The board name is correctly threaded from the FeatureFile through `_run_phase()` \u2192 `runner.headless()` \u2192 `_prepend_context()`.\n\n### 1.7 Board Name Threading Through Call Chain\n\n**Behavior:** The board name flows from the FeatureFile object through the phase execution layer to the runner's context prepend function.\n\n**Success Criteria:**\n- `_prepend_context()` accepts an optional `board` parameter.\n- `headless()` accepts and passes through a `board` parameter.\n- `_run_phase()` extracts `feature.board` and passes it through.\n- When board is None or not provided, no board context is included (backward compatible).\n\n### 1.8 Size Cap Warning in TUI\n\n**Behavior:** When BOARD_CONTEXT.md exceeds 30KB, a warning is surfaced in the TUI.\n\n**Success Criteria:**\n- Warning is displayed when the file size exceeds 30KB.\n- Warning indicates the file path and current size.\n- Warning suggests manual curation.\n- No warning when file is under 30KB.\n\n### 1.9 Multiple Features Completing on Same Board\n\n**Behavior:** When multiple features on the same board transition to done, each appends its own entry to the same BOARD_CONTEXT.md.\n\n**Success Criteria:**\n- After 3 features complete, BOARD_CONTEXT.md contains 3 entries.\n- Entries are in chronological order of completion.\n- Each entry has distinct title, id, and content.\n- File remains valid markdown throughout.\n\n## 2. Edge Cases\n\n### 2.1 Empty/Null Inputs\n- Feature with `plan` set to null and `impl_notes` set to null: no entry appended, no error.\n- Feature with `plan` as empty string and `impl_notes` as empty string: no entry appended.\n- Feature with `plan` populated but `impl_notes` null: entry created with plan content only.\n- Feature with `plan` null but `impl_notes` populated: entry created with impl_notes content only.\n- Feature with no `plan` key in JSON at all: treated as empty, no crash.\n- Feature with no `impl_notes` key in JSON at all: treated as empty, no crash.\n\n### 2.2 Boundary Conditions\n- BOARD_CONTEXT.md exactly at 30KB: no warning triggered (warning is for exceeding, not meeting).\n- BOARD_CONTEXT.md at 30KB + 1 byte: warning triggered, content truncated when read.\n- Plan field at exactly 500 characters: no truncation applied.\n- Plan field at 501 characters: truncated to 500.\n- First feature to complete on a board: BOARD_CONTEXT.md is created fresh.\n- Feature title containing markdown special characters (e.g., `#`, `*`, `[`): header renders correctly.\n- Feature title containing very long text (1000+ chars): entry still valid.\n\n### 2.3 Invalid States\n- BOARD_CONTEXT.md exists but is not valid UTF-8: reader handles gracefully, returns what it can.\n- BOARD_CONTEXT.md is a directory instead of a file: append fails gracefully, done transition succeeds.\n- Board directory does not exist when append is attempted: append fails gracefully, logged.\n- Feature JSON is corrupted/unreadable during done transition: the move_to_stage should still work (append is best-effort after move).\n\n### 2.4 Concurrent Operations\n- Two features on the same board moving to done simultaneously: both entries should be written (file opened in append mode). Acceptable if entries are interleaved at the line level, as long as no data is lost.\n- A feature moving to done while another agent is reading BOARD_CONTEXT.md for prompt prepend: reader should get a consistent snapshot (may or may not include the new entry).\n\n### 2.5 Error Conditions\n- Disk full during append: done transition succeeds, error logged.\n- Permission denied on BOARD_CONTEXT.md: done transition succeeds, error logged.\n- read_board_context_file called with nonexistent board name: returns None.\n- _prepend_context called with board parameter but no BOARD_CONTEXT.md file exists: prompt prepended without board context (just CONTEXT.md).\n\n## 3. What Constitutes Failure\n\n### 3.1 Critical Failures (Feature is broken)\n- A done transition fails or raises an exception because of board context append logic.\n- Board context append runs BEFORE `shutil.move()` and a failure prevents the state transition.\n- Board context is included in review-phase prompts (should be planning/implementation only).\n- Board context is included when no board parameter is provided (backward compatibility broken).\n- The reader function crashes on missing file instead of returning None.\n- BOARD_CONTEXT.md content exceeds 30KB in what's passed to the prompt (cap not enforced on read).\n\n### 3.2 Significant Failures (Feature is degraded)\n- Entries are not appended when plan/impl_notes are populated (silent data loss).\n- Field truncation breaks UTF-8 encoding (garbled characters in prompt).\n- Board name is not correctly threaded \u2014 wrong board's context file is read or written.\n- TUI size warning never appears even when file exceeds 30KB.\n- Duplicate entries for the same feature (appended twice on a single done transition).\n\n### 3.3 Error Messages Expected\n- When append fails: a log message at WARNING or ERROR level indicating the failure reason and that it was non-fatal.\n- When BOARD_CONTEXT.md exceeds 30KB: a log message at WARNING level with the file path and size.\n- When an invalid stage is passed to move_to_stage: ValueError (existing behavior, unchanged).\n\n### 3.4 Rollback Behavior\n- There is no rollback for board context append. It is strictly append-only and best-effort.\n- If the append partially writes (e.g., disk full mid-write), the file may have a truncated entry. This is acceptable \u2014 manual curation is the designed recovery path.\n- The done transition (shutil.move) is NOT rolled back if the append fails. This is by design.\n\n## 4. Out of Scope\n\n- **LLM-based summarization or extraction**: V2 feature, not tested here.\n- **Review feedback extraction from impl_reviews**: Explicitly deferred to V2.\n- **Cross-board context sharing**: Not in scope.\n- **Automatic quality gating of context entries**: Not in scope.\n- **Selective context filtering by category/tag**: Not in scope.\n- **UI timing or visual assertions**: TUI warning existence is tested, not its visual rendering.\n- **Performance benchmarks**: No timing assertions on append or read operations.\n- **Automatic summarization when file exceeds 30KB**: Users curate manually; no auto-summarization.\n- **done_script execution**: Existing behavior, tested elsewhere. Only verify it still runs after the new append logic.\n- **Agent prompt quality**: Whether the board context actually helps agents produce better output is not testable here.\n- **File locking or atomic write guarantees**: Append mode is sufficient per the design; no file locking is implemented or tested.\n- **Design doc updates or other post-done hooks**: Existing behavior, not affected by this feature.",
+  "impl_notes": "Implemented shared context/memory file per board feature. Added BOARD_CONTEXT.md file that automatically accumulates feature summaries when features transition to 'done'. Board context is prepended to agent prompts during planning and implementation phases only. Includes 30KB size cap with TUI warning.\n\nFix Feedback\n\nAdded comprehensive tests for the shared context/memory file per board feature. Created 23 new tests across test_config_unit.py (7 tests for read_board_context_file), test_state.py (12 tests for _append_board_context and move_to_stage), and test_runner_unit.py (4 tests for _prepend_context with board parameter). Also fixed a bug in state.py where None values for plan/impl_notes caused AttributeError.",
+  "ideation_summaries": [
+    "Proposed a concrete implementation approach for BOARD_CONTEXT.md: (1) Create the file at .mad/boards/<board>/BOARD_CONTEXT.md, loaded alongside CONTEXT.md in runner.py's _prepend_context() method by accepting a board parameter and reading the board-specific file via a new read_board_context_file() in config.py. (2) Hook into the three 'done' transition points (tui.py:3066, tui.py:3296, server.py:475) to trigger a lightweight agent call that extracts lessons from the completed feature's JSON data (plan, impl_notes, history, review feedback) and appends a structured summary block to BOARD_CONTEXT.md. (3) Implement size management with a ~50KB soft cap \u2014 when exceeded, run a summarization agent that condenses older entries while preserving the most recent N entries verbatim, keeping the file human-readable and editable. Key design decisions to consider: whether the summary-generation agent call should block the done transition or run async; whether to use a structured format (YAML frontmatter per entry with date/feature/lessons) vs. free-form markdown; and whether BOARD_CONTEXT.md should take precedence over or supplement CONTEXT.md when both exist. Recommended keeping both \u2014 CONTEXT.md for project-wide constants, BOARD_CONTEXT.md for evolving board-specific learnings \u2014 with BOARD_CONTEXT.md inserted after CONTEXT.md in the prompt preamble.",
+    "Critiqued the proposal on five fronts: (1) The automatic summarization agent triggered at done-time is the riskiest part \u2014 it's an unbounded LLM call that can silently corrupt accumulated context if it hallucinates or over-condenses, and there's no rollback mechanism; a simpler append-only design with manual curation would be safer and more predictable. (2) The 50KB soft cap with automatic summarization creates a hidden quality cliff \u2014 context quality degrades non-deterministically when the cap is hit, and users won't know why agents suddenly make worse decisions; a hard cap with a visible warning and manual trim prompt is more honest. (3) Hooking into three separate done-transition points (tui.py x2, server.py x1) to trigger an agent call creates tight coupling and fragility \u2014 if a fourth transition path is added later (e.g., CLI, API, or a new UI), the context update will silently be skipped; instead, the context-append logic should be a single function called from move_to_stage('done') in state.py or from the existing done-script mechanism, which already runs async and has error handling. (4) The proposal doesn't address what happens when the extraction agent produces low-quality or wrong summaries \u2014 garbage entries will accumulate and pollute all future feature work on that board, with no quality gate or human review step before context is committed. (5) Using an LLM call to extract lessons at done-time is expensive and slow for what could be a simpler approach: have the implementation agent write a 'lessons_learned' field into the feature JSON during implementation (when context is fresh), then just append that field's content to BOARD_CONTEXT.md at done-time with no additional agent call needed.",
+    "Synthesized both previous contributions into a refined hybrid approach. The second critique correctly identifies that an LLM call at done-time is the weakest link \u2014 but its proposed alternative (a lessons_learned field written during implementation) has its own blind spot: implementation agents are optimizing for code correctness, not retrospection, and won't reliably produce useful lessons mid-task. The better design is a three-layer approach: (1) Capture structured signals mechanically at done-time with zero LLM involvement \u2014 extract the plan summary, review feedback snippets, and any impl_notes directly from the feature JSON and append them as a raw structured block to BOARD_CONTEXT.md. This is deterministic, cheap, and never hallucinates. (2) Use the existing done_script mechanism as the single integration point rather than hooking three transition sites \u2014 create a built-in 'board-context-append' script type that runs alongside user-configured done scripts, which solves the fragility concern since any new done-transition path already calls execute_done_script(). (3) For size management, skip auto-summarization entirely \u2014 instead, when BOARD_CONTEXT.md exceeds a threshold (e.g., 30KB, well under the existing 100KB MAX_CONTEXT_SIZE), surface a warning in the TUI and add a 'Curate board context' action that opens the file in the user's editor. This keeps the human in the loop for quality control while the mechanical extraction handles the grunt work. The key insight is separating the two concerns: capturing raw signal (which should be automated and deterministic) vs. distilling wisdom (which should be human-driven or at minimum human-reviewed). This avoids both the cost/hallucination risk of LLM extraction and the unreliability of asking implementation agents to self-reflect mid-task.",
+    "Critiqued the hybrid approach on four key weaknesses: (1) Mechanical raw extraction of plan summaries, review feedback, and impl_notes produces noise rather than signal \u2014 these fields were written for their own pipeline stages, not as cross-feature context, so dumping them verbatim into BOARD_CONTEXT.md creates a bloated file full of feature-specific implementation details that waste context window and confuse future agents. (2) The done_script mechanism is the wrong integration point \u2014 done_script is currently a per-feature, user-configured single string reference; hijacking it for a built-in system behavior changes its semantics from 'optional user hook' to 'system behavior plus optional user hook,' creating a leaky abstraction. The cleaner integration is a post-transition hook in move_to_stage() in state.py, which is the single canonical transition point and already called by both TUI paths and the server. (3) The 'human curation' strategy is unrealistic as a quality gate \u2014 if the file fills with raw mechanical extractions, curating it becomes a tedious chore that users will ignore, and then every agent on the board gets a 30KB blob of mostly irrelevant past details prepended to every prompt, degrading rather than improving agent performance. The feature's entire value proposition is reducing manual effort, so punting the hardest problem (quality) to the user undermines the design. (4) No consideration of selective context inclusion \u2014 the proposal prepends BOARD_CONTEXT.md to every agent prompt for every pipeline stage, but a planning agent doesn't need the same cross-feature context as a review agent. A better approach would tag entries by relevance category (architectural decisions vs. code patterns vs. gotchas) and let each pipeline stage pull only what's relevant, or at minimum only include board context for planning and implementation stages where cross-feature awareness actually matters.",
+    "The V1 approach in the instructions is well-scoped and practical. The single integration point in move_to_stage() when stage=='done' is the right call \u2014 it's already the canonical transition point and currently has no side effects, so adding a synchronous file-append there is clean and low-risk. For the capture mechanism, mechanical extraction should pull from the feature JSON's 'plan' field (which contains the approved plan summary), 'impl_notes' (if populated), and any review feedback entries. The key implementation detail is formatting these raw fields into concise bullet points without an LLM \u2014 the simplest approach is to extract the first 2-3 sentences of each field and present them under labeled sub-headers (Decisions, Patterns, Gotchas), accepting that some entries will be more useful than others and relying on manual curation to prune low-value ones. For context inclusion, read_board_context_file(config, board) in config.py should mirror read_context_file() exactly but with a 30KB cap and board-specific path (.mad/boards/<board>/BOARD_CONTEXT.md). In _prepend_context() in runner.py, the board name needs to be passed through \u2014 the runner already has access to the feature's board via the FeatureFile object, so threading this through is straightforward. The V1 restriction to planning and implementation stages (not review) is pragmatic and avoids the stage-filtering complexity that stalled prior rounds. The 30KB cap with a TUI warning is sufficient size management \u2014 no automatic summarization needed.",
+    "The V1 approach described in the instructions is well-scoped and practical. The key implementation is straightforward: (1) add `read_board_context_file()` to `config.py` mirroring the existing `read_context_file()` pattern with a 30KB cap, (2) hook into `move_to_stage()` in `state.py` at the done transition to mechanically extract plan summary, impl_notes, and review feedback from the feature JSON and append a dated markdown entry to `.mad/boards/<board>/BOARD_CONTEXT.md`, and (3) modify `_prepend_context()` in `runner.py` to include board context after CONTEXT.md content for planning and implementation stages only. The main design risk is that mechanical extraction of raw fields may produce low-signal entries \u2014 but this is acceptable for V1 since the date-stamped format enables easy manual curation, and the 30KB hard cap with TUI warnings enforces hygiene without requiring LLM-based summarization. One practical suggestion: the extraction logic should prefer structured fields like `plan_exploration_summary` over raw `plan` text when available, and should skip entries where all extracted fields are empty to avoid noise. The single integration point in `move_to_stage()` is the right call \u2014 it avoids the fragility of hooking multiple done paths and keeps the capture synchronous and deterministic.",
+    "The V1 approach is pragmatic but has three concrete implementation gaps that need addressing before coding begins. First, `move_to_stage()` in state.py is currently a pure file-move operation with no side effects \u2014 adding board context extraction here introduces a write to a shared file (BOARD_CONTEXT.md) as a side effect of what callers expect to be a simple state transition, and since `move_to_stage('done')` is called from many callsites (TUI shortcuts, server endpoints, pipeline phases), any failure in the extraction/append logic would break done transitions everywhere unless carefully guarded. The proposal should specify that the append is wrapped in a try/except that logs but never raises. Second, the proposal is vague about 'review feedback' \u2014 there is no explicit review feedback field in the feature JSON schema. The actual fields are `plan`, `plan_exploration_summary`, `impl_spec`, `impl_notes`, and `history` (a list of timestamped entries). Review feedback lives inside `history` entries and would require filtering history by stage/note content to extract, which is more complex than 'read a field.' The extraction logic needs to be specified concretely: which fields, in what order, with what truncation if individual fields are very long. Third, `_prepend_context()` in runner.py currently has no awareness of boards or pipeline stages \u2014 it operates on config-level context only. The proposal says to include board context 'for planning and implementation stages only,' but _prepend_context doesn't receive a stage parameter. This means either _prepend_context's signature must change (breaking existing callers) or the stage-conditional logic must live in the callers (phases.py), which scatters the inclusion logic. The cleaner path is to have _prepend_context always include board context and defer stage-selective filtering to v2, keeping v1 truly simple.",
+    "The V1 approach is sound but the two previous critiques surface real implementation gaps that can be resolved without adding complexity. Here's a concrete, minimal specification that addresses them: (1) **Extraction fields, concretely**: Extract `plan_exploration_summary` (preferred over raw `plan` \u2014 it's already a summary), `impl_notes`, and the last `history` entry whose note contains review-stage content. Each field should be truncated to 500 chars max to keep entries compact. Skip appending entirely if all three fields are empty \u2014 this avoids noise entries for trivially-completed items. (2) **Error isolation in move_to_stage()**: The board context append must be wrapped in try/except that logs the error but never raises. The existing `move_to_stage()` is a pure file-move, and callers (TUI, server, pipeline) rightfully expect it to be safe. The append is a best-effort side effect \u2014 a failure to write board context should never block a done transition. This is a two-line guard (`try: _append_board_context(self) / except Exception: logger.warning(...)`) placed after the `shutil.move()` call, so the state transition itself is always committed first. (3) **Drop stage-selective filtering for V1**: The second critique correctly identifies that `_prepend_context()` has no board or stage awareness. Rather than threading a stage parameter through the call chain, V1 should always include board context when present. The content is concise enough (capped at 30KB, structured entries) that including it in review prompts too is harmless \u2014 the theoretical inefficiency doesn't justify the implementation complexity of stage filtering. Revisit in V2 if the file grows in practice. (4) **`read_board_context_file()` implementation**: Mirror `read_context_file()` exactly but with a 30KB cap (`MAX_BOARD_CONTEXT_SIZE = 30 * 1024`), taking `config` and `board` parameters. Return `None` if the file doesn't exist. In `_prepend_context()`, iterate over `config.boards` and include any found board context after the CONTEXT.md content \u2014 this requires adding a board parameter or having the runner know its board, which it already does via the feature file being processed. (5) **TUI warning**: When `read_board_context_file()` detects the file exceeds 30KB, log a warning. The TUI can surface this in the status bar or as a one-time notification. No automatic summarization \u2014 users curate manually using the date headers to identify stale entries. This specification is complete enough to implement without further design iteration. The total changeset is ~60 lines across three files (config.py, state.py, runner.py) with no new dependencies or LLM calls.",
+    "The V1 specification from round 3 is nearly implementation-ready but has two remaining blind spots worth flagging. First, the proposed extraction of the 'last history entry whose note contains review-stage content' is underspecified and fragile \u2014 history entries are free-text notes like 'Starting round 2 (claude/opus)' with no structured stage tag, so filtering by 'review-stage content' requires pattern-matching on strings that may change without notice. V1 should simplify to extracting only `plan_exploration_summary` and `impl_notes` \u2014 two concrete, always-present fields \u2014 and skip the history-mining entirely. Review feedback is not reliably capturable without schema changes, and pretending it is will produce either empty extractions or false matches. Second, the proposal says `_prepend_context()` should 'iterate over config.boards' to include board context, but this is wrong \u2014 the runner processes a single feature at a time, which belongs to exactly one board. Iterating over all boards would prepend irrelevant context from unrelated boards into the prompt. The correct approach is to pass the feature's board name (available from the FeatureFile being processed) into `_prepend_context()` and read only that board's BOARD_CONTEXT.md. This is a one-parameter change to the method signature, not an iteration pattern. Both issues are small but would produce bugs if implemented as currently specified."
+  ],
+  "ideation": "",
+  "ideation_prompt": "",
+  "history": [
+    {
+      "ts": "2026-03-20T00:52Z",
+      "stage": "IDEAS",
+      "note": "Idea created"
+    },
+    {
+      "ts": "2026-03-20T00:52Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-20T01:24Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-20T01:24Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-20T01:26Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-20T01:28Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-20T01:29Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-20T01:30Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 1)"
+    },
+    {
+      "ts": "2026-03-20T01:31Z",
+      "stage": "IDEATING",
+      "note": "Stall detected after 4 rounds"
+    },
+    {
+      "ts": "2026-03-20T01:31Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-20T03:15Z",
+      "stage": "DEBATE",
+      "note": "Moved from ideas to ideating for debate"
+    },
+    {
+      "ts": "2026-03-20T03:15Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-20T03:15Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-20T03:17Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-20T04:15Z",
+      "stage": "IDEATING",
+      "note": "Starting ideation debate"
+    },
+    {
+      "ts": "2026-03-20T04:15Z",
+      "stage": "IDEATING",
+      "note": "Starting round 1 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-20T04:16Z",
+      "stage": "IDEATING",
+      "note": "Starting round 2 (claude/opus)"
+    },
+    {
+      "ts": "2026-03-20T04:17Z",
+      "stage": "IDEATING",
+      "note": "Starting round 3 (opencode/minimax-coding-plan/MiniMax-M2.5)"
+    },
+    {
+      "ts": "2026-03-20T04:18Z",
+      "stage": "IDEATING",
+      "note": "Starting round 4 (claude/sonnet)"
+    },
+    {
+      "ts": "2026-03-20T04:19Z",
+      "stage": "IDEATING",
+      "note": "Running synthesis (cycle 1)"
+    },
+    {
+      "ts": "2026-03-20T04:20Z",
+      "stage": "IDEATING",
+      "note": "Consensus reached after 4 rounds"
+    },
+    {
+      "ts": "2026-03-20T04:20Z",
+      "stage": "IDEATING",
+      "note": "Ideation complete"
+    },
+    {
+      "ts": "2026-03-20T04:23Z",
+      "stage": "PROMOTED",
+      "note": "Moved from ideas to plan-inbox"
+    },
+    {
+      "ts": "2026-03-20T04:26Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-20T04:28Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-20T04:28Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-20T04:30Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: FAIL - Critical field name mismatch: plan references 'plan_exploration_summary' but the ..."
+    },
+    {
+      "ts": "2026-03-20T04:30Z",
+      "stage": "PLAN_REVIEW_FAILED",
+      "note": "Feedback: Specific issues to fix: 1) Field name error - use 'plan' not 'plan_exploration_summary'..."
+    },
+    {
+      "ts": "2026-03-20T04:30Z",
+      "stage": "PLANNING",
+      "note": "Starting planning"
+    },
+    {
+      "ts": "2026-03-20T04:33Z",
+      "stage": "PLANNING",
+      "note": "Plan generated via claude"
+    },
+    {
+      "ts": "2026-03-20T04:33Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Starting plan review"
+    },
+    {
+      "ts": "2026-03-20T04:35Z",
+      "stage": "PLAN_REVIEW",
+      "note": "Verdict: PASS - The plan covers all requirements and is feasible. Integration points are correctl..."
+    },
+    {
+      "ts": "2026-03-20T04:35Z",
+      "stage": "PROMOTED",
+      "note": "Plan auto-approved"
+    },
+    {
+      "ts": "2026-03-20T04:51Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec generation"
+    },
+    {
+      "ts": "2026-03-20T04:51Z",
+      "stage": "SPEC_WRITING",
+      "note": "Starting spec writing"
+    },
+    {
+      "ts": "2026-03-20T04:54Z",
+      "stage": "SPEC_WRITING",
+      "note": "Implementation spec generated via claude"
+    },
+    {
+      "ts": "2026-03-20T04:56Z",
+      "stage": "SPEC_WRITING",
+      "note": "Test spec generated via claude"
+    },
+    {
+      "ts": "2026-03-20T04:56Z",
+      "stage": "SPECREVIEW",
+      "note": "Starting spec review"
+    },
+    {
+      "ts": "2026-03-20T04:56Z",
+      "stage": "SPECREVIEW",
+      "note": "Verdict: PASS - Both specs are well-aligned with the approved plan, comprehensive, and consistent..."
+    },
+    {
+      "ts": "2026-03-20T04:56Z",
+      "stage": "SPECREVIEW",
+      "note": "Specs approved, moving to implementing"
+    },
+    {
+      "ts": "2026-03-20T04:56Z",
+      "stage": "IMPLEMENTING",
+      "note": "Starting implementation"
+    },
+    {
+      "ts": "2026-03-20T05:04Z",
+      "stage": "IMPLEMENTING",
+      "note": "Implementation completed via opencode"
+    },
+    {
+      "ts": "2026-03-20T05:04Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase"
+    },
+    {
+      "ts": "2026-03-20T05:04Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-20T05:09Z",
+      "stage": "TESTING",
+      "note": "Test verification: FAIL via opencode"
+    },
+    {
+      "ts": "2026-03-20T05:09Z",
+      "stage": "FIX_FEEDBACK",
+      "note": "Starting fix feedback"
+    },
+    {
+      "ts": "2026-03-20T05:19Z",
+      "stage": "FIX_FEEDBACK",
+      "note": "Fixed issues per review feedback via opencode"
+    },
+    {
+      "ts": "2026-03-20T05:19Z",
+      "stage": "TESTING",
+      "note": "Moved to testing phase after fixing feedback"
+    },
+    {
+      "ts": "2026-03-20T05:19Z",
+      "stage": "TESTING",
+      "note": "Starting test verification"
+    },
+    {
+      "ts": "2026-03-20T05:21Z",
+      "stage": "TESTING",
+      "note": "Test verification: PASS via opencode"
+    },
+    {
+      "ts": "2026-03-20T05:21Z",
+      "stage": "REVIEW",
+      "note": "Starting review"
+    },
+    {
+      "ts": "2026-03-20T05:22Z",
+      "stage": "REVIEW",
+      "note": "Verdict: PASS - Implementation is complete and correct. All 26 tests pass across config reader (7..."
+    }
+  ],
+  "pipeline_log": [],
+  "plan_reviews": [
+    {
+      "ts": "2026-03-20T04:30Z",
+      "verdict": "FAIL",
+      "summary": "Critical field name mismatch: plan references 'plan_exploration_summary' but the actual JSON field is 'plan'. Also omits review feedback extraction specified in original.",
+      "feedback": "Specific issues to fix: 1) Field name error - use 'plan' not 'plan_exploration_summary' (the field doesn't exist in feature JSON schema); 2) Original requirement includes extracting review feedback but plan omits this; 3) V1 scope mismatch - original says 'planning and implementation only (not review)' but plan says 'all stages'; 4) Underspecified: how does runner.py derive board name for context prepend?"
+    },
+    {
+      "ts": "2026-03-20T04:35Z",
+      "verdict": "PASS",
+      "summary": "The plan covers all requirements and is feasible. Integration points are correctly identified (move_to_stage in state.py, _prepend_context in runner.py). Feature JSON schema has required plan and impl_notes fields. Board context inclusion for planning/implementation phases aligns with PHASE_CONFIG runner_phase values. Size cap and error handling approach are appropriate.",
+      "feedback": null
+    }
+  ],
+  "impl_reviews": [
+    {
+      "ts": "2026-03-20T05:22Z",
+      "verdict": "PASS",
+      "summary": "Implementation is complete and correct. All 26 tests pass across config reader (7), state append/move_to_stage (12), and runner prepend (7). Board context append is correctly placed after shutil.move() in move_to_stage with try/except, stage-selective filtering covers planning/implementing/spec_writing, field truncation and empty-field skipping work as specified, 30KB size cap with TUI warning is implemented.",
+      "feedback": null
+    }
+  ],
+  "ideation_cycle_verdicts": [
+    {
+      "cycle": 1,
+      "verdict": "consensus",
+      "reason": "Round 4 resolved the two remaining concrete issues from round 3's near-complete specification (drop history-mining, pass single board parameter instead of iterating all boards) without introducing new concerns. The design is fully specified and implementation-ready with no unresolved tradeoffs.",
+      "rounds_completed": 4
+    }
+  ],
+  "Ideation": "The feature adds a per-board context file (`BOARD_CONTEXT.md`) that accumulates a dated log of completed feature summaries, giving pipeline agents institutional memory about what has been built on a given board. When a feature transitions to 'done', the system automatically extracts two concrete fields \u2014 `plan_exploration_summary` and `impl_notes` \u2014 and appends a date-stamped markdown entry to the board's context file. History-mining for review feedback is explicitly excluded: history entries are free-text with no structured stage tags, making reliable extraction impossible without schema changes. If both fields are empty, the append is skipped to avoid noise.\n\nThe implementation spans three files with ~60 lines of new code and no new dependencies. In `config.py`, a `read_board_context_file()` function mirrors the existing `read_context_file()` pattern with a 30KB hard cap (`MAX_BOARD_CONTEXT_SIZE = 30 * 1024`), taking `config` and `board` parameters and returning `None` if the file doesn't exist. In `state.py`, a `_append_board_context()` helper is called from `move_to_stage()` after the `shutil.move()` call, always wrapped in `try/except` that logs but never raises \u2014 the state transition is always committed first, and board context capture is strictly best-effort. In `runner.py`, `_prepend_context()` gains a `board` parameter and reads only that board's `BOARD_CONTEXT.md` (derived from the feature being processed), appending it after `CONTEXT.md` content.\n\nKey design decisions: (1) Stage-selective filtering is deferred to V2 \u2014 always including board context is simpler and the 30KB cap keeps prompts manageable. (2) The board context is read for a single specific board, not all boards \u2014 iterating `config.boards` would inject irrelevant context from unrelated boards. (3) A TUI warning is shown when the file approaches 30KB, but no automatic summarization occurs \u2014 users curate manually using date headers to prune stale entries. The extraction fields are truncated to 500 chars each to keep individual entries compact.\n\nThe main accepted risk is that mechanical field extraction produces lower-signal entries than LLM summarization would. This is intentional for V1: the date-stamped format enables easy manual curation, the hard cap enforces hygiene, and the approach avoids any additional LLM calls or latency in the done transition.\n\n[Ideation concluded by consensus after 4 rounds, 1 cycles.]",
+  "spec_reviews": [
+    {
+      "ts": "2026-03-20T04:56Z",
+      "verdict": "PASS",
+      "summary": "Both specs are well-aligned with the approved plan, comprehensive, and consistent with each other. All plan items are covered across the 5 implementation tasks and the test spec thoroughly verifies each behavior including edge cases.",
+      "feedback": null
+    }
+  ],
+  "test_results": {
+    "ts": "2026-03-19T22:21:06.418663",
+    "verdict": "PASS",
+    "results": {
+      "passed": 209,
+      "failed": 0,
+      "errors": 0
+    },
+    "feedback": "All 209 tests pass. Feature-specific tests verified: TestReadBoardContextFile (7 tests for reader function with 30KB cap, UTF-8 safety), TestAppendBoardContext (8 tests for append logic, truncation, empty field handling), TestMoveToStageWithBoardContext (3 tests for best-effort append, non-blocking done transition), TestPrependContext (8 tests including board parameter threading). Coverage includes: board context file creation/append on done transition, skip when fields empty, 500-char field truncation, best-effort append, reader function with 30KB cap, context prepend in planning/implementing phases only, board name threading. TUI size warning (1.8) would require integration testing."
+  }
+}

@@ -56,6 +56,10 @@ type FeatureSummary struct {
 	IdeationPrompt         string           `json:"ideation_prompt,omitempty"`
 	IdeationSummaries      []string         `json:"ideation_summaries,omitempty"`
 	RequiresHumanApproval  bool             `json:"requires_human_approval,omitempty"`
+	DependsOn              []string         `json:"depends_on,omitempty"`
+	Blocked                bool             `json:"blocked,omitempty"`
+	UnresolvedDeps         []interface{}    `json:"unresolved_deps,omitempty"`
+	DanglingDeps           []string         `json:"dangling_deps,omitempty"`
 }
 
 type LogEntry struct {

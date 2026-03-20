@@ -346,6 +346,10 @@ func registerRoutes(mux *http.ServeMux, hub *Hub, cfg *Config) {
 						serveEditIdeationPrompt(w, r, hub, cfg, clientID, featureID)
 						return
 					}
+					if len(featureParts) == 2 && featureParts[1] == "edit-depends-on" && featureID != "" {
+						serveEditDependsOn(w, r, hub, cfg, clientID, featureID)
+						return
+					}
 				}
 			}
 			serveClientJSON(w, r, hub, cfg, clientID)
@@ -1490,6 +1494,65 @@ func serveEditItemType(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Co
 		"type":       "edit_item_type",
 		"feature_id": featureID,
 		"item_type":  req.ItemType,
+	})
+	if err := hub.SendToClient(clientID, msg); err != nil {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func serveEditDependsOn(w http.ResponseWriter, r *http.Request, hub *Hub, cfg *Config, clientID string, featureID string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !checkAnyAuth(r, cfg) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1*1024*1024))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to read body"})
+		return
+	}
+
+	var req struct {
+		DependsOn []string `json:"depends_on"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	state, ok := hub.GetClient(clientID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not found"})
+		return
+	}
+	if !state.Connected {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "client not connected"})
+		return
+	}
+
+	var found bool
+	for _, f := range state.Features {
+		if f.ID == featureID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "feature not found"})
+		return
+	}
+
+	msg, _ := json.Marshal(map[string]interface{}{
+		"type":       "edit_depends_on",
+		"feature_id": featureID,
+		"depends_on": req.DependsOn,
 	})
 	if err := hub.SendToClient(clientID, msg); err != nil {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})

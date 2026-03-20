@@ -135,6 +135,22 @@
         .item-type-bug { background: #f85149; }
         .item-type-enhancement { background: #1f6feb; }
         .item-type-task { background: #8957e5; }
+        .blocked-badge {
+            background: #da3633;
+            color: white;
+            padding: 0 4px;
+            border-radius: 3px;
+            font-size: 0.65rem;
+            font-weight: 600;
+        }
+        .dangling-badge {
+            background: #d29922;
+            color: white;
+            padding: 0 4px;
+            border-radius: 3px;
+            font-size: 0.65rem;
+            font-weight: 600;
+        }
         .feature-card .meta {
             color: #484f58;
             font-size: 0.7rem;
@@ -611,7 +627,26 @@ function getKey() {
                 }
             }).catch(function() {});
         }
+        function pollUntilChanged(maxRetries, intervalMs) {
+            var beforeHTML = _lastFeaturesHTML;
+            var attempt = 0;
+            function retry() {
+                if (attempt >= maxRetries) return;
+                attempt++;
+                setTimeout(function() {
+                    fetch(_featuresURL).then(function(r) { return r.text(); }).then(function(html) {
+                        if (html !== beforeHTML) {
+                            smartPollFeatures();
+                        } else if (attempt < maxRetries) {
+                            retry();
+                        }
+                    }).catch(function() {});
+                }, intervalMs);
+            }
+            retry();
+        }
         setInterval(smartPollFeatures, 5000);
+        smartPollFeatures();
         // Poll agent status via JSON API
         var _agentURL = '/api/clients/' + _clientID + '?key=' + encodeURIComponent(_dashKey);
         function renderAgent(agent) {
@@ -880,6 +915,39 @@ function getKey() {
                 '<div class="detail-row"><span class="detail-label">Type</span><span class="detail-value" id="detail-field-type">' + escapeHtml(itemType) + (stage === 'ideas' ? ' <button onclick="clientStartEditType()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit type">&#9998;</button>' : '') + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">Created</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-created')) + '</span></div>' +
                 '<div class="detail-row"><span class="detail-label">ID</span><span class="detail-value">' + escapeHtml(card.getAttribute('data-id')) + '</span></div>' +
+                '<div class="detail-row"><span class="detail-label">Dependencies</span><span class="detail-value" id="detail-field-depends-on">';
+            var dependsOn = [];
+            try { dependsOn = JSON.parse(card.getAttribute('data-depends-on') || '[]'); } catch(e) {}
+            var blocked = card.getAttribute('data-blocked') === 'true';
+            var unresolvedDeps = [];
+            try { unresolvedDeps = JSON.parse(card.getAttribute('data-unresolved-deps') || '[]'); } catch(e) {}
+            var danglingDeps = [];
+            try { danglingDeps = JSON.parse(card.getAttribute('data-dangling-deps') || '[]'); } catch(e) {}
+            if (dependsOn.length === 0) {
+                html += '<span style="color:#484f58;font-style:italic">(none)</span>';
+            } else {
+                for (var di = 0; di < dependsOn.length; di++) {
+                    var depId = dependsOn[di];
+                    var isDangling = danglingDeps.indexOf(depId) >= 0;
+                    var isUnresolved = false;
+                    var depTitle = depId;
+                    for (var ui = 0; ui < unresolvedDeps.length; ui++) {
+                        if (unresolvedDeps[ui].id === depId) {
+                            isUnresolved = true;
+                            depTitle = unresolvedDeps[ui].title + ' (' + unresolvedDeps[ui].stage + ')';
+                            break;
+                        }
+                    }
+                    if (isDangling) {
+                        html += '<span class="dangling-badge">' + escapeHtml(depId) + ' (broken)</span> ';
+                    } else if (isUnresolved) {
+                        html += '<span class="blocked-badge">' + escapeHtml(depTitle) + '</span> ';
+                    } else {
+                        html += '<span style="color:#3fb950;font-size:0.75rem">' + escapeHtml(depId) + ' ✓</span> ';
+                    }
+                }
+            }
+            html += ' <button onclick="clientStartEditDependsOn()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit dependencies">&#9998;</button></span></div>' +
                 (requiresHumanApproval ? '<div class="detail-row"><span class="detail-label" style="color:#d29922">Requires Human Approval</span><span class="detail-value" style="color:#d29922">Yes</span></div>' : '') +
                 '<div class="detail-row"><span class="detail-label">Done Script</span><span class="detail-value" id="detail-field-done-script" style="color:#d2a8ff">' +
                 (doneScript ? escapeHtml(doneScript) : '<span style="color:#484f58;font-style:italic">(none)</span>') +
@@ -1166,7 +1234,7 @@ function getKey() {
                         feedbackEl.textContent = 'Saved!';
                         _modalOriginalTitle = newValue;
                         document.getElementById('detail-field-title').innerHTML = escapeHtml(newValue) + ' <button onclick="clientStartEditTitle()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit title">&#9998;</button>';
-                        setTimeout(function() { smartPollFeatures(); }, 500);
+                        pollUntilChanged(4, 750);
                     } else {
                         feedbackEl.style.color = '#f85149';
                         feedbackEl.textContent = data.error || 'Save failed';
@@ -1207,7 +1275,7 @@ function getKey() {
                         feedbackEl.textContent = 'Saved!';
                         _modalOriginalType = newValue;
                         document.getElementById('detail-field-type').innerHTML = escapeHtml(newValue) + ' <button onclick="clientStartEditType()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit type">&#9998;</button>';
-                        setTimeout(function() { smartPollFeatures(); }, 500);
+                        pollUntilChanged(4, 750);
                     } else {
                         feedbackEl.style.color = '#f85149';
                         feedbackEl.textContent = data.error || 'Save failed';
@@ -1246,7 +1314,7 @@ function getKey() {
                         _modalOriginalDescription = newValue;
                         var displayValue = newValue ? escapeHtml(newValue) : '<span style="color:#484f58;font-style:italic">(none)</span>';
                         document.getElementById('detail-field-description').innerHTML = displayValue + ' <button onclick="clientStartEditDescription()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.65rem" title="Edit description">&#9998;</button>';
-                        setTimeout(function() { smartPollFeatures(); }, 500);
+                        pollUntilChanged(4, 750);
                     } else {
                         feedbackEl.style.color = '#f85149';
                         feedbackEl.textContent = data.error || 'Save failed';
@@ -1304,7 +1372,7 @@ function getKey() {
                         _modalOriginalDoneScript = newValue;
                         var displayValue = newValue ? escapeHtml(newValue) : '<span style="color:#484f58;font-style:italic">(none)</span>';
                         document.getElementById('detail-field-done-script').innerHTML = displayValue + ' <button onclick="clientStartEditDoneScript()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit done script">&#9998;</button>';
-                        setTimeout(function() { smartPollFeatures(); }, 500);
+                        pollUntilChanged(4, 750);
                     } else {
                         feedbackEl.style.color = '#f85149';
                         feedbackEl.textContent = data.error || 'Save failed';
@@ -1318,6 +1386,66 @@ function getKey() {
         function clientCancelEditDoneScript() {
             var displayValue = _modalOriginalDoneScript ? escapeHtml(_modalOriginalDoneScript) : '<span style="color:#484f58;font-style:italic">(none)</span>';
             document.getElementById('detail-field-done-script').innerHTML = displayValue + ' <button onclick="clientStartEditDoneScript()" style="background:none;border:none;color:#58a6ff;cursor:pointer;font-size:0.75rem" title="Edit done script">&#9998;</button>';
+        }
+        function clientStartEditDependsOn() {
+            var card = document.querySelector('.feature-card[data-id="' + _detailFeatureId + '"]');
+            var currentDeps = [];
+            try { currentDeps = JSON.parse(card.getAttribute('data-depends-on') || '[]'); } catch(e) {}
+            
+            var allCards = document.querySelectorAll('.feature-card');
+            var options = '';
+            var selfBoard = card.getAttribute('data-board');
+            allCards.forEach(function(c) {
+                var cId = c.getAttribute('data-id');
+                var cTitle = c.getAttribute('data-title');
+                var cBoard = c.getAttribute('data-board');
+                var cStage = c.getAttribute('data-stage');
+                if (cId !== _detailFeatureId && cBoard === selfBoard) {
+                    var checked = currentDeps.indexOf(cId) >= 0 ? ' checked' : '';
+                    options += '<label style="display:block;color:#c9d1d9;font-size:0.75rem;padding:0.15rem 0;cursor:pointer">' +
+                        '<input type="checkbox" class="dep-checkbox" value="' + cId + '"' + checked + ' style="margin-right:0.3rem">' +
+                        escapeHtml(cTitle) + ' <span style="color:#8b949e">(' + cStage + ', ' + cId + ')</span></label>';
+                }
+            });
+            
+            document.getElementById('detail-field-depends-on').innerHTML =
+                '<div style="max-height:200px;overflow-y:auto;background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:0.3rem">' +
+                (options || '<span style="color:#484f58">No other features on this board</span>') +
+                '</div>' +
+                '<div style="margin-top:0.3rem"><button onclick="saveEditDependsOn()" style="padding:0.2rem 0.5rem;border:none;border-radius:4px;cursor:pointer;font-size:0.7rem;font-weight:600;color:#fff;background:#238636">Save</button>' +
+                '<button onclick="cancelEditDependsOn()" style="padding:0.2rem 0.5rem;border:none;border-radius:4px;cursor:pointer;font-size:0.7rem;color:#c9d1d9;background:#21262d;margin-left:0.3rem">Cancel</button>' +
+                '<span id="edit-depends-on-feedback" style="margin-left:0.3rem;font-size:0.7rem"></span></div>';
+        }
+
+        function saveEditDependsOn() {
+            var checkboxes = document.querySelectorAll('.dep-checkbox');
+            var selected = [];
+            checkboxes.forEach(function(cb) {
+                if (cb.checked) selected.push(cb.value);
+            });
+            var feedbackEl = document.getElementById('edit-depends-on-feedback');
+            
+            fetch('/api/clients/' + encodeURIComponent(_clientID) + '/features/' + encodeURIComponent(_detailFeatureId) + '/edit-depends-on?key=' + encodeURIComponent(key), {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({depends_on: selected})
+            }).then(function(resp) {
+                if (resp.ok) {
+                    feedbackEl.textContent = 'Saved';
+                    feedbackEl.style.color = '#3fb950';
+                    pollUntilChanged(4, 750);
+                } else {
+                    resp.json().then(function(d) {
+                        feedbackEl.textContent = d.error || 'Error';
+                        feedbackEl.style.color = '#f85149';
+                    });
+                }
+            });
+        }
+
+        function cancelEditDependsOn() {
+            var card = document.querySelector('.feature-card[data-id="' + _detailFeatureId + '"]');
+            if (card) { toggleFeatureDetail(card); toggleFeatureDetail(card); }
         }
         function submitAnswers(btn, featureID) {
             var detail = btn.closest('.feature-detail');
@@ -1450,11 +1578,9 @@ function getKey() {
                     if (r.ok) {
                         feedbackEl.style.color = '#3fb950';
                         feedbackEl.textContent = action === 'done' ? 'Approved!' : (action === 'implementing' ? 'Sent back for rework!' : 'Rejected!');
-                        setTimeout(function() {
-                            var detail = document.querySelector('.feature-detail');
-                            if (detail) detail.remove();
-                            smartPollFeatures();
-                        }, 1000);
+                        var detail = document.querySelector('.feature-detail');
+                        if (detail) detail.remove();
+                        pollUntilChanged(4, 750);
                     } else {
                         feedbackEl.style.color = '#f85149';
                         feedbackEl.textContent = data.error || 'Failed';
@@ -1504,9 +1630,7 @@ function getKey() {
                 if (result.ok) {
                     feedback.style.color = '#3fb950';
                     feedback.textContent = 'Moved to ' + targetStage + '!';
-                    setTimeout(function() {
-                        smartPollFeatures();
-                    }, 1000);
+                    pollUntilChanged(4, 750);
                 } else {
                     feedback.style.color = '#f85149';
                     feedback.textContent = result.data.error || 'Move failed';
@@ -1579,11 +1703,8 @@ function getKey() {
                 if (result.ok) {
                     feedback.style.color = '#3fb950';
                     feedback.textContent = 'Idea created successfully!';
-                    setTimeout(function() {
-                        closeNewIdeaModal();
-                        // Trigger immediate poll to see the new idea
-                        smartPollFeatures();
-                    }, 1000);
+                    closeNewIdeaModal();
+                    pollUntilChanged(4, 750);
                 } else {
                     feedback.style.color = '#f85149';
                     feedback.textContent = result.data.error || 'Failed to create idea';
@@ -1730,8 +1851,12 @@ function getKey() {
             data-available-actions="{{toJSON .AvailableActions}}"
             data-done-script="{{.DoneScript}}"
             data-requires-human-approval="{{.RequiresHumanApproval}}"
+            data-depends-on="{{toJSON .DependsOn}}"
+            data-blocked="{{.Blocked}}"
+            data-unresolved-deps="{{toJSON .UnresolvedDeps}}"
+            data-dangling-deps="{{toJSON .DanglingDeps}}"
             data-active="{{if index $.ActiveSlugs .Slug}}true{{end}}">
-            <div class="title">{{.Title}}{{if and .ItemType (ne .ItemType "feature")}} <span class="item-type-badge item-type-{{.ItemType}}" aria-label="Item type: {{.ItemType}}">{{.ItemType}}</span>{{end}}{{if .Checkpoint}}{{if .Checkpoint.exists}} <span style="color:#d29922;font-size:0.7rem">● checkpoint</span>{{end}}{{end}}</div>
+            <div class="title">{{.Title}}{{if and .ItemType (ne .ItemType "feature")}} <span class="item-type-badge item-type-{{.ItemType}}" aria-label="Item type: {{.ItemType}}">{{.ItemType}}</span>{{end}}{{if .Blocked}}{{if .DanglingDeps}} <span class="dangling-badge">broken dep</span>{{else}} <span class="blocked-badge">blocked</span>{{end}}{{end}}{{if .Checkpoint}}{{if .Checkpoint.exists}} <span style="color:#d29922;font-size:0.7rem">● checkpoint</span>{{end}}{{end}}</div>
             <div class="meta"><span>{{.Board}}</span><span>{{.Created}}</span>{{if .Checkpoint}}{{if .Checkpoint.exists}}<span style="color:#d29922">{{.Checkpoint.last_checkpoint}}</span>{{end}}{{end}}{{if .DoneScript}}<span class="done-script-badge" style="background:#a855f7;color:white;padding:0 4px;border-radius:3px;font-size:0.7rem">Script</span>{{end}}</div>
         </div>{{end}}{{else}}<div class="empty-stage">No features in this stage</div>{{end}}
     </div>

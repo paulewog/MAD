@@ -95,6 +95,19 @@ class MockFeatureFile:
     def save(self):
         self.saved = True
 
+    def append_pipeline_log(self, phase, output):
+        if "pipeline_log" not in self._data:
+            self._data["pipeline_log"] = []
+        self._data["pipeline_log"].append({
+            "ts": "2026-01-01T00:00Z",
+            "phase": phase,
+            "output": output
+        })
+
+    @property
+    def pipeline_log(self):
+        return self._data.get("pipeline_log", [])
+
 
 class TestSpecToString(unittest.TestCase):
     """Tests for _spec_to_string function."""
@@ -919,6 +932,135 @@ class TestTerminalStagePipeline(unittest.TestCase):
         self.assertEqual(tag, "TERMINAL_STAGE")
         self.assertIn("plan", message)
         self.assertIn("final-human-approval", message)
+
+
+class TestPipelineLogging(unittest.TestCase):
+    """Tests for pipeline logging in _run_phase and run_ideating."""
+
+    def _create_mock_feature_for_phase(self, data=None):
+        """Create a mock feature with required properties for _run_phase."""
+        if data is None:
+            data = {}
+        data.setdefault("pipeline_log", [])
+        feature = MagicMock()
+        feature._data = data
+        feature.title = "Test Feature"
+        feature.slug = "test-feature"
+        feature.board = "default"
+        feature.current_stage = "planning"
+        feature.plan = ""
+        feature.impl_spec = ""
+        feature.test_spec = ""
+        feature.plan_reviews = []
+        feature.impl_reviews = []
+        feature.spec_reviews = []
+        feature.ideation_prompt = ""
+        feature.history_entries = []
+        feature.saved = False
+
+        def add_history(stage, note):
+            feature.history_entries.append({"stage": stage, "note": note})
+
+        feature.add_history = add_history
+
+        def save():
+            feature.saved = True
+
+        feature.save = save
+
+        def append_pipeline_log(phase, output):
+            if "pipeline_log" not in feature._data:
+                feature._data["pipeline_log"] = []
+            feature._data["pipeline_log"].append({
+                "ts": "2026-01-01T00:00Z",
+                "phase": phase,
+                "output": output
+            })
+
+        feature.append_pipeline_log = append_pipeline_log
+
+        return feature
+
+    def test_run_phase_success_logs_completion(self):
+        """1.1: Verify _run_phase success path appends pipeline log entry."""
+        from phases import _run_phase
+
+        mock_runner = MagicMock()
+        mock_runner.headless.return_value = '{"plan": "test plan"}'
+
+        mock_feature = self._create_mock_feature_for_phase()
+
+        output = _run_phase("planning", mock_feature, mock_runner, "test prompt")
+
+        self.assertEqual(len(mock_feature._data["pipeline_log"]), 1)
+        log_entry = mock_feature._data["pipeline_log"][0]
+        self.assertEqual(log_entry["phase"], "planning")
+        self.assertIn("completed successfully", log_entry["output"])
+
+    def test_run_phase_exception_logs_failure(self):
+        """1.2: Verify _run_phase exception path appends pipeline log entry."""
+        from phases import _run_phase
+
+        mock_runner = MagicMock()
+        mock_runner.headless.side_effect = Exception("Agent failed")
+
+        mock_feature = self._create_mock_feature_for_phase()
+
+        with self.assertRaises(Exception):
+            _run_phase("planning", mock_feature, mock_runner, "test prompt")
+
+        self.assertEqual(len(mock_feature._data["pipeline_log"]), 1)
+        log_entry = mock_feature._data["pipeline_log"][0]
+        self.assertEqual(log_entry["phase"], "planning")
+        self.assertIn("failed:", log_entry["output"])
+        self.assertIn("Agent failed", log_entry["output"])
+
+    def test_run_phase_empty_output_logs_failure(self):
+        """1.3: Verify _run_phase empty output path appends pipeline log entry."""
+        from phases import _run_phase
+
+        mock_runner = MagicMock()
+        mock_runner.headless.return_value = ""
+
+        mock_feature = self._create_mock_feature_for_phase()
+
+        with self.assertRaises(RuntimeError):
+            _run_phase("planning", mock_feature, mock_runner, "test prompt")
+
+        self.assertEqual(len(mock_feature._data["pipeline_log"]), 1)
+        log_entry = mock_feature._data["pipeline_log"][0]
+        self.assertEqual(log_entry["phase"], "planning")
+        self.assertIn("failed:", log_entry["output"])
+        self.assertIn("empty output", log_entry["output"])
+
+    def test_pipeline_log_content_is_human_readable(self):
+        """1.7: Verify pipeline log entries contain short human-readable messages."""
+        from phases import _run_phase
+
+        mock_runner = MagicMock()
+        mock_runner.headless.return_value = '{"plan": "' + "x" * 1000 + '"}'
+
+        mock_feature = self._create_mock_feature_for_phase()
+
+        _run_phase("planning", mock_feature, mock_runner, "test prompt")
+
+        log_entry = mock_feature._data["pipeline_log"][0]
+        self.assertLess(len(log_entry["output"]), 200)
+        self.assertIn("completed successfully", log_entry["output"])
+
+    def test_pipeline_log_persists_after_phase(self):
+        """1.8: Verify pipeline log entries persist after phase completes."""
+        from phases import _run_phase
+
+        mock_runner = MagicMock()
+        mock_runner.headless.return_value = '{"plan": "test"}'
+
+        mock_feature = self._create_mock_feature_for_phase()
+
+        _run_phase("implementing", mock_feature, mock_runner, "test prompt")
+
+        self.assertTrue(mock_feature.saved)
+        self.assertEqual(len(mock_feature._data["pipeline_log"]), 1)
 
 
 if __name__ == '__main__':
