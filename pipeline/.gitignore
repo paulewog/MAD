@@ -1,0 +1,9 @@
+# Python venv
+bin/
+lib/
+lib64/
+include/
+pyvenv.cfg
+__pycache__/
+*.pyc
+MagicMock/
